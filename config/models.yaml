@@ -1,0 +1,24 @@
+# config/models.yaml
+# SINGLE SOURCE OF TRUTH for LLM usage in MERLIN
+#
+# Invariant:
+# - LLMs are used ONLY for language + structure generation
+# - Never for routing, tool selection, or execution decisions
+
+mission_compiler:
+  provider: ollama
+  model: mistral:7b-instruct
+  base_url: http://localhost:11434
+  temperature: 0.2
+
+report_generator:
+  provider: ollama
+  model: mistral:7b-instruct
+  base_url: http://localhost:11434
+  temperature: 0.6
+
+clarifier:
+  provider: ollama
+  model: llama3:8b
+  base_url: http://localhost:11434
+  temperature: 0.1

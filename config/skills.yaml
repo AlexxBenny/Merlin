@@ -1,0 +1,103 @@
+# config/skills.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Skill Registration Configuration
+# ─────────────────────────────────────────────────────────────
+#
+# Each skill maps a name to its Python module path and class name.
+# The registry loads skills from this file at startup.
+# To add a new skill: add an entry here and drop the file in skills/.
+# No other file needs to change.
+
+# ─────────────────────────────────────────────────────────────
+# World State Provider — controls what WorldState the LLM sees
+# ─────────────────────────────────────────────────────────────
+# "simple" = full WorldState dump (Phase 1-2)
+# "filtered" = query-scoped view projection (Phase 3A+)
+world_state_provider: "filtered"
+
+# ─────────────────────────────────────────────────────────────
+# Context Provider — controls temporal context bounding
+# ─────────────────────────────────────────────────────────────
+# "simple"    = unbounded, last 5 turns + entities (Phase 1-2)
+# "retrieval" = token-budgeted, priority-ordered, memory-aware (Phase 3B+)
+context_provider: "retrieval"
+context_token_budget: 800
+
+# Domain → WorldState section mapping.
+# Each skill domain prefix maps to the state sections it needs.
+# Only used when world_state_provider is "filtered".
+domain_state_mapping:
+  system:
+    - "system.hardware"
+    - "system.session"
+  fs:
+    - "cwd"
+  media:
+    - "media"
+    - "system.hardware"
+  browser:
+    - "system.session"
+
+skills:
+  - name: "fs.create_folder"
+    module: "skills.fs.create_folder"
+    class: "CreateFolderSkill"
+
+  - name: "system.open_app"
+    module: "skills.system.open_app"
+    class: "OpenAppSkill"
+
+  - name: "system.focus_app"
+    module: "skills.system.focus_app"
+    class: "FocusAppSkill"
+
+  - name: "system.close_app"
+    module: "skills.system.close_app"
+    class: "CloseAppSkill"
+
+  - name: "system.list_apps"
+    module: "skills.system.list_apps"
+    class: "ListAppsSkill"
+
+  # ── Add new skills below ──
+
+  - name: "system.set_brightness"
+    module: "skills.system.set_brightness"
+    class: "SetBrightnessSkill"
+
+  - name: "system.set_volume"
+    module: "skills.system.set_volume"
+    class: "SetVolumeSkill"
+
+  - name: "system.mute"
+    module: "skills.system.mute"
+    class: "MuteSkill"
+
+  - name: "system.unmute"
+    module: "skills.system.unmute"
+    class: "UnmuteSkill"
+
+  - name: "system.toggle_nightlight"
+    module: "skills.system.toggle_nightlight"
+    class: "ToggleNightlightSkill"
+
+  - name: "system.media_play"
+    module: "skills.system.media_play"
+    class: "MediaPlaySkill"
+
+  - name: "system.media_pause"
+    module: "skills.system.media_pause"
+    class: "MediaPauseSkill"
+
+  - name: "system.media_next"
+    module: "skills.system.media_next"
+    class: "MediaNextSkill"
+
+  - name: "system.media_previous"
+    module: "skills.system.media_previous"
+    class: "MediaPreviousSkill"
+
+  # - name: "browser.open"
+  #   module: "skills.browser.open"
+  #   class: "BrowserOpenSkill"

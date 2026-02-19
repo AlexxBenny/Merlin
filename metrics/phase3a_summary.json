@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-02-18T11:21:28.147416+00:00",
+  "phase": "3A",
+  "label": "world_state_token_reduction",
+  "full_state_tokens": 289,
+  "full_state_keys": 29,
+  "total_queries": 18,
+  "filtered_queries": 13,
+  "full_fallback_queries": 5,
+  "avg_token_reduction_pct": 51.8,
+  "min_token_reduction_pct": 28.0,
+  "max_token_reduction_pct": 86.9,
+  "domain_detection_accuracy_pct": 100.0,
+  "drift_risk_correct_pct": 100.0,
+  "confidence_gate": {
+    "ambiguous_threshold": 2,
+    "design": "unique_keywords=1_match, ambiguous_keywords=gte2_matches"
+  },
+  "notes": "No LLM. Pure deterministic measurement of FilteredWorldStateProvider."
+}

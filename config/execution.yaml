@@ -1,0 +1,243 @@
+# config/execution.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Execution Configuration
+# ─────────────────────────────────────────────────────────────
+#
+# Controls for the MissionExecutor, MissionOrchestrator,
+# event sources, and notification policy.
+
+executor:
+  max_workers: 4
+  node_timeout_seconds: 30
+
+event_loop:
+  tick_interval: 0.1
+
+# ─────────────────────────────────────────────────────────────
+# Domain Configuration
+# ─────────────────────────────────────────────────────────────
+
+browser:
+  engine: "chromium"            # chromium | firefox (future)
+  control_mode: "cdp"           # cdp = Chromium DevTools Protocol
+  headless: false               # true for background automation
+  # Implementation deferred. This placeholder establishes
+  # the config surface for future BrowserController.
+
+# ─────────────────────────────────────────────────────────────
+# Source Configuration
+# ─────────────────────────────────────────────────────────────
+
+sources:
+  system:
+    enabled: true
+    resource_poll_interval: 2.0    # CPU, RAM, battery, disk
+    window_poll_interval: 0.5      # Foreground window
+    idle_poll_interval: 5.0        # Idle detection
+  media:
+    enabled: true
+    poll_interval: 1.0
+  time:
+    enabled: true
+    tick_interval: 60              # Seconds between time_tick events
+  browser:
+    enabled: false                 # Not implemented yet
+
+# ─────────────────────────────────────────────────────────────
+# System Thresholds (hysteresis pairs)
+# ─────────────────────────────────────────────────────────────
+
+system_thresholds:
+  cpu_high: 85
+  cpu_normal: 70
+  ram_high: 90
+  ram_normal: 80
+  battery_low: 20
+  battery_critical: 10
+  disk_high: 95
+  idle_seconds: 300
+
+# ─────────────────────────────────────────────────────────────
+# Event Draft Templates
+# ─────────────────────────────────────────────────────────────
+#
+# Templates are PURELY formatting — no conditional logic.
+# Keys are event types. Values are Python format strings
+# interpolated with event.payload fields.
+# Missing payload keys produce "?" via safe formatting.
+
+event_templates:
+  # System events
+  battery_low: "Battery is at {value}%. Consider plugging in."
+  battery_critical: "Battery critically low at {value}%."
+  battery_charging: "Charger connected. Battery at {value}%."
+  memory_pressure: "RAM usage at {value}%."
+  memory_normal: "RAM usage normalized at {value}%."
+  cpu_high: "CPU usage elevated at {value}%."
+  cpu_normal: "CPU usage normalized at {value}%."
+  disk_high: "Disk usage at {value}%."
+  idle_detected: "You've been idle for {minutes} minutes."
+  foreground_window_changed: "Switched to {app}."
+
+  # App lifecycle events (actuation tracking)
+  app_launched: "Opened {app}."
+  app_closed: "Closed {app}."
+  app_focused: "Switched focus to {app}."
+
+  # Hardware actuation events
+  brightness_changed: "Brightness set to {value}%."
+  volume_changed: "Volume set to {value}%."
+  mute_toggled: "Audio {state}."
+  nightlight_toggled: "Night light {state}."
+
+  # Media events
+  media_started: "Playing: {title}."
+  media_stopped: "Playback stopped."
+  media_track_changed: "Now playing: {title}."
+  media_source_changed: "Media source changed to {source_app}."
+
+  # Time events
+  time_tick: ""
+  hour_changed: "It's now {hour}:00."
+  date_changed: "New day: {day_of_week}, {date}."
+
+  # Existing events (migrated from hardcoded)
+  meeting_starting: "Meeting with {with} starting in {minutes_until} minutes."
+  ad_muted: "Ad detected on {platform}. Muted."
+  download_completed: "Download complete: {filename}."
+  task_completed: "{task} has finished."
+  error_attention: "Attention needed: {message}."
+
+# ─────────────────────────────────────────────────────────────
+# Notification Rules
+# ─────────────────────────────────────────────────────────────
+
+notifications:
+  # Critical — always notify
+  - event_type: "meeting_starting"
+    action: "notify"
+    priority: "critical"
+
+  - event_type: "error_attention"
+    action: "notify"
+    priority: "critical"
+
+  - event_type: "battery_low"
+    action: "notify"
+    priority: "critical"
+
+  - event_type: "battery_critical"
+    action: "notify"
+    priority: "critical"
+
+  # Info — notify when appropriate
+  - event_type: "ad_muted"
+    action: "notify"
+    priority: "info"
+
+  - event_type: "download_completed"
+    action: "notify"
+    priority: "info"
+
+  - event_type: "task_completed"
+    action: "notify"
+    priority: "info"
+
+  - event_type: "battery_charging"
+    action: "notify"
+    priority: "info"
+
+  - event_type: "memory_pressure"
+    action: "notify"
+    priority: "info"
+
+  - event_type: "disk_high"
+    action: "notify"
+    priority: "info"
+
+  # Background — log only, never notify
+  - event_type: "download_progress"
+    action: "log"
+    priority: "background"
+
+  - event_type: "cpu_high"
+    action: "log"
+    priority: "background"
+
+  - event_type: "cpu_normal"
+    action: "log"
+    priority: "background"
+
+  - event_type: "memory_normal"
+    action: "log"
+    priority: "background"
+
+  - event_type: "foreground_window_changed"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "idle_detected"
+    action: "log"
+    priority: "background"
+
+  - event_type: "idle_ended"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "network_fluctuation"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "app_focused"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "app_launched"
+    action: "log"
+    priority: "background"
+
+  - event_type: "app_closed"
+    action: "log"
+    priority: "background"
+
+  - event_type: "time_tick"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "hour_changed"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "date_changed"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "media_track_changed"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "media_started"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "media_stopped"
+    action: "ignore"
+    priority: "background"
+
+  # Hardware actuation — log for traceability, never notify
+  - event_type: "brightness_changed"
+    action: "log"
+    priority: "background"
+
+  - event_type: "volume_changed"
+    action: "log"
+    priority: "background"
+
+  - event_type: "mute_toggled"
+    action: "log"
+    priority: "background"
+
+  - event_type: "nightlight_toggled"
+    action: "log"
+    priority: "background"

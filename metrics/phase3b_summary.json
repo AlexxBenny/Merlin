@@ -1,0 +1,15 @@
+{
+  "phase": "3B",
+  "component": "RetrievalContextProvider",
+  "total_scenarios": 13,
+  "budget_adherence": "13/13",
+  "budget_adherence_pct": 100.0,
+  "avg_reduction_pct": -63.2,
+  "min_reduction_pct": -108.2,
+  "max_reduction_pct": 14.2,
+  "max_retrieval_tokens": 698,
+  "token_budget": 800,
+  "hard_cap_guaranteed": true,
+  "scenarios_where_simple_exceeded_budget": 0,
+  "worst_simple_tokens": 493
+}

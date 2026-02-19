@@ -1,0 +1,59 @@
+# skills/system/focus_app.py
+
+from typing import Any, Dict
+
+from skills.skill_result import SkillResult
+
+from skills.base import Skill
+from skills.contract import SkillContract, FailurePolicy
+from ir.mission import ExecutionMode
+from world.timeline import WorldTimeline
+from infrastructure.system_controller import SystemController
+
+
+class FocusAppSkill(Skill):
+    """
+    Bring an application window to the foreground.
+
+    Inputs:
+        app_name: Name of the app to focus
+
+    Delegates to SystemController.focus_app().
+    Emits app_focused on success.
+    """
+
+    contract = SkillContract(
+        name="system.focus_app",
+        description="Bring an application window to the foreground",
+        domain="system",
+        requires_focus=True,
+        inputs={"app_name": "application_name"},
+        outputs={"focused": "application_name"},
+        allowed_modes={ExecutionMode.foreground, ExecutionMode.side_effect},
+        failure_policy={
+            ExecutionMode.foreground: FailurePolicy.FAIL,
+            ExecutionMode.side_effect: FailurePolicy.IGNORE,
+        },
+        emits_events=["app_focused"],
+        mutates_world=True,
+    )
+
+    def __init__(self, system_controller: SystemController):
+        self._controller = system_controller
+
+    def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
+        app_name = inputs["app_name"]
+
+        success = self._controller.focus_app(app_name)
+
+        if not success:
+            raise RuntimeError(f"Failed to focus '{app_name}': no matching window found")
+
+        world.emit("skill.system", "app_focused", {
+            "app": app_name,
+        })
+
+        return SkillResult(
+            outputs={"focused": app_name},
+            metadata={"entity": f"app '{app_name}'", "domain": "system"},
+        )
