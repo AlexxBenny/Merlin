@@ -24,6 +24,8 @@ class FocusAppSkill(Skill):
 
     contract = SkillContract(
         name="system.focus_app",
+        action="focus_app",
+        target_type="app",
         description="Bring an application window to the foreground",
         domain="system",
         requires_focus=True,

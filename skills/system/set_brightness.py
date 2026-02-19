@@ -28,6 +28,8 @@ class SetBrightnessSkill(Skill):
 
     contract = SkillContract(
         name="system.set_brightness",
+        action="set_brightness",
+        target_type="brightness",
         description="Set display brightness percentage",
         domain="system",
         requires_focus=False,

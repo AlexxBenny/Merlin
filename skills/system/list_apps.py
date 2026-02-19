@@ -23,6 +23,8 @@ class ListAppsSkill(Skill):
 
     contract = SkillContract(
         name="system.list_apps",
+        action="list_apps",
+        target_type="app",
         description="List currently running visible applications",
         domain="system",
         requires_focus=False,

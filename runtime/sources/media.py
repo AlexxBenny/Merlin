@@ -117,6 +117,10 @@ class MediaSource(EventSource):
             return []
         self._last_poll = now
 
+        # Already degraded — stop retrying until recovery trigger
+        if self._unhealthy:
+            return []
+
         was_unhealthy = self._unhealthy
         current = self._read_media_state()
 
@@ -203,13 +207,13 @@ class MediaSource(EventSource):
             )
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Already in async context — schedule
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    return pool.submit(asyncio.run, _get()).result(timeout=2)
-            return asyncio.run(_get())
+            # Background threads (RuntimeEventLoop) have no asyncio loop.
+            # Create a dedicated loop for WinRT async calls.
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(_get())
+            finally:
+                loop.close()
         except Exception as e:
             logger.warning("MediaSource: WinRT async transport failed: %s", e)
             raise  # Let outer handler count the failure

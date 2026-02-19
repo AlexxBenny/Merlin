@@ -25,6 +25,8 @@ class OpenAppSkill(Skill):
 
     contract = SkillContract(
         name="system.open_app",
+        action="open_app",
+        target_type="app",
         description="Open an application by name",
         domain="system",
         requires_focus=True,

@@ -20,6 +20,8 @@ class MediaNextSkill(Skill):
 
     contract = SkillContract(
         name="system.media_next",
+        action="media_next",
+        target_type="media",
         description="Skip to next media track",
         domain="system",
         requires_focus=False,

@@ -245,6 +245,14 @@ def main():
     }
     load_skills(registry, skills_config, deps=skill_deps)
 
+    # ── Action namespace governance audit (fail-fast on violations) ──
+    violations = registry.audit_action_namespace()
+    if violations:
+        raise RuntimeError(
+            f"Action namespace audit failed with {len(violations)} violation(s). "
+            "Fix skill contracts before starting."
+        )
+
     # ── Reporting ──
     output_channel = ConsoleOutputChannel(prefix="MERLIN")
     event_templates = execution_config.get("event_templates", {})

@@ -35,6 +35,10 @@ class SkillContract(BaseModel):
     name: str                                       # domain.action[.variant]
     description: str = ""                           # For LLM skill manifest
 
+    # ── Capability metadata (for intent matching) ──
+    action: str = ""                                # Canonical action: "set_volume", "open_app"
+    target_type: str = ""                           # What this skill acts on: "volume", "app"
+
     inputs: Dict[str, str]                          # key → semantic type (REQUIRED)
     optional_inputs: Dict[str, str] = {}            # key → semantic type (OPTIONAL, have defaults)
     outputs: Dict[str, str]                         # key → semantic type

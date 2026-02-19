@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from cortex.json_extraction import extract_json_block
+from cortex.json_extraction import extract_json_block, extract_json_array
 from cortex.normalizer import normalize_plan, validate_anchors
 from cortex.semantic_types import SEMANTIC_TYPES
 from errors import (
@@ -137,18 +137,28 @@ class MissionCortex:
 
         return result
 
-    def decompose_intents(self, user_query: str) -> Optional[List[Dict[str, str]]]:
+    def decompose_intents(
+        self,
+        user_query: str,
+        domain_filter: Optional[set] = None,
+    ) -> Optional[List[Dict[str, str]]]:
         """Pre-compile intent decomposition. Tier 2+ only.
 
-        Extracts atomic intent units from a multi-intent query.
+        Args:
+            user_query: The raw user query to decompose.
+            domain_filter: Optional set of domain names to limit vocabulary.
+                When provided, only actions from these domains are included
+                in the prompt. Reduces token overhead at scale (200+ skills).
+                When None, all registered actions are included.
+
+        Extracts atomic intent units from a multi-intent query using
+        the canonical action vocabulary from registered skill contracts.
         Returns None on failure (graceful degradation to Tier 1).
 
         Each intent unit:
         {
-            "verb": "create",
-            "object": "folder docs",
-            "modifiers": "on desktop",
-            "domain_hint": "fs"
+            "action": "set_volume",
+            "parameters": {"level": 70}
         }
 
         Token cap: returns at most MAX_INTENT_INJECTION entries.
@@ -157,26 +167,48 @@ class MissionCortex:
         if self.llm is None:
             return None
 
-        # Collect available domains from registry
-        domains = set()
-        for name in self.registry.all_names():
+        # Build canonical action vocabulary from registry
+        action_vocab = []
+        for name in sorted(self.registry.all_names()):
             skill = self.registry.get(name)
-            d = skill.contract.domain or name.split(".")[0]
-            domains.add(d)
-        domain_list = sorted(domains)
+            c = skill.contract
+            if not c.action:
+                continue
+            domain = c.domain or name.split(".")[0]
+            # Domain-based filtering: skip actions outside the filter set
+            if domain_filter and domain not in domain_filter:
+                continue
+            input_keys = sorted(c.inputs.keys())
+            optional_keys = sorted(c.optional_inputs.keys())
+            params_desc = ", ".join(input_keys)
+            if optional_keys:
+                params_desc += ", " + ", ".join(f"{k}?" for k in optional_keys)
+            action_vocab.append(
+                f"- {c.action} (domain: {domain}) — {c.description}"
+                + (f" — parameters: {{{params_desc}}}" if params_desc else "")
+            )
 
-        prompt = f"""Extract every distinct action the user wants performed.
-For each action, identify the most likely skill domain from: {json.dumps(domain_list)}
+        if not action_vocab:
+            logger.warning(
+                "[DECOMPOSE] No canonical actions registered — degrading to Tier 1"
+            )
+            return None
+
+        vocab_block = "\n".join(action_vocab)
+
+        prompt = f"""Given the user query, decompose it into individual actions using ONLY the
+canonical action types listed below.
+
+Available actions:
+{vocab_block}
 
 Output a JSON array. Each element:
-{{"verb": "action_word", "object": "what_to_act_on", "modifiers": "additional_context", "domain_hint": "domain"}}
+{{"action": "<action_from_list>", "parameters": {{<key: value pairs>}}}}
 
 Rules:
+- "action" MUST be one of the action names listed above. Do not invent new ones.
+- "parameters" should contain the input values for that action.
 - One entry per distinct action. Do NOT merge actions.
-- "verb" = the action word (create, open, play, set, etc.)
-- "object" = what the action targets (folder docs, spotify, music, brightness)
-- "modifiers" = qualifiers (on desktop, to 80, in background) — empty string if none
-- "domain_hint" = best matching domain from the list above
 - Output ONLY the JSON array. No explanation. No markdown.
 
 User query:
@@ -190,7 +222,7 @@ User query:
                 user_query[:80], raw_response[:1000],
             )
 
-            clean_json = extract_json_block(raw_response)
+            clean_json = extract_json_array(raw_response)
             intents = json.loads(clean_json)
 
             if not isinstance(intents, list):
@@ -200,15 +232,13 @@ User query:
                 )
                 return None
 
-            # Validate structure: each entry must have verb + object
+            # Validate structure: each entry must have "action"
             valid_intents = []
             for intent in intents:
-                if isinstance(intent, dict) and "verb" in intent and "object" in intent:
+                if isinstance(intent, dict) and "action" in intent:
                     valid_intents.append({
-                        "verb": str(intent.get("verb", "")),
-                        "object": str(intent.get("object", "")),
-                        "modifiers": str(intent.get("modifiers", "")),
-                        "domain_hint": str(intent.get("domain_hint", "")),
+                        "action": str(intent.get("action", "")),
+                        "parameters": intent.get("parameters", {}),
                     })
 
             if not valid_intents:
@@ -490,13 +520,12 @@ User query:
 
         lines = ["INTENT CHECKLIST — your plan MUST cover ALL of these:"]
         for i, intent in enumerate(intent_checklist, 1):
-            domain = intent.get("domain_hint", "")
-            verb = intent.get("verb", "")
-            obj = intent.get("object", "")
-            mods = intent.get("modifiers", "")
-            entry = f"{i}. [{domain}] {verb} {obj}"
-            if mods:
-                entry += f" {mods}"
+            action = intent.get("action", "unknown")
+            params = intent.get("parameters", {})
+            entry = f"{i}. [{action}]"
+            if params:
+                param_str = ", ".join(f"{k}: {v}" for k, v in params.items())
+                entry += f" parameters: {{{param_str}}}"
             lines.append(entry)
 
         lines.append("")

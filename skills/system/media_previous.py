@@ -20,6 +20,8 @@ class MediaPreviousSkill(Skill):
 
     contract = SkillContract(
         name="system.media_previous",
+        action="media_previous",
+        target_type="media",
         description="Go to previous media track",
         domain="system",
         requires_focus=False,

@@ -28,6 +28,8 @@ class SetVolumeSkill(Skill):
 
     contract = SkillContract(
         name="system.set_volume",
+        action="set_volume",
+        target_type="volume",
         description="Set system master volume percentage",
         domain="system",
         requires_focus=False,

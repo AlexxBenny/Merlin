@@ -1,15 +1,14 @@
 # tests/test_coverage_verification.py
 
 """
-Tests for Phase 5A: verify_intent_coverage() and HeuristicIntentMatcher.
+Tests for capability-based intent coverage verification.
 
 Validates:
 - Full coverage returns (True, [])
 - Partial coverage returns (False, uncovered_intents)
 - Node consumption: each node covers at most one intent
-- Domain-biased filtering with cross-domain fallback
-- Argument-level matching (intent.object vs node.inputs)
-- Verb-to-skill token matching
+- Capability matching: intent.action == node skill action
+- Parameter disambiguation for same-action nodes
 - Empty plan / empty intents edge cases
 - IntentMatcher protocol satisfaction
 """
@@ -20,6 +19,7 @@ from unittest.mock import MagicMock
 from ir.mission import MissionPlan, MissionNode, ExecutionMode
 from cortex.validators import (
     verify_intent_coverage,
+    CapabilityIntentMatcher,
     HeuristicIntentMatcher,
     IntentMatcher,
 )
@@ -48,19 +48,21 @@ def _make_plan(*nodes):
     )
 
 
-def _make_intent(verb, obj, domain_hint="", modifiers=""):
+def _make_intent(action, parameters=None):
     return {
-        "verb": verb,
-        "object": obj,
-        "domain_hint": domain_hint,
-        "modifiers": modifiers,
+        "action": action,
+        "parameters": parameters or {},
     }
 
 
 # ── Protocol Tests ───────────────────────────────────────────
 
 class TestIntentMatcherProtocol:
-    def test_heuristic_satisfies_protocol(self):
+    def test_capability_satisfies_protocol(self):
+        matcher = CapabilityIntentMatcher()
+        assert isinstance(matcher, IntentMatcher)
+
+    def test_heuristic_alias_satisfies_protocol(self):
         matcher = HeuristicIntentMatcher()
         assert isinstance(matcher, IntentMatcher)
 
@@ -73,7 +75,7 @@ class TestFullCoverage:
         plan = _make_plan(
             _make_node("node_0", "fs.create_folder", {"name": "docs", "anchor": "DESKTOP"}),
         )
-        intents = [_make_intent("create", "folder docs", "fs")]
+        intents = [_make_intent("create_folder", {"name": "docs"})]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
         assert covered is True
@@ -82,14 +84,14 @@ class TestFullCoverage:
     def test_multi_intent_multi_node(self):
         """Three intents, three matching nodes → full coverage."""
         plan = _make_plan(
-            _make_node("node_0", "fs.create_folder", {"name": "docs", "anchor": "DESKTOP"}),
-            _make_node("node_1", "system.open_app", {"app_name": "notepad"}),
+            _make_node("node_0", "system.set_volume", {"level": 70}),
+            _make_node("node_1", "system.set_brightness", {"level": 10}),
             _make_node("node_2", "system.media_play", {}),
         )
         intents = [
-            _make_intent("create", "docs", "fs"),
-            _make_intent("open", "notepad", "system"),
-            _make_intent("play", "", "system"),
+            _make_intent("set_volume", {"level": 70}),
+            _make_intent("set_brightness", {"level": 10}),
+            _make_intent("media_play"),
         ]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
@@ -106,14 +108,14 @@ class TestPartialCoverage:
             _make_node("node_0", "fs.create_folder", {"name": "docs"}),
         )
         intents = [
-            _make_intent("create", "docs", "fs"),
-            _make_intent("play", "music", "system"),  # No matching node
+            _make_intent("create_folder", {"name": "docs"}),
+            _make_intent("media_play"),  # No matching node
         ]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
         assert covered is False
         assert len(uncovered) == 1
-        assert uncovered[0]["verb"] == "play"
+        assert uncovered[0]["action"] == "media_play"
 
     def test_all_uncovered(self):
         """No nodes match any intent → all uncovered."""
@@ -121,8 +123,8 @@ class TestPartialCoverage:
             _make_node("node_0", "system.set_brightness", {"level": 80}),
         )
         intents = [
-            _make_intent("create", "folder", "fs"),
-            _make_intent("open", "notepad", "system"),
+            _make_intent("create_folder", {"name": "docs"}),
+            _make_intent("open_app", {"app_name": "notepad"}),
         ]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
@@ -139,8 +141,8 @@ class TestNodeConsumption:
             _make_node("node_0", "system.media_play", {}),
         )
         intents = [
-            _make_intent("play", "", "system"),  # Matches node_0
-            _make_intent("play", "", "system"),  # Same pattern, but node consumed
+            _make_intent("media_play"),  # Matches node_0
+            _make_intent("media_play"),  # Same, but node consumed
         ]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
@@ -148,14 +150,14 @@ class TestNodeConsumption:
         assert len(uncovered) == 1
 
     def test_two_similar_nodes_cover_two_intents(self):
-        """Two similar nodes can each cover one intent."""
+        """Two similar nodes can each cover one intent (parameter disambiguation)."""
         plan = _make_plan(
             _make_node("node_0", "fs.create_folder", {"name": "A"}),
             _make_node("node_1", "fs.create_folder", {"name": "B"}),
         )
         intents = [
-            _make_intent("create", "A", "fs"),
-            _make_intent("create", "B", "fs"),
+            _make_intent("create_folder", {"name": "A"}),
+            _make_intent("create_folder", {"name": "B"}),
         ]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
@@ -163,65 +165,53 @@ class TestNodeConsumption:
         assert uncovered == []
 
 
-# ── Domain Filtering Tests ───────────────────────────────────
+# ── Capability Matching Tests ────────────────────────────────
 
-class TestDomainFiltering:
-    def test_domain_bias_preferential(self):
-        """Domain hint biases toward same-domain nodes."""
-        plan = _make_plan(
-            _make_node("node_0", "system.open_app", {"app_name": "notepad"}),
-            _make_node("node_1", "fs.create_folder", {"name": "docs"}),
-        )
-        intents = [_make_intent("create", "docs", "fs")]
-
-        covered, uncovered = verify_intent_coverage(plan, intents, None)
-        assert covered is True
-        assert uncovered == []
-
-    def test_domain_fallback_on_mismatch(self):
-        """If domain hint has no match, fallback to all nodes (soft)."""
-        plan = _make_plan(
-            _make_node("node_0", "system.open_app", {"app_name": "notepad"}),
-        )
-        # Intent says domain "browser" but only system nodes exist
-        intents = [_make_intent("open", "notepad", "browser")]
-
-        covered, uncovered = verify_intent_coverage(plan, intents, None)
-        assert covered is True  # Soft fallback — still matches by verb+object
-
-
-# ── Argument Alignment Tests ─────────────────────────────────
-
-class TestArgumentAlignment:
-    def test_substring_match(self):
-        """intent.object as substring of node input value → match."""
+class TestCapabilityMatching:
+    def test_action_match_exact(self):
+        """Exact action match: intent.action == node skill action."""
         plan = _make_plan(
             _make_node("node_0", "system.open_app", {"app_name": "Spotify"}),
         )
-        intents = [_make_intent("open", "spotify", "system")]
+        intents = [_make_intent("open_app", {"app_name": "Spotify"})]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
         assert covered is True
 
-    def test_no_argument_match(self):
-        """Verb matches but object doesn't appear in inputs → no match."""
+    def test_action_mismatch(self):
+        """Different action → no match."""
         plan = _make_plan(
             _make_node("node_0", "system.open_app", {"app_name": "Chrome"}),
         )
-        intents = [_make_intent("open", "firefox", "system")]
+        intents = [_make_intent("close_app", {"app_name": "Chrome"})]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
         assert covered is False
 
-    def test_empty_inputs_verb_match_sufficient(self):
-        """Skills with empty inputs: verb match alone is sufficient."""
+    def test_no_params_still_matches(self):
+        """Skills with empty inputs: action match alone is sufficient."""
         plan = _make_plan(
             _make_node("node_0", "system.media_play", {}),
         )
-        intents = [_make_intent("play", "music", "system")]
+        intents = [_make_intent("media_play")]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
         assert covered is True
+
+    def test_parameter_disambiguation(self):
+        """When two nodes share the same action, parameter values disambiguate."""
+        plan = _make_plan(
+            _make_node("node_0", "system.open_app", {"app_name": "Chrome"}),
+            _make_node("node_1", "system.open_app", {"app_name": "Spotify"}),
+        )
+        intents = [
+            _make_intent("open_app", {"app_name": "Spotify"}),
+            _make_intent("open_app", {"app_name": "Chrome"}),
+        ]
+
+        covered, uncovered = verify_intent_coverage(plan, intents, None)
+        assert covered is True
+        assert uncovered == []
 
 
 # ── Edge Cases ───────────────────────────────────────────────
@@ -230,7 +220,7 @@ class TestCoverageEdgeCases:
     def test_empty_plan(self):
         """Empty plan → all intents uncovered."""
         plan = _make_plan()
-        intents = [_make_intent("create", "folder", "fs")]
+        intents = [_make_intent("create_folder", {"name": "docs"})]
 
         covered, uncovered = verify_intent_coverage(plan, intents, None)
         assert covered is False
@@ -246,6 +236,16 @@ class TestCoverageEdgeCases:
         assert covered is True
         assert uncovered == []
 
+    def test_empty_action_in_intent(self):
+        """Intent with empty action → no match."""
+        plan = _make_plan(
+            _make_node("node_0", "system.media_play", {}),
+        )
+        intents = [_make_intent("")]
+
+        covered, uncovered = verify_intent_coverage(plan, intents, None)
+        assert covered is False
+
     def test_custom_matcher(self):
         """Custom IntentMatcher can be injected."""
         class AlwaysMatchMatcher:
@@ -255,7 +255,7 @@ class TestCoverageEdgeCases:
         plan = _make_plan(
             _make_node("node_0", "any.skill", {}),
         )
-        intents = [_make_intent("whatever", "anything")]
+        intents = [_make_intent("whatever")]
 
         covered, uncovered = verify_intent_coverage(
             plan, intents, None, matcher=AlwaysMatchMatcher(),

@@ -25,6 +25,8 @@ class ToggleNightlightSkill(Skill):
 
     contract = SkillContract(
         name="system.toggle_nightlight",
+        action="toggle_nightlight",
+        target_type="display",
         description="Toggle Windows Night Light on/off",
         domain="system",
         requires_focus=False,

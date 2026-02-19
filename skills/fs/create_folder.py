@@ -28,6 +28,8 @@ class CreateFolderSkill(Skill):
 
     contract = SkillContract(
         name="fs.create_folder",
+        action="create_folder",
+        target_type="folder",
         description="Create a directory at a location anchor with optional parent path",
         domain="fs",
         inputs={

@@ -32,6 +32,8 @@ class MediaPauseSkill(Skill):
 
     contract = SkillContract(
         name="system.media_pause",
+        action="media_pause",
+        target_type="media",
         description="Pause media playback (state-aware, idempotent)",
         domain="system",
         requires_focus=False,

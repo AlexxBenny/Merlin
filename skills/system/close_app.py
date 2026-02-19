@@ -24,6 +24,8 @@ class CloseAppSkill(Skill):
 
     contract = SkillContract(
         name="system.close_app",
+        action="close_app",
+        target_type="app",
         description="Close an application gracefully",
         domain="system",
         requires_focus=True,

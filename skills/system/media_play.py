@@ -32,6 +32,8 @@ class MediaPlaySkill(Skill):
 
     contract = SkillContract(
         name="system.media_play",
+        action="media_play",
+        target_type="media",
         description="Resume or start media playback (state-aware, idempotent)",
         domain="system",
         requires_focus=False,

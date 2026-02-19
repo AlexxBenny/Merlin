@@ -59,6 +59,8 @@ class AllSkillsDiscovery(SkillDiscovery):
             skill = registry.get(name)
             manifest[skill.name] = {
                 "description": skill.contract.description,
+                "action": skill.contract.action,
+                "target_type": skill.contract.target_type,
                 "inputs": {
                     k: v for k, v in skill.contract.inputs.items()
                 },

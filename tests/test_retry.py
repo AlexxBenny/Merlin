@@ -27,6 +27,9 @@ class _StubSkill:
     class contract:
         name = "fs.create_folder"
         description = "Create a folder on the filesystem."
+        action = "create_folder"
+        target_type = "folder"
+        domain = "fs"
         inputs = {"path": "string"}
         optional_inputs = {}
         outputs = {}

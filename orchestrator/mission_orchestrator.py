@@ -114,7 +114,7 @@ class MissionOrchestrator:
             )
             if not all_covered:
                 uncovered_desc = "; ".join(
-                    f"{u.get('verb', '')} {u.get('object', '')}" for u in uncovered
+                    u.get("action", "unknown") for u in uncovered
                 )
                 failure = FailureIR(
                     error_type="incomplete_coverage",
@@ -129,6 +129,29 @@ class MissionOrchestrator:
                 if report:
                     self.output_channel.send(report)
                 return report
+
+            # ── Compiler alignment check (detect cross-LLM drift) ──
+            # Verify that the compiler chose skills whose actions match
+            # the canonical actions the decomposer intended.
+            decomposed_actions = {
+                u.get("action", "") for u in intent_units if u.get("action")
+            }
+            compiled_actions = set()
+            for node in plan.nodes:
+                parts = node.skill.split(".", 1)
+                node_action = parts[1] if len(parts) >= 2 else parts[0]
+                compiled_actions.add(node_action)
+
+            # Actions in decomposition that don't appear in the compiled DAG
+            drift = decomposed_actions - compiled_actions
+            if drift:
+                logger.warning(
+                    "[DRIFT] Decomposer intended actions %s but compiler "
+                    "produced nodes with actions %s — "
+                    "potential cross-LLM semantic drift",
+                    sorted(drift),
+                    sorted(compiled_actions),
+                )
 
         # [TRACE] Log the compiled plan
         logger.info(

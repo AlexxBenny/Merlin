@@ -21,6 +21,8 @@ class MuteSkill(Skill):
 
     contract = SkillContract(
         name="system.mute",
+        action="mute",
+        target_type="audio",
         description="Mute system audio",
         domain="system",
         requires_focus=False,

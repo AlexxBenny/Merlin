@@ -21,6 +21,8 @@ class UnmuteSkill(Skill):
 
     contract = SkillContract(
         name="system.unmute",
+        action="unmute",
+        target_type="audio",
         description="Unmute system audio",
         domain="system",
         requires_focus=False,

@@ -206,13 +206,16 @@ class IntentMatcher(Protocol):
         ...
 
 
-class HeuristicIntentMatcher:
-    """Default intent matcher — deterministic, argument-level.
+class CapabilityIntentMatcher:
+    """Capability-based intent matcher — deterministic, O(intents × nodes).
 
-    Three-stage matching:
-    1. Domain-biased candidate filtering (soft — fallback to all)
-    2. Skill name/description verb matching
-    3. Argument-level value alignment
+    Matching rule:
+        intent.action == node_action (derived from node.skill name)
+
+    When multiple nodes share the same action (e.g., two create_folder nodes),
+    falls back to parameter value matching for disambiguation.
+
+    No token parsing. No substring matching. No heuristics.
     """
 
     def match(
@@ -228,71 +231,59 @@ class HeuristicIntentMatcher:
         if not candidate_nodes:
             return None
 
-        verb = intent.get("verb", "").lower()
-        obj = intent.get("object", "").lower()
-        domain_hint = intent.get("domain_hint", "").lower()
+        action = intent.get("action", "").lower()
+        if not action:
+            return None
 
-        # Stage 1: Domain-biased filtering (SOFT)
-        if domain_hint:
-            domain_candidates = [
-                n for n in candidate_nodes
-                if self._node_domain(n) == domain_hint
-            ]
-            # Soft fallback: if no domain match, use ALL candidates
-            if domain_candidates:
-                candidates = domain_candidates
-            else:
-                candidates = candidate_nodes
-        else:
-            candidates = candidate_nodes
+        # Find all nodes whose skill action matches the intent action
+        action_matches = []
+        for node in candidate_nodes:
+            # Extract action from skill name: "system.set_volume" → "set_volume"
+            node_action = (
+                node.skill.split(".", 1)[1] if "." in node.skill else node.skill
+            )
+            if node_action.lower() == action:
+                action_matches.append(node)
 
-        # Stage 2 + 3: Verb match + argument alignment
-        for node in candidates:
-            skill_name = node.skill.lower()
-            skill_tokens = set(skill_name.replace(".", "_").split("_"))
+        if not action_matches:
+            return None
 
-            # Stage 2: Verb match — verb appears in skill name tokens
-            verb_match = verb in skill_tokens if verb else False
+        # Single match — done
+        if len(action_matches) == 1:
+            return action_matches[0].id
 
-            # Also check if verb is a substring of any skill token
-            if not verb_match and verb:
-                verb_match = any(verb in t for t in skill_tokens)
+        # Multiple matches (e.g., two create_folder nodes) — disambiguate by parameters
+        params = intent.get("parameters", {})
+        if not params:
+            # No parameters to disambiguate — return first match
+            return action_matches[0].id
 
-            if not verb_match:
-                continue
+        # Score each candidate by parameter value overlap
+        param_values = {str(v).lower() for v in params.values() if v != ""}
+        best_node = action_matches[0]
+        best_overlap = 0
 
-            # Stage 3: Argument alignment
-            if not obj:
-                # No object to match — verb match alone is sufficient
-                return node.id
-
-            # Check intent.object against node.inputs values
-            node_values = [
+        for node in action_matches:
+            node_values = {
                 str(v).lower()
                 for v in node.inputs.values()
                 if not hasattr(v, 'node')  # Skip OutputReference
-            ]
+            }
+            overlap = len(param_values & node_values)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_node = node
 
-            # Case-insensitive substring match
-            obj_match = any(
-                obj in v or v in obj
-                for v in node_values
-            )
-
-            if obj_match:
-                return node.id
-
-            # Relaxed: if node has no literal input values (e.g., media_play
-            # with empty inputs), verb match alone is sufficient
-            if not node_values:
-                return node.id
-
-        return None
+        return best_node.id
 
     @staticmethod
     def _node_domain(node: MissionNode) -> str:
-        """Extract domain from node's skill name (e.g., 'system' from 'system.open_app')."""
+        """Extract domain from node's skill name."""
         return node.skill.split(".")[0].lower() if "." in node.skill else ""
+
+
+# Keep backward-compatible alias
+HeuristicIntentMatcher = CapabilityIntentMatcher
 
 
 def verify_intent_coverage(
@@ -303,7 +294,7 @@ def verify_intent_coverage(
 ) -> Tuple[bool, List[Dict[str, str]]]:
     """Verify that a compiled MissionPlan covers all declared intent units.
 
-    This is a SEMANTIC coverage check, separate from structural validation.
+    This is a CAPABILITY coverage check, separate from structural validation.
     Called only for Tier 2+ queries (after decomposition).
 
     Args:
@@ -311,7 +302,7 @@ def verify_intent_coverage(
         intent_units: The INJECTED intent set (≤8, post-cap).
             Verification and injection operate on the SAME set.
         registry: SkillRegistry for contract access.
-        matcher: IntentMatcher implementation. Defaults to HeuristicIntentMatcher.
+        matcher: IntentMatcher implementation. Defaults to CapabilityIntentMatcher.
 
     Returns:
         (all_covered, uncovered_intents):
@@ -320,11 +311,10 @@ def verify_intent_coverage(
 
     Design rules:
     - Each DAG node covers at most ONE intent (no double-counting).
-    - domain_hint is a soft bias, not a hard gate.
-    - Matching is argument-level: intent.object must appear in node inputs.
+    - Matching is capability-based: intent.action == node skill action.
     """
     if matcher is None:
-        matcher = HeuristicIntentMatcher()
+        matcher = CapabilityIntentMatcher()
 
     # Available nodes pool — consumed nodes are removed
     available_nodes: List[MissionNode] = list(plan.nodes)
@@ -337,15 +327,14 @@ def verify_intent_coverage(
             # Consume the matched node — cannot cover another intent
             available_nodes = [n for n in available_nodes if n.id != matched_id]
             _coverage_logger.debug(
-                "Intent [%s %s] → covered by node '%s'",
-                intent.get("verb", ""), intent.get("object", ""),
-                matched_id,
+                "Intent [%s] → covered by node '%s'",
+                intent.get("action", ""), matched_id,
             )
         else:
             uncovered.append(intent)
             _coverage_logger.info(
-                "Intent [%s %s] → UNCOVERED (no matching node)",
-                intent.get("verb", ""), intent.get("object", ""),
+                "Intent [%s] → UNCOVERED (no matching node)",
+                intent.get("action", ""),
             )
 
     all_covered = len(uncovered) == 0

@@ -5,10 +5,10 @@ Defensive JSON block extraction from LLM output.
 
 LLMs often wrap valid JSON in markdown fences, preamble text,
 or trailing commentary. This module extracts the first valid
-JSON object block.
+JSON object or array block.
 
-String-aware brace counting:
-- Braces inside quoted strings are ignored.
+String-aware brace/bracket counting:
+- Braces/brackets inside quoted strings are ignored.
 - Escaped quotes inside strings are handled.
 - Partial/unclosed blocks raise ParseError.
 - If ambiguous or no JSON found → ParseError (never malformed fragment).
@@ -37,14 +37,44 @@ def extract_json_block(text: str) -> str:
     if not text or not text.strip():
         raise ParseError("Empty response from LLM")
 
-    # Step 1: Strip markdown fences if present
     stripped = _strip_markdown_fences(text)
 
-    # Step 2: Find and extract the first top-level {...} block
     block = _find_json_object(stripped)
     if block is None:
         raise ParseError(
             f"No JSON object found in LLM response "
+            f"(first 200 chars: {text[:200]!r})"
+        )
+
+    return block
+
+
+def extract_json_array(text: str) -> str:
+    """Extract the first top-level JSON array from text.
+
+    Handles:
+    - Raw JSON arrays
+    - Markdown ```json fences
+    - Preamble text before JSON
+    - Trailing commentary after JSON
+    - Nested arrays/objects in elements
+    - Brackets/braces inside string literals (string-aware)
+
+    Returns:
+        Clean JSON string (the first [...] block).
+
+    Raises:
+        ParseError: if no valid JSON array is found.
+    """
+    if not text or not text.strip():
+        raise ParseError("Empty response from LLM")
+
+    stripped = _strip_markdown_fences(text)
+
+    block = _find_json_array(stripped)
+    if block is None:
+        raise ParseError(
+            f"No JSON array found in LLM response "
             f"(first 200 chars: {text[:200]!r})"
         )
 
@@ -82,14 +112,26 @@ def _strip_markdown_fences(text: str) -> str:
 
 
 def _find_json_object(text: str) -> str | None:
-    """Find the first top-level JSON object using string-aware brace counting.
+    """Find the first top-level JSON object {...}."""
+    return _find_json_structure(text, '{', '}')
+
+
+def _find_json_array(text: str) -> str | None:
+    """Find the first top-level JSON array [...]."""
+    return _find_json_structure(text, '[', ']')
+
+
+def _find_json_structure(text: str, open_char: str, close_char: str) -> str | None:
+    """Find the first top-level JSON structure using string-aware delimiter counting.
+
+    Works for both objects ({...}) and arrays ([...]) depending on the
+    open_char/close_char pair provided.
 
     Respects:
-    - String literals (braces inside "..." are ignored)
-    - Escaped quotes inside strings (\\\")
-    - Does NOT attempt to parse arrays as top-level (only objects)
+    - String literals (delimiters inside "..." are ignored)
+    - Escaped quotes inside strings (\\")
 
-    Returns the object substring or None if not found.
+    Returns the structure substring or None if not found.
     """
     start = None
     depth = 0
@@ -117,19 +159,19 @@ def _find_json_object(text: str) -> str | None:
             i += 1
             continue
 
-        if char == '{':
+        if char == open_char:
             if depth == 0:
                 start = i
             depth += 1
             i += 1
             continue
 
-        if char == '}':
+        if char == close_char:
             depth -= 1
             if depth == 0 and start is not None:
                 return text[start:i + 1]
             if depth < 0:
-                # Stray closing brace — reset
+                # Stray closing delimiter — reset
                 depth = 0
                 start = None
             i += 1
@@ -140,7 +182,7 @@ def _find_json_object(text: str) -> str | None:
     # If we opened a block but never closed it
     if start is not None and depth > 0:
         raise ParseError(
-            f"Unclosed JSON object starting at position {start}"
+            f"Unclosed JSON structure starting at position {start}"
         )
 
     return None

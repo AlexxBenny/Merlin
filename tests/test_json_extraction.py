@@ -140,7 +140,7 @@ class TestErrorCases:
             extract_json_block("This is just text with no JSON")
 
     def test_unclosed_block(self):
-        with pytest.raises(ParseError, match="Unclosed JSON object"):
+        with pytest.raises(ParseError, match="Unclosed JSON structure"):
             extract_json_block('{"nodes": [')
 
     def test_only_closing_brace(self):
