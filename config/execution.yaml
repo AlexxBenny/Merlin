@@ -27,6 +27,20 @@ attention:
   merge_duplicates: true            # Collapse repeated event types in queue
 
 # ─────────────────────────────────────────────────────────────
+# Narration Policy (Phase 8)
+# ─────────────────────────────────────────────────────────────
+#
+# Controls how MERLIN narrates during mission execution.
+# Hot path only — deterministic, no LLM, no latency.
+
+narration:
+  enabled: true                       # Master switch for narration
+  single_node_silent: true            # 1-node missions = silent (reflex)
+  compression_threshold: 3            # ≤N foreground nodes → compressed intent
+  heartbeat_threshold_seconds: 3.0    # One-shot "still working..." after N seconds
+  merge_proactive_insights: true      # Drain queued events into final report
+
+# ─────────────────────────────────────────────────────────────
 # Domain Configuration
 # ─────────────────────────────────────────────────────────────
 

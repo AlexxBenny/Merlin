@@ -49,10 +49,54 @@ from infrastructure.voice_factory import VoiceEngineFactory
 from merlin import Merlin
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
+# ── ANSI colored logging ──────────────────────────────────
+
+class _ColoredFormatter(logging.Formatter):
+    """Log formatter with ANSI colors per level. Keeps user output clean."""
+
+    _COLORS = {
+        logging.DEBUG:    "\033[90m",   # dim gray
+        logging.INFO:     "\033[36m",   # cyan
+        logging.WARNING:  "\033[33m",   # yellow
+        logging.ERROR:    "\033[31m",   # red
+        logging.CRITICAL: "\033[1;31m", # bold red
+    }
+    _RESET = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = self._COLORS.get(record.levelno, "")
+        msg = super().format(record)
+        return f"{color}{msg}{self._RESET}" if color else msg
+
+
+class _DynamicStdoutHandler(logging.StreamHandler):
+    """
+    Handler that resolves sys.stdout at emit-time, not construction-time.
+
+    Why: StreamHandler(sys.stdout) captures the original stdout object.
+    When patch_stdout() later replaces sys.stdout with a proxy, the
+    handler still writes to the old stream → prompt corruption.
+    This handler always reads the CURRENT sys.stdout, so it automatically
+    writes through the proxy after patch_stdout() activates.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def stream(self):
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, _value):
+        pass  # ignore — always use current sys.stdout
+
+
+_handler = _DynamicStdoutHandler()
+_handler.setFormatter(_ColoredFormatter(
+    fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 logger = logging.getLogger(__name__)
 
 
@@ -274,6 +318,11 @@ def main(args=None):
     if tts_config.get("enabled", True):
         tts_engine = VoiceEngineFactory.create_tts(voice_config)
         if tts_engine:
+            # Eager init: start TTS worker NOW, not on first speak.
+            # Fail-fast: COM/audio errors surface here, not after first user command.
+            if hasattr(tts_engine, 'start'):
+                tts_engine.start(timeout=5.0)
+
             speech_channel = SpeechOutputChannel(tts_engine)
             output_channel = CompositeOutputChannel([console_channel, speech_channel])
             logger.info("Output: CompositeOutputChannel (console + speech)")
@@ -350,6 +399,21 @@ def main(args=None):
         attention_manager._config.max_queue_size,
     )
 
+    # ── Narration Policy (Phase 8) ──
+    from reporting.narration import NarrationPolicy
+    narration_config = execution_config.get("narration", {})
+    narration_policy = None
+    if narration_config.get("enabled", True):
+        narration_policy = NarrationPolicy.from_config(narration_config)
+        logger.info(
+            "NarrationPolicy: single_node_silent=%s, compression=%d, heartbeat=%.1fs",
+            narration_policy._single_node_silent,
+            narration_policy._compression_threshold,
+            narration_policy._heartbeat_threshold,
+        )
+    else:
+        logger.info("Narration disabled in config")
+
     # ── Build Merlin ──
     merlin = Merlin(
         brain=brain,
@@ -368,6 +432,7 @@ def main(args=None):
         world_state_provider=world_state_provider,
         memory=memory_store,
         attention_manager=attention_manager,
+        narration_policy=narration_policy,
     )
 
 
@@ -410,6 +475,11 @@ def main(args=None):
         orchestrator = PerceptionOrchestrator(text=text_perception)
         input_mode = "text"
 
+    # ── PromptSession for safe concurrent terminal output ──
+    from prompt_toolkit import PromptSession
+    prompt_session = PromptSession()
+    orchestrator._session = prompt_session  # inject after construction
+
     # ── Start runtime ──
     merlin.start()
 
@@ -434,25 +504,32 @@ def main(args=None):
     print("=" * 60)
     print()
 
+    # ── Boot self-test: speak "Online" to validate audio pipeline ──
+    # If the user hears this, COM + SAPI5 + audio device + volume are all working.
+    output_channel.send("Online.")
+
+    from prompt_toolkit.patch_stdout import patch_stdout
+
     try:
-        while True:
-            try:
-                percept = orchestrator.next_percept()
-            except EOFError:
-                break
+        with patch_stdout(raw=True):
+            while True:
+                try:
+                    percept = orchestrator.next_percept()
+                except EOFError:
+                    break
 
-            if not percept.payload:
-                continue
+                if not percept.payload:
+                    continue
 
-            # Normalized exit detection (handles voice transcriptions like "Exit.")
-            from perception.normalize import normalize_for_matching
-            normalized = normalize_for_matching(percept.payload)
-            if normalized in {"exit", "quit", "q"}:
-                break
+                # Normalized exit detection (handles voice transcriptions like "Exit.")
+                from perception.normalize import normalize_for_matching
+                normalized = normalize_for_matching(percept.payload)
+                if normalized in {"exit", "quit", "q"}:
+                    break
 
-            # Route → Execute → Report
-            merlin.handle_percept(percept)
-            print()  # visual spacing
+                # Route → Execute → Report
+                merlin.handle_percept(percept)
+                print()  # visual spacing
 
     except KeyboardInterrupt:
         print("\n\nInterrupted.")

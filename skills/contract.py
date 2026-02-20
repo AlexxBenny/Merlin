@@ -56,3 +56,15 @@ class SkillContract(BaseModel):
     requires_focus: bool = False                    # Needs foreground window control
     resource_cost: str = "low"                      # "low" | "medium" | "high"
     conflicts_with: List[str] = Field(default_factory=list)  # Skill names that cannot run in parallel
+
+    # ── Narration metadata (Phase 8) ──
+    # Controls how NarrationPolicy announces this skill during execution.
+    # narration_visibility:
+    #   "foreground" — included in pre-narration (default)
+    #   "background" — omitted from narration but logged
+    #   "silent"     — completely invisible to narration
+    # narration_verb:
+    #   Optional human-action phrase override, e.g. "Setting volume".
+    #   Empty = auto-generate from description field.
+    narration_visibility: str = "foreground"
+    narration_verb: str = ""

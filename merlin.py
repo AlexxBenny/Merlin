@@ -71,6 +71,7 @@ class Merlin:
         world_state_provider: Optional[WorldStateProvider] = None,
         memory: Optional[MemoryStore] = None,
         attention_manager: Optional[AttentionManager] = None,
+        narration_policy=None,  # Optional[NarrationPolicy]
     ):
         # ── Cognitive components (frozen) ──
         self.brain = brain
@@ -107,6 +108,8 @@ class Merlin:
             output_channel=output_channel,
             max_workers=max_workers,
             memory=memory,
+            attention_manager=attention_manager,
+            narration_policy=narration_policy,
         )
 
         # ── Tier classification (Phase 5A: deterministic, init-time) ──
@@ -443,9 +446,8 @@ class Merlin:
                 intent_units=intent_units,
             )
 
-            # ── Signal mission complete → IDLE flushes attention queue ──
-            if self.attention_manager:
-                self.attention_manager.set_mission_state(MissionState.IDLE)
+            # Orchestrator handles EXECUTING → REPORTING → IDLE lifecycle.
+            # No IDLE set here — the orchestrator owns it now.
 
             if result:
                 self.conversation.append_turn(

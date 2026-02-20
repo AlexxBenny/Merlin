@@ -1,6 +1,9 @@
-from concurrent.futures import ThreadPoolExecutor, Future
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, Future
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from ir.mission import MissionPlan, ExecutionMode
 from execution.executor import MissionExecutor, ExecutionResult, NodeStatus
@@ -16,6 +19,10 @@ from conversation.outcome import MissionOutcome
 from reporting.report_builder import ReportBuilder
 from reporting.output import OutputChannel
 from memory.store import MemoryStore
+
+if TYPE_CHECKING:
+    from runtime.attention import AttentionManager, MissionState
+    from reporting.narration import NarrationPolicy
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +49,8 @@ class MissionOrchestrator:
         output_channel: OutputChannel,
         max_workers: int = 4,
         memory: Optional[MemoryStore] = None,
+        attention_manager: Optional["AttentionManager"] = None,
+        narration_policy: Optional["NarrationPolicy"] = None,
     ):
         self.cortex = cortex
         self.executor = executor
@@ -50,6 +59,8 @@ class MissionOrchestrator:
         self.output_channel = output_channel
         self.pool = ThreadPoolExecutor(max_workers=max_workers)
         self.memory = memory
+        self._attention = attention_manager
+        self._narration = narration_policy
 
     # ─────────────────────────────────────────────────────────
     # PUBLIC API: Full mission lifecycle
@@ -169,8 +180,54 @@ class MissionOrchestrator:
         state = WorldState.from_events(events)
         snapshot = WorldSnapshot.build(state, events[-10:] if events else [])
 
-        # 3. Execute — get typed execution result
-        exec_result = self.run(plan, snapshot)
+        # ── Phase 8: Pre-narration (deterministic, no LLM) ──
+        pre_narration = None
+        pre_narration_fired = False
+        if self._narration:
+            from execution.scheduler import DAGScheduler
+            node_index = DAGScheduler.get_node_index(plan)
+            pre_narration = self._narration.narrate_pre_execution(
+                plan, node_index, self.executor.registry,
+            )
+            if pre_narration:
+                pre_narration_fired = True
+                self.output_channel.send(pre_narration)
+
+        # ── Transition: COMPILING → EXECUTING ──
+        if self._attention:
+            from runtime.attention import MissionState
+            self._attention.set_mission_state(MissionState.EXECUTING)
+
+        # 3. Execute — get typed execution result (with layer callbacks)
+        exec_start = time.monotonic()
+
+        def _on_layer_start(layer_ids, node_index, layer_idx, total_layers):
+            """Layer-start narration hook (fire-and-forget)."""
+            if self._narration:
+                text = self._narration.narrate_layer_start(
+                    layer_ids, node_index,
+                    self.executor.registry,
+                    layer_idx, total_layers,
+                    pre_narration_fired,
+                )
+                if text:
+                    self.output_channel.send(text)
+            # Heartbeat check
+            if self._narration:
+                elapsed = time.monotonic() - exec_start
+                heartbeat = self._narration.narrate_heartbeat(elapsed)
+                if heartbeat:
+                    self.output_channel.send(heartbeat)
+
+        exec_result = self.run(
+            plan, snapshot,
+            on_layer_start=_on_layer_start,
+        )
+
+        # ── Transition: EXECUTING → REPORTING ──
+        if self._attention:
+            from runtime.attention import MissionState
+            self._attention.set_mission_state(MissionState.REPORTING)
 
         # 3.5. Build and persist MissionOutcome
         outcome = self._build_outcome(plan, exec_result)
@@ -197,13 +254,28 @@ class MissionOrchestrator:
             except Exception as e:
                 logger.warning("Failed to store memory episode: %s", e)
 
-        # 4. Build report
+        # ── Drain queued proactive insights BEFORE building report ──
+        # CRITICAL: drain during REPORTING state, before IDLE transition.
+        # This prevents auto-flush race and enables contextual merging.
+        queued_insights: Optional[List[str]] = None
+        if self._attention:
+            queued = self._attention.drain_queue()
+            if queued:
+                queued_insights = [q.text for q in queued]
+                logger.debug(
+                    "Orchestrator: drained %d insight(s) for report",
+                    len(queued_insights),
+                )
+
+        # 4. Build report (with tonal continuity + insights)
         report = self.report_builder.build(
             mission=plan,
             execution_result=exec_result,
             timeline=self.timeline,
             snapshot=snapshot,
             conversation=conversation,
+            queued_insights=queued_insights,
+            pre_narration=pre_narration,
         )
 
         # 5. Deliver
@@ -211,6 +283,12 @@ class MissionOrchestrator:
             self.output_channel.send(report)
         else:
             self.output_channel.send_silent()
+
+        # ── Transition: REPORTING → IDLE ──
+        # Queue is already drained — IDLE auto-flush is a no-op.
+        if self._attention:
+            from runtime.attention import MissionState
+            self._attention.set_mission_state(MissionState.IDLE)
 
         # 6. Update conversation frame
         conversation.last_mission_id = plan.id
@@ -301,6 +379,8 @@ class MissionOrchestrator:
         self,
         mission: MissionPlan,
         world_snapshot: Optional[WorldSnapshot] = None,
+        on_layer_start: Optional[Callable] = None,
+        on_layer_complete: Optional[Callable] = None,
     ) -> ExecutionResult:
         """
         Execute a mission DAG. Returns typed ExecutionResult.
@@ -309,9 +389,10 @@ class MissionOrchestrator:
         Used by handle_user_input() and available for testing.
         """
 
-        # Submit full DAG execution
+        # Submit full DAG execution (with narration callbacks)
         future: Future = self.pool.submit(
-            self.executor.run, mission, world_snapshot
+            self.executor.run, mission, world_snapshot,
+            on_layer_start, on_layer_complete,
         )
 
         # Wait for full DAG execution to finish

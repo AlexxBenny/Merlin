@@ -135,12 +135,20 @@ class ReportBuilder:
         timeline: WorldTimeline,
         snapshot: WorldSnapshot,
         conversation: ConversationFrame,
+        queued_insights: Optional[List[str]] = None,
+        pre_narration: Optional[str] = None,
     ) -> str:
         """
         Returns final user-facing text after mission execution.
 
         Accepts FULL ExecutionResult (not just .results) so that
         node_statuses and metadata flow losslessly into Channel A.
+
+        Args:
+            queued_insights: Proactive notifications queued during execution.
+                             Merged into the LLM prompt for contextual integration.
+            pre_narration: Text already spoken before execution started.
+                           Passed to LLM to prevent tonal repetition.
 
         Flow:
         1. Build StructuredReport (Channel A — authoritative)
@@ -158,7 +166,11 @@ class ReportBuilder:
             return self._fallback_text(report)
 
         try:
-            response = self._render_with_llm(report, conversation)
+            response = self._render_with_llm(
+                report, conversation,
+                queued_insights=queued_insights,
+                pre_narration=pre_narration,
+            )
             self._validate_response(response, report)
             return response
         except Exception:
@@ -308,8 +320,14 @@ class ReportBuilder:
         self,
         report: StructuredReport,
         conversation: ConversationFrame,
+        queued_insights: Optional[List[str]] = None,
+        pre_narration: Optional[str] = None,
     ) -> str:
-        prompt = self._build_llm_prompt(report, conversation)
+        prompt = self._build_llm_prompt(
+            report, conversation,
+            queued_insights=queued_insights,
+            pre_narration=pre_narration,
+        )
         response = self.llm.complete(prompt)
         return response.strip()
 
@@ -317,6 +335,8 @@ class ReportBuilder:
         self,
         report: StructuredReport,
         conversation: ConversationFrame,
+        queued_insights: Optional[List[str]] = None,
+        pre_narration: Optional[str] = None,
     ) -> str:
         """Build a constrained LLM prompt from StructuredReport.
 
@@ -324,6 +344,8 @@ class ReportBuilder:
         - Every action with its status, inputs, and outputs
         - Explicit failure details
         - Strict instructions to not invent actions
+        - What was already announced (tonal continuity)
+        - Queued proactive insights for contextual merging
 
         This is the grounding mechanism. The LLM cannot hallucinate
         because every fact it needs is explicitly provided.
@@ -360,6 +382,26 @@ class ReportBuilder:
         else:
             issues_block = "  none"
 
+        # ── Tonal continuity: what the user already heard ──
+        pre_narration_block = ""
+        if pre_narration:
+            pre_narration_block = (
+                f"\nAlready announced to user: \"{pre_narration}\"\n"
+                f"Do NOT repeat or rephrase this. "
+                f"Continue naturally from where it left off.\n"
+            )
+
+        # ── Queued proactive insights for contextual merging ──
+        insights_block = ""
+        if queued_insights:
+            insight_lines = "\n".join(
+                f"  - {insight}" for insight in queued_insights
+            )
+            insights_block = (
+                f"\nAdditional context (integrate naturally if relevant, "
+                f"otherwise omit):\n{insight_lines}\n"
+            )
+
         return f"""You are MERLIN, a calm, precise, intelligent assistant.
 
 Convert the following execution report into a concise user-facing message.
@@ -374,7 +416,7 @@ Actions:
 
 Issues:
 {issues_block}
-
+{pre_narration_block}{insights_block}
 Conversation context:
 - Active domain: {conversation.active_domain}
 - Active entity: {conversation.active_entity}

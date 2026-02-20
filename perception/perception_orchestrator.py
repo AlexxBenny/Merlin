@@ -32,6 +32,11 @@ from brain.core import Percept
 from perception.text import TextPerception
 from perception.speech import SpeechPerception
 
+try:
+    from prompt_toolkit import PromptSession
+except ImportError:
+    PromptSession = None  # type: ignore[misc,assignment]
+
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +69,7 @@ class PerceptionOrchestrator:
         self,
         text: Optional[TextPerception] = None,
         speech: Optional[SpeechPerception] = None,
+        prompt_session: Optional["PromptSession"] = None,
     ):
         if text is None and speech is None:
             raise ValueError(
@@ -71,6 +77,13 @@ class PerceptionOrchestrator:
             )
         self._text = text
         self._speech = speech
+        self._session = prompt_session
+
+    def _read_input(self) -> str:
+        """Read user input via PromptSession (if available) or raw input()."""
+        if self._session is not None:
+            return self._session.prompt("You: ").strip()
+        return input("You: ").strip()
 
     def next_percept(self) -> Percept:
         """
@@ -83,7 +96,7 @@ class PerceptionOrchestrator:
         """
         # ── Text-only mode ──
         if self._speech is None:
-            raw = input("You: ").strip()
+            raw = self._read_input()
             return self._text.perceive(raw)
 
         # ── Voice-only mode ──
@@ -114,7 +127,7 @@ class PerceptionOrchestrator:
 
         # Text: main thread (blocking — cannot be cancelled)
         try:
-            raw = input("You: ").strip()
+            raw = self._read_input()
             if raw and not token.is_cancelled:
                 # Text won — cancel speech
                 token.cancel()

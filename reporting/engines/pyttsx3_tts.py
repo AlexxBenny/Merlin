@@ -51,9 +51,10 @@ class Pyttsx3TTS(TTSEngine):
         self._queue: queue.Queue = queue.Queue()
         self._worker: Optional[threading.Thread] = None
         self._started = False
+        self._ready = threading.Event()  # signaled when engine inits
 
     def _ensure_worker(self) -> None:
-        """Start the TTS worker thread on first use (lazy)."""
+        """Start the TTS worker thread if not already running."""
         if self._started:
             return
         self._started = True
@@ -67,6 +68,27 @@ class Pyttsx3TTS(TTSEngine):
             "pyttsx3 TTS worker thread started: rate=%d voice=%s",
             self._rate, self._voice_id or "default",
         )
+
+    def start(self, timeout: float = 5.0) -> bool:
+        """
+        Eagerly start the worker thread and wait for engine readiness.
+
+        Call this at boot for:
+        - Deterministic startup (no lazy latency)
+        - Fail-fast (COM/audio errors surface at init, not first speak)
+        - World-ready guarantee (MERLIN — Online means speech is live)
+
+        Returns True if engine initialized within timeout, False otherwise.
+        """
+        self._ensure_worker()
+        ready = self._ready.wait(timeout=timeout)
+        if not ready:
+            logger.error(
+                "pyttsx3 engine failed to initialize within %.1fs — "
+                "speech may not work",
+                timeout,
+            )
+        return ready
 
     def _speak_once(self, text: str) -> None:
         """
@@ -102,6 +124,19 @@ class Pyttsx3TTS(TTSEngine):
             "pyttsx3 worker thread active (tid=%s)",
             threading.current_thread().ident,
         )
+
+        # Validate engine can init — do one throwaway init to surface errors
+        try:
+            import pyttsx3
+            test_engine = pyttsx3.init()
+            test_engine.stop()
+            del test_engine
+            logger.info("pyttsx3 engine validated on worker thread")
+            self._ready.set()  # signal: engine is usable
+        except Exception:
+            logger.exception("pyttsx3 engine validation failed")
+            self._ready.set()  # unblock start() even on failure
+            return
 
         while True:
             text = self._queue.get()

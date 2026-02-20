@@ -18,7 +18,7 @@ Enforces:
 import logging
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_EXCEPTION
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from ir.mission import (
     IR_VERSION,
@@ -419,6 +419,8 @@ class MissionExecutor:
         self,
         plan: MissionPlan,
         world_snapshot: Optional[WorldSnapshot] = None,
+        on_layer_start: Optional[Callable] = None,
+        on_layer_complete: Optional[Callable] = None,
     ) -> 'ExecutionResult':
         """
         Execute a mission DAG with IR v1 semantics + Skill Contract v1 enforcement.
@@ -432,6 +434,10 @@ class MissionExecutor:
             world_snapshot: Typed WorldSnapshot — the ONLY accepted type.
                             Never pass dict, model_dump(), or partial state.
                             Condition evaluation converts internally.
+            on_layer_start: Optional callback(layer_ids, node_index, layer_idx, total_layers).
+                            Fires BEFORE each layer executes. Fire-and-forget.
+            on_layer_complete: Optional callback(layer_ids, layer_idx).
+                            Fires AFTER each layer completes. Fire-and-forget.
 
         Returns ExecutionResult with typed per-node status.
         """
@@ -461,10 +467,24 @@ class MissionExecutor:
 
         exec_result = ExecutionResult()
 
-        for layer in layers:
+        for layer_idx, layer in enumerate(layers):
+            # Layer-start callback (narration hook — fire-and-forget)
+            if on_layer_start:
+                try:
+                    on_layer_start(layer, node_index, layer_idx, len(layers))
+                except Exception:
+                    pass  # Narration failure never blocks execution
+
             self._execute_layer(
                 layer, node_index, exec_result, world_snapshot,
             )
+
+            # Layer-complete callback (fire-and-forget)
+            if on_layer_complete:
+                try:
+                    on_layer_complete(layer, layer_idx)
+                except Exception:
+                    pass
 
         return exec_result
 

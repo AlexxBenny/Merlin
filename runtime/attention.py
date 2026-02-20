@@ -285,6 +285,26 @@ class AttentionManager:
                         exc_info=True,
                     )
 
+    def drain_queue(self) -> List[QueuedNotification]:
+        """Return and clear queued notifications for merging into reports.
+
+        Called by the orchestrator during REPORTING state, BEFORE
+        transitioning to IDLE. This allows proactive insights to be
+        merged into the final report rather than dumped separately.
+
+        Returns:
+            List of queued notifications (oldest first). Queue is cleared.
+        """
+        with self._lock:
+            items = list(self._queue)
+            self._queue.clear()
+            if items:
+                logger.debug(
+                    "AttentionManager: drained %d queued notification(s)",
+                    len(items),
+                )
+            return items
+
     # ─────────────────────────────────────────────────────────
     # Introspection
     # ─────────────────────────────────────────────────────────
