@@ -176,11 +176,19 @@ class ReflexEngine:
 
         Returns ReflexMatch if a template matches, None otherwise.
         First match wins (templates are checked in registration order).
+
+        Input is normalized via normalize_for_matching() before matching.
         """
-        text_lower = text.lower().strip()
+        from perception.normalize import normalize_for_matching
+        text_normalized = normalize_for_matching(text)
+
+        logger.debug(
+            "Reflex try_match: raw='%s' normalized='%s'",
+            text[:50], text_normalized[:50],
+        )
 
         for template in self._templates:
-            match = template.pattern.search(text_lower)
+            match = template.pattern.search(text_normalized)
             if match:
                 # Extract parameters using named groups
                 raw_params = match.groupdict()
@@ -191,11 +199,20 @@ class ReflexEngine:
                     if group_name in raw_params:
                         skill_params[param_name] = raw_params[group_name]
 
+                logger.debug(
+                    "Reflex match: HIT skill=%s (checked %d templates)",
+                    template.skill, len(self._templates),
+                )
+
                 return ReflexMatch(
                     skill=template.skill,
                     params=skill_params,
                 )
 
+        logger.debug(
+            "Reflex match: MISS (checked %d templates)",
+            len(self._templates),
+        )
         return None
 
     def execute_reflex(

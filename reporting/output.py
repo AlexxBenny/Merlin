@@ -59,16 +59,25 @@ class ConsoleOutputChannel(OutputChannel):
 
 class SpeechOutputChannel(OutputChannel):
     """
-    Placeholder for TTS delivery.
+    TTS delivery channel.
 
-    When implemented, this will call a TTS engine (e.g. pyttsx3, Coqui,
-    or a cloud API). For now it logs and falls back to console.
+    Depends on TTSEngine interface — never on concrete engines.
+    Engine injected by VoiceEngineFactory from config.
+    TTS failures are caught and logged — never crash MERLIN.
     """
 
+    def __init__(self, tts_engine: "TTSEngine"):
+        from reporting.tts_engine import TTSEngine  # type check only
+        self._tts = tts_engine
+
     def send(self, message: str) -> None:
-        # TODO: Wire to TTS engine
-        logger.info("SpeechOutputChannel: %s", message)
-        print(f"[MERLIN 🔊] {message}")
+        try:
+            self._tts.speak(message)
+        except Exception:
+            logger.exception(
+                "TTS engine failure — message not spoken: %s",
+                message[:80],
+            )
 
     def send_silent(self) -> None:
         logger.debug("SpeechOutputChannel: silence")

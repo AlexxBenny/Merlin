@@ -5,8 +5,14 @@ MERLIN Entry Point.
 
 Constructs all components from config, registers skills,
 creates the Merlin conductor, and runs the interactive loop.
+
+Voice modes:
+    python main.py               # text-only (default, unchanged)
+    python main.py --voice       # voice-only (mic input, TTS output)
+    python main.py --hybrid      # both text and voice (first wins per cycle)
 """
 
+import argparse
 import importlib
 import inspect
 import logging
@@ -27,15 +33,19 @@ from runtime.sources.system import SystemSource
 from runtime.sources.time import TimeSource
 from runtime.sources.media import MediaSource
 from reporting.report_builder import ReportBuilder
-from reporting.output import ConsoleOutputChannel
+from reporting.output import (
+    ConsoleOutputChannel, SpeechOutputChannel, CompositeOutputChannel,
+)
 from reporting.notification_policy import NotificationPolicy
 from models.router import ModelRouter
 from perception.text import TextPerception
+from perception.perception_orchestrator import PerceptionOrchestrator
 from cortex.world_state_provider import WorldStateProvider, SimpleWorldStateProvider
 from cortex.filtered_world_state_provider import FilteredWorldStateProvider
 from cortex.context_provider import SimpleContextProvider, RetrievalContextProvider
 from execution.executor import MissionExecutor
 from memory.store import ListMemoryStore
+from infrastructure.voice_factory import VoiceEngineFactory
 from merlin import Merlin
 
 
@@ -167,7 +177,7 @@ def build_event_sources(execution_config: dict, system_controller=None) -> list:
 # Main
 # ─────────────────────────────────────────────────────────────
 
-def main():
+def main(args=None):
     """Build all components and run the interactive loop."""
 
     # ── Load configs ──
@@ -253,8 +263,25 @@ def main():
             "Fix skill contracts before starting."
         )
 
-    # ── Reporting ──
-    output_channel = ConsoleOutputChannel(prefix="MERLIN")
+    # ── Output channel (voice-aware) ──
+    console_channel = ConsoleOutputChannel(prefix="MERLIN")
+    voice_mode = getattr(args, 'voice', False) or getattr(args, 'hybrid', False)
+    voice_config = execution_config.get("voice", {})
+
+    if voice_mode:
+        tts_engine = VoiceEngineFactory.create_tts(voice_config)
+        if tts_engine:
+            speech_channel = SpeechOutputChannel(tts_engine)
+            output_channel = CompositeOutputChannel([console_channel, speech_channel])
+            logger.info("Output: CompositeOutputChannel (console + speech)")
+        else:
+            logger.warning(
+                "TTS engine unavailable — falling back to console-only output."
+            )
+            output_channel = console_channel
+    else:
+        output_channel = console_channel
+
     event_templates = execution_config.get("event_templates", {})
     report_builder = ReportBuilder(
         llm=reporter_client,
@@ -327,8 +354,44 @@ def main():
     )
 
 
-    # ── Perception ──
+    # ── Perception (voice-aware via PerceptionOrchestrator) ──
     text_perception = TextPerception()
+    speech_perception = None
+
+    if getattr(args, 'voice', False) or getattr(args, 'hybrid', False):
+        stt_engine = VoiceEngineFactory.create_stt(voice_config)
+        if stt_engine:
+            from perception.audio_recorder import AudioRecorder
+            from perception.speech import SpeechPerception
+
+            audio_cfg = voice_config.get("audio", {})
+            recorder = AudioRecorder(
+                sample_rate=audio_cfg.get("sample_rate", 16000),
+                silence_duration=audio_cfg.get("silence_duration", 1.5),
+                max_record_seconds=audio_cfg.get("max_record_seconds", 30),
+                vad_mode=audio_cfg.get("vad_mode", 2),
+            )
+            speech_perception = SpeechPerception(stt_engine, recorder)
+            logger.info("SpeechPerception initialized.")
+        else:
+            logger.warning(
+                "STT engine unavailable — voice input disabled, "
+                "falling back to text-only."
+            )
+
+    # Build orchestrator based on mode
+    if getattr(args, 'voice', False) and speech_perception:
+        # Voice-only: no text channel
+        orchestrator = PerceptionOrchestrator(text=None, speech=speech_perception)
+        input_mode = "voice"
+    elif getattr(args, 'hybrid', False) and speech_perception:
+        # Hybrid: both channels
+        orchestrator = PerceptionOrchestrator(text=text_perception, speech=speech_perception)
+        input_mode = "hybrid"
+    else:
+        # Text-only (default, or fallback if voice deps missing)
+        orchestrator = PerceptionOrchestrator(text=text_perception)
+        input_mode = "text"
 
     # ── Start runtime ──
     merlin.start()
@@ -336,7 +399,13 @@ def main():
     # ── Interactive loop ──
     print("=" * 60)
     print("  MERLIN — Online")
-    print("  Type a command, or 'exit' to quit.")
+    print(f"  Input mode: {input_mode}")
+    if input_mode == "text":
+        print("  Type a command, or 'exit' to quit.")
+    elif input_mode == "voice":
+        print("  Speak a command. Say 'exit' to quit.")
+    else:
+        print("  Type or speak a command. 'exit' to quit.")
     if compiler_client:
         print(f"  Compiler: {compiler_client.model} (temp={compiler_client.default_temperature})")
     else:
@@ -351,18 +420,17 @@ def main():
     try:
         while True:
             try:
-                user_input = input("You: ").strip()
+                percept = orchestrator.next_percept()
             except EOFError:
                 break
 
-            if not user_input:
+            if not percept.payload:
                 continue
 
-            if user_input.lower() in {"exit", "quit", "q"}:
+            if percept.payload.lower().strip() in {"exit", "quit", "q"}:
                 break
 
-            # Perceive → Route → Execute → Report
-            percept = text_perception.perceive(user_input)
+            # Route → Execute → Report
             merlin.handle_percept(percept)
             print()  # visual spacing
 
@@ -375,4 +443,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="MERLIN — Personal AI Assistant")
+    parser.add_argument(
+        "--voice", action="store_true",
+        help="Voice-only mode: mic input + TTS output",
+    )
+    parser.add_argument(
+        "--hybrid", action="store_true",
+        help="Hybrid mode: both text and voice input (first wins per cycle)",
+    )
+    args = parser.parse_args()
+    main(args)

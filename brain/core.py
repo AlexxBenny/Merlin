@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from typing import Any, List
 import time
 
+from perception.normalize import normalize_for_matching
+
 
 @dataclass(frozen=True)
 class Percept:
@@ -75,7 +77,7 @@ class BrainCore:
         3. MISSION — structural complexity keywords
         4. Default → MISSION (safe bias)
         """
-        text = percept.payload.lower().strip()
+        text = normalize_for_matching(percept.payload)
 
         # 1. Safety gate: refuse dangerous commands
         if any(k in text for k in self._refuse_indicators):

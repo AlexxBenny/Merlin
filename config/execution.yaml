@@ -26,6 +26,32 @@ browser:
   # the config surface for future BrowserController.
 
 # ─────────────────────────────────────────────────────────────
+# Voice Configuration
+# ─────────────────────────────────────────────────────────────
+#
+# Engines are pluggable drivers. Swap by changing engine name.
+# VoiceEngineFactory creates instances from these settings.
+# If engine dependency missing, voice disables gracefully.
+
+voice:
+  enabled: false                    # Master switch (also requires --voice or --hybrid CLI flag)
+  stt:
+    engine: "faster-whisper"        # faster-whisper | vosk (future)
+    model: "small"                  # tiny | base | small | medium
+    device: "cuda"                  # cpu | cuda
+    compute_type: "float16"         # float16 | int8 | float32
+    language: "en"                  # ISO 639-1
+  tts:
+    engine: "pyttsx3"               # pyttsx3 | coqui (future) | edge-tts (future) | silent
+    rate: 175                       # Words per minute
+    voice_id: null                  # null = system default
+  audio:
+    sample_rate: 16000              # Hz (Whisper expects 16kHz)
+    silence_duration: 1.5           # Seconds of silence to end recording
+    max_record_seconds: 30          # Safety cap
+    vad_mode: 2                     # WebRTC VAD aggressiveness (0=least, 3=most)
+
+# ─────────────────────────────────────────────────────────────
 # Source Configuration
 # ─────────────────────────────────────────────────────────────
 
