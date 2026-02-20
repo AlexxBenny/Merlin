@@ -14,6 +14,7 @@ from runtime.sources.base import EventSource
 from reporting.notification_policy import NotificationPolicy
 from reporting.report_builder import ReportBuilder
 from reporting.output import OutputChannel
+from runtime.attention import AttentionManager, AttentionDecision
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ class RuntimeEventLoop:
         report_builder: ReportBuilder,
         output_channel: OutputChannel,
         get_conversation: Callable[[], ConversationFrame],
+        attention_manager: Optional[AttentionManager] = None,
         tick_interval: float = 0.1,
     ):
         self.timeline = timeline
@@ -48,6 +50,7 @@ class RuntimeEventLoop:
         self.report_builder = report_builder
         self.output_channel = output_channel
         self.get_conversation = get_conversation
+        self.attention_manager = attention_manager
         self.tick_interval = tick_interval
 
         self._running = False
@@ -130,12 +133,13 @@ class RuntimeEventLoop:
 
     def _maybe_notify_user(self, event) -> None:
         """
-        Deterministic proactive notification check.
+        Proactive notification with attention arbitration.
 
         Flow:
         1. NotificationPolicy decides if event is worth reporting
-        2. ReportBuilder formats the message (LLM for language only)
-        3. OutputChannel delivers
+        2. AttentionManager decides timing (INTERRUPT / QUEUE / SUPPRESS)
+        3. ReportBuilder formats the message (LLM for language only)
+        4. OutputChannel delivers (or defers)
 
         If any step returns None/fails, silence is chosen.
         Runtime must NEVER crash from reporting.
@@ -152,15 +156,38 @@ class RuntimeEventLoop:
             if not self.notification_policy.should_notify(event, snapshot):
                 return
 
-            # Build report text
-            conversation = self.get_conversation()
-            report = self.report_builder.build_from_event(
-                event, snapshot, conversation
-            )
+            # Determine event priority for attention arbitration
+            priority = event.payload.get("severity", "info")
 
-            # Deliver (or silence)
-            if report:
-                self.output_channel.send(report)
+            # Attention gate: should we deliver NOW?
+            if self.attention_manager:
+                decision = self.attention_manager.decide(priority, event.type)
+
+                if decision == AttentionDecision.SUPPRESS:
+                    return
+
+                # Build report text (needed for both INTERRUPT and QUEUE)
+                conversation = self.get_conversation()
+                report = self.report_builder.build_from_event(
+                    event, snapshot, conversation
+                )
+                if not report:
+                    return
+
+                if decision == AttentionDecision.QUEUE:
+                    self.attention_manager.enqueue(report, priority, event.type)
+                    return
+
+                # INTERRUPT — deliver immediately
+                self.attention_manager.deliver(report)
+            else:
+                # No attention manager — legacy behavior (always deliver)
+                conversation = self.get_conversation()
+                report = self.report_builder.build_from_event(
+                    event, snapshot, conversation
+                )
+                if report:
+                    self.output_channel.send(report)
 
         except Exception:
             # Proactive reporting must NEVER break runtime

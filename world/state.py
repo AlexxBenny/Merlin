@@ -297,4 +297,16 @@ class WorldState(BaseModel):
                     state.system.session.foreground_app = p["foreground_app"]
                     state.system.session.foreground_window = p.get("foreground_window")
 
+            # ── Periodic refresh — absolute values, no threshold logic ──
+            elif t == "system_state_refresh":
+                if p.get("cpu") is not None:
+                    state.system.resources.cpu_percent = p["cpu"]
+                if p.get("memory") is not None:
+                    state.system.resources.memory_percent = p["memory"]
+                if p.get("battery_percent") is not None:
+                    state.system.hardware.battery_percent = p["battery_percent"]
+                    state.system.hardware.battery_charging = p.get("battery_charging")
+                if p.get("disk") is not None:
+                    state.system.resources.disk_percent = p["disk"]
+
         return state

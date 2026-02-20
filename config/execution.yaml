@@ -15,6 +15,18 @@ event_loop:
   tick_interval: 0.1
 
 # ─────────────────────────────────────────────────────────────
+# Attention Arbitration
+# ─────────────────────────────────────────────────────────────
+#
+# Controls proactive notification timing relative to mission state.
+# This is the difference between "concurrent" and "intelligent."
+
+attention:
+  cooldown_seconds: 10              # Min seconds between delivered notifications
+  max_queue_size: 10                # Max deferred notifications (oldest dropped)
+  merge_duplicates: true            # Collapse repeated event types in queue
+
+# ─────────────────────────────────────────────────────────────
 # Domain Configuration
 # ─────────────────────────────────────────────────────────────
 
@@ -34,7 +46,7 @@ browser:
 # If engine dependency missing, voice disables gracefully.
 
 voice:
-  enabled: false                    # Master switch (also requires --voice or --hybrid CLI flag)
+  enabled: true                     # Master switch for voice subsystem
   stt:
     engine: "faster-whisper"        # faster-whisper | vosk (future)
     model: "small"                  # tiny | base | small | medium
@@ -42,6 +54,7 @@ voice:
     compute_type: "float16"         # float16 | int8 | float32
     language: "en"                  # ISO 639-1
   tts:
+    enabled: true                    # Always speak (independent of --voice input flag)
     engine: "pyttsx3"               # pyttsx3 | coqui (future) | edge-tts (future) | silent
     rate: 175                       # Words per minute
     voice_id: null                  # null = system default
@@ -61,6 +74,7 @@ sources:
     resource_poll_interval: 2.0    # CPU, RAM, battery, disk
     window_poll_interval: 0.5      # Foreground window
     idle_poll_interval: 5.0        # Idle detection
+    refresh_interval: 30            # Full-state refresh (absolute sensor values)
   media:
     enabled: true
     poll_interval: 1.0
@@ -266,4 +280,13 @@ notifications:
 
   - event_type: "nightlight_toggled"
     action: "log"
+    priority: "background"
+
+  # Silent state refresh — updates WorldState, never notifies
+  - event_type: "system_state_refresh"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "system_state_snapshot"
+    action: "ignore"
     priority: "background"

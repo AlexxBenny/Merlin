@@ -3,11 +3,28 @@
 """
 Pyttsx3TTS — offline TTS engine using pyttsx3 (Windows SAPI5).
 
-Bootstrap TTS engine for Phase 1. Swappable via config for
-CoquiTTS, EdgeTTS, etc. without code changes.
+Thread-safe via dedicated worker thread + per-call engine re-init.
+
+Two problems, two fixes:
+
+1. COM apartment affinity (threading):
+   pyttsx3 uses SAPI5 via COM. COM objects created in one thread's
+   apartment cannot be used from another. MERLIN's multi-threaded
+   runtime corrupts the COM state if the engine is shared.
+   Fix: dedicated daemon worker thread owns all COM interactions.
+
+2. Engine state corruption (pyttsx3 bug):
+   After runAndWait() completes, the pyttsx3 internal event loop
+   state becomes invalid. Subsequent runAndWait() returns in ~100ms
+   without producing audio — a known pyttsx3/SAPI5 bug.
+   Fix: re-create the engine for each speak call. Each cycle gets
+   a fresh COM event loop state. Slightly slower (~300ms init
+   overhead) but guaranteed correct.
 """
 
 import logging
+import queue
+import threading
 from typing import Optional
 
 from reporting.tts_engine import TTSEngine
@@ -15,43 +32,126 @@ from reporting.tts_engine import TTSEngine
 
 logger = logging.getLogger(__name__)
 
+# Sentinel value to signal the worker thread to shut down.
+_SHUTDOWN = object()
+
 
 class Pyttsx3TTS(TTSEngine):
     """
-    TTSEngine backed by pyttsx3.
+    TTSEngine backed by pyttsx3, with dedicated worker thread.
 
-    Uses Windows SAPI5 voices. Configurable rate and voice.
-    Lazy engine init — creates pyttsx3 engine on first speak().
+    Engine is re-created per speak call to avoid SAPI5 state corruption.
+    speak() is non-blocking — enqueues text, returns immediately.
+    Worker thread dequeues and speaks in order.
     """
 
     def __init__(self, rate: int = 175, voice_id: Optional[str] = None):
         self._rate = rate
         self._voice_id = voice_id
-        self._engine: Optional[object] = None  # lazy
+        self._queue: queue.Queue = queue.Queue()
+        self._worker: Optional[threading.Thread] = None
+        self._started = False
 
-    def _ensure_engine(self) -> None:
-        """Initialize pyttsx3 engine on first use."""
-        if self._engine is not None:
+    def _ensure_worker(self) -> None:
+        """Start the TTS worker thread on first use (lazy)."""
+        if self._started:
             return
-
-        import pyttsx3
-
-        self._engine = pyttsx3.init()
-        self._engine.setProperty('rate', self._rate)
-
-        if self._voice_id:
-            self._engine.setProperty('voice', self._voice_id)
-
+        self._started = True
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="tts-worker",
+            daemon=True,
+        )
+        self._worker.start()
         logger.info(
-            "pyttsx3 TTS engine initialized: rate=%d voice=%s",
+            "pyttsx3 TTS worker thread started: rate=%d voice=%s",
             self._rate, self._voice_id or "default",
         )
 
+    def _speak_once(self, text: str) -> None:
+        """
+        Create a fresh pyttsx3 engine, speak, destroy.
+
+        Each call gets a clean COM event loop — avoids the known
+        pyttsx3 bug where runAndWait() silently fails after first use.
+        """
+        import pyttsx3
+
+        engine = pyttsx3.init()
+        try:
+            engine.setProperty('rate', self._rate)
+            if self._voice_id:
+                engine.setProperty('voice', self._voice_id)
+            engine.say(text)
+            engine.runAndWait()
+        finally:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+            del engine
+
+    def _worker_loop(self) -> None:
+        """
+        Worker thread main loop.
+
+        All pyttsx3 engine creation and usage happens here, on this
+        thread's COM apartment. Never exits until _SHUTDOWN sentinel.
+        """
+        logger.info(
+            "pyttsx3 worker thread active (tid=%s)",
+            threading.current_thread().ident,
+        )
+
+        while True:
+            text = self._queue.get()
+
+            if text is _SHUTDOWN:
+                logger.info("pyttsx3 worker: shutdown received")
+                self._queue.task_done()
+                break
+
+            try:
+                logger.info(
+                    "pyttsx3: speaking %d chars on worker thread",
+                    len(text),
+                )
+                self._speak_once(text)
+                logger.info("pyttsx3: speech delivered (%d chars)", len(text))
+            except Exception:
+                logger.exception(
+                    "pyttsx3 worker: speech failed for %d chars",
+                    len(text),
+                )
+            finally:
+                self._queue.task_done()
+
     def speak(self, text: str) -> None:
-        """Speak text using pyttsx3. Blocks until playback completes."""
-        self._ensure_engine()
-        self._engine.say(text)
-        self._engine.runAndWait()
+        """
+        Enqueue text for speech. Non-blocking.
+
+        Returns immediately. Worker thread speaks in order.
+        """
+        self._ensure_worker()
+        self._queue.put(text)
+
+    def speak_sync(self, text: str) -> None:
+        """
+        Enqueue text and block until spoken.
+
+        Useful for critical announcements or shutdown.
+        """
+        self._ensure_worker()
+        self._queue.put(text)
+        self._queue.join()
+
+    def shutdown(self) -> None:
+        """Signal worker to stop after current speech."""
+        if self._worker and self._worker.is_alive():
+            self._queue.put(_SHUTDOWN)
+            self._worker.join(timeout=5.0)
+            if self._worker.is_alive():
+                logger.warning("pyttsx3 worker thread did not exit cleanly")
 
     def is_available(self) -> bool:
         """Check if pyttsx3 is installed."""

@@ -36,6 +36,7 @@ from orchestrator.mission_orchestrator import MissionOrchestrator
 from runtime.event_loop import RuntimeEventLoop
 from runtime.reflex_engine import ReflexEngine, ReflexResult
 from runtime.sources.base import EventSource
+from runtime.attention import AttentionManager, MissionState
 from reporting.report_builder import ReportBuilder
 from reporting.output import OutputChannel
 from reporting.notification_policy import NotificationPolicy
@@ -69,12 +70,16 @@ class Merlin:
         clarifier_llm: Optional[LLMClient] = None,
         world_state_provider: Optional[WorldStateProvider] = None,
         memory: Optional[MemoryStore] = None,
+        attention_manager: Optional[AttentionManager] = None,
     ):
         # ── Cognitive components (frozen) ──
         self.brain = brain
         self.escalation_policy = escalation_policy
         self.clarifier_llm = clarifier_llm
         self.world_state_provider = world_state_provider or SimpleWorldStateProvider()
+
+        # ── Attention arbitration ──
+        self.attention_manager = attention_manager
 
         # ── Reflex engine (inject executor for contract enforcement) ──
         self.reflex_engine = reflex_engine
@@ -120,6 +125,7 @@ class Merlin:
             report_builder=report_builder,
             output_channel=output_channel,
             get_conversation=lambda: self.conversation,
+            attention_manager=attention_manager,
         )
 
     # ─────────────────────────────────────────────────────────
@@ -398,6 +404,10 @@ class Merlin:
             # ── Reference resolution (BEFORE cortex) ──
             self._resolve_references(percept.payload)
 
+            # ── Signal mission start to attention manager ──
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.COMPILING)
+
             # ── Tier classification (deterministic, no LLM) ──
             tier = self.tier_classifier.classify(percept.payload)
             logger.info(
@@ -432,6 +442,11 @@ class Merlin:
                 cognitive_tier=tier,
                 intent_units=intent_units,
             )
+
+            # ── Signal mission complete → IDLE flushes attention queue ──
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+
             if result:
                 self.conversation.append_turn(
                     "assistant", result,
@@ -439,6 +454,10 @@ class Merlin:
                 )
             return result
         except Exception as e:
+            # ── Ensure mission state returns to IDLE on error ──
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+
             logger.error(
                 "Mission failed for '%s': %s",
                 percept.payload[:80],

@@ -141,6 +141,7 @@ def build_event_sources(execution_config: dict, system_controller=None) -> list:
                     "resource_poll_interval": sys_cfg.get("resource_poll_interval", 2.0),
                     "window_poll_interval": sys_cfg.get("window_poll_interval", 0.5),
                     "idle_poll_interval": sys_cfg.get("idle_poll_interval", 5.0),
+                    "refresh_interval": sys_cfg.get("refresh_interval", 30.0),
                 },
                 system_controller=system_controller,
             ))
@@ -263,12 +264,14 @@ def main(args=None):
             "Fix skill contracts before starting."
         )
 
-    # ── Output channel (voice-aware) ──
+    # ── Output channel (TTS always-on, independent of input mode) ──
     console_channel = ConsoleOutputChannel(prefix="MERLIN")
-    voice_mode = getattr(args, 'voice', False) or getattr(args, 'hybrid', False)
     voice_config = execution_config.get("voice", {})
+    tts_config = voice_config.get("tts", {})
 
-    if voice_mode:
+    # TTS output is independent of input mode — MERLIN always speaks,
+    # regardless of whether input is keyboard, mic, or hybrid.
+    if tts_config.get("enabled", True):
         tts_engine = VoiceEngineFactory.create_tts(voice_config)
         if tts_engine:
             speech_channel = SpeechOutputChannel(tts_engine)
@@ -281,6 +284,7 @@ def main(args=None):
             output_channel = console_channel
     else:
         output_channel = console_channel
+        logger.info("Output: ConsoleOutputChannel (TTS disabled in config)")
 
     event_templates = execution_config.get("event_templates", {})
     report_builder = ReportBuilder(
@@ -334,6 +338,18 @@ def main(args=None):
         context_provider=context_provider,
     )
 
+    # ── Attention Arbitration ──
+    from runtime.attention import AttentionManager
+    attention_manager = AttentionManager.from_config(
+        execution_config,
+        deliver_fn=output_channel.send,
+    )
+    logger.info(
+        "AttentionManager: cooldown=%ss, max_queue=%d",
+        attention_manager._config.cooldown_seconds,
+        attention_manager._config.max_queue_size,
+    )
+
     # ── Build Merlin ──
     merlin = Merlin(
         brain=brain,
@@ -351,6 +367,7 @@ def main(args=None):
         clarifier_llm=clarifier_client,
         world_state_provider=world_state_provider,
         memory=memory_store,
+        attention_manager=attention_manager,
     )
 
 
@@ -427,7 +444,10 @@ def main(args=None):
             if not percept.payload:
                 continue
 
-            if percept.payload.lower().strip() in {"exit", "quit", "q"}:
+            # Normalized exit detection (handles voice transcriptions like "Exit.")
+            from perception.normalize import normalize_for_matching
+            normalized = normalize_for_matching(percept.payload)
+            if normalized in {"exit", "quit", "q"}:
                 break
 
             # Route → Execute → Report

@@ -72,6 +72,10 @@ class SpeechOutputChannel(OutputChannel):
 
     def send(self, message: str) -> None:
         try:
+            logger.info(
+                "SpeechOutputChannel: enqueuing %d chars for speech",
+                len(message),
+            )
             self._tts.speak(message)
         except Exception:
             logger.exception(

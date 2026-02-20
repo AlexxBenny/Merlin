@@ -65,6 +65,7 @@ DEFAULT_INTERVALS = {
     "resource_poll_interval": 2.0,
     "window_poll_interval": 0.5,
     "idle_poll_interval": 5.0,
+    "refresh_interval": 30.0,       # Full state refresh (absolute values)
 }
 
 
@@ -99,11 +100,13 @@ class SystemSource(EventSource):
         self._resource_interval = i["resource_poll_interval"]
         self._window_interval = i["window_poll_interval"]
         self._idle_interval = i["idle_poll_interval"]
+        self._refresh_interval = i["refresh_interval"]
 
         # Last poll timestamps
         self._last_resource_poll = 0.0
         self._last_window_poll = 0.0
         self._last_idle_poll = 0.0
+        self._last_refresh_poll = 0.0
 
         # Previous state (for diffing)
         self._cpu_state: Optional[str] = None       # "high" | "normal" | None
@@ -232,6 +235,11 @@ class SystemSource(EventSource):
         if now - self._last_idle_poll >= self._idle_interval:
             self._last_idle_poll = now
             events.extend(self._poll_idle(now))
+
+        # Periodic full state refresh (absolute values, not thresholds)
+        if now - self._last_refresh_poll >= self._refresh_interval:
+            self._last_refresh_poll = now
+            events.extend(self._poll_refresh(now))
 
         return events
 
@@ -412,6 +420,55 @@ class SystemSource(EventSource):
         # Placeholder: idle detection requires win32api
         # For now, returns empty — wired for future hook
         return []
+
+    # ─────────────────────────────────────────────────────────
+    # Periodic full-state refresh
+    # ─────────────────────────────────────────────────────────
+
+    def _poll_refresh(self, now: float) -> List[WorldEvent]:
+        """
+        Periodic full-state refresh — re-reads all absolute sensor values.
+
+        Unlike threshold-based events (cpu_high, battery_low), this emits
+        current read values unconditionally so WorldState never carries
+        stale bootstrap-era data.
+
+        This event is IGNORED by NotificationPolicy (silent update).
+        """
+        if not _HAS_PSUTIL:
+            return []
+
+        payload: Dict[str, Any] = {
+            "domain": "system",
+            "severity": "background",
+        }
+
+        try:
+            payload["cpu"] = round(psutil.cpu_percent(interval=0), 1)
+        except Exception:
+            pass
+
+        try:
+            mem = psutil.virtual_memory()
+            payload["memory"] = round(mem.percent, 1)
+        except Exception:
+            pass
+
+        try:
+            battery = psutil.sensors_battery()
+            if battery is not None:
+                payload["battery_percent"] = round(battery.percent, 1)
+                payload["battery_charging"] = battery.power_plugged
+        except Exception:
+            pass
+
+        try:
+            disk = psutil.disk_usage("/")
+            payload["disk"] = round(disk.percent, 1)
+        except Exception:
+            pass
+
+        return [self._make_event(now, "system_state_refresh", **payload)]
 
     # ─────────────────────────────────────────────────────────
     # Event factory
