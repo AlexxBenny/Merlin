@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 from ir.mission import MissionPlan, ExecutionMode
 from execution.executor import MissionExecutor, ExecutionResult, NodeStatus
 from errors import FailureIR
+from cortex.parameter_resolver import ParameterResolver, ParameterError
 from cortex.mission_cortex import MissionCortex
 from cortex.validators import verify_intent_coverage
 from brain.escalation_policy import CognitiveTier
@@ -61,6 +62,7 @@ class MissionOrchestrator:
         self.memory = memory
         self._attention = attention_manager
         self._narration = narration_policy
+        self._resolver = ParameterResolver(executor.registry)
 
     # ─────────────────────────────────────────────────────────
     # PUBLIC API: Full mission lifecycle
@@ -174,6 +176,18 @@ class MissionOrchestrator:
                 "[TRACE]   Node '%s': skill=%s, inputs=%r, depends_on=%r, mode=%s",
                 node.id, node.skill, node.inputs, node.depends_on, node.mode.value,
             )
+
+        # ── Phase 9A: Typed parameter resolution (deterministic) ──
+        # Runs BEFORE narration so resolved values feed narration phrases.
+        # Runs BEFORE EXECUTING transition so errors stay in COMPILING.
+        try:
+            plan = self._resolver.resolve_plan(plan)
+        except ParameterError as pe:
+            logger.warning(
+                "Parameter resolution failed: %s", pe,
+            )
+            # Structured error → clean user message (no stack trace)
+            return pe.user_message()
 
         # 2. Snapshot world at execution time
         events = self.timeline.all_events()
@@ -308,6 +322,144 @@ class MissionOrchestrator:
             conversation.active_entity = outcome.active_entity
 
         # 7. Structured conversation state updates
+        self._update_conversation_state(
+            conversation=conversation,
+            outcome=outcome,
+            exec_result=exec_result,
+            user_text=user_text,
+            mission_id=plan.id,
+        )
+
+        return report
+
+
+    def handle_prebuilt_plan(
+        self,
+        plan: MissionPlan,
+        user_text: str,
+        conversation: ConversationFrame,
+    ) -> Optional[str]:
+        """Execute a pre-built plan (e.g. from multi-reflex).
+
+        Same lifecycle as handle_user_input() but skips:
+        - LLM compilation (plan already built)
+        - Tier classification
+        - Coverage verification
+        - Decomposition
+
+        This is the <200ms fast path for deterministic plans.
+        """
+        # ── Phase 9A: Typed parameter resolution ──
+        try:
+            plan = self._resolver.resolve_plan(plan)
+        except ParameterError as pe:
+            logger.warning("Parameter resolution failed: %s", pe)
+            return pe.user_message()
+
+        # Snapshot world
+        events = self.timeline.all_events()
+        state = WorldState.from_events(events)
+        snapshot = WorldSnapshot.build(state, events[-10:] if events else [])
+
+        # ── Pre-narration ──
+        pre_narration = None
+        pre_narration_fired = False
+        if self._narration:
+            from execution.scheduler import DAGScheduler
+            node_index = DAGScheduler.get_node_index(plan)
+            pre_narration = self._narration.narrate_pre_execution(
+                plan, node_index, self.executor.registry,
+            )
+            if pre_narration:
+                pre_narration_fired = True
+                self.output_channel.send(pre_narration)
+
+        # ── Transition: → EXECUTING ──
+        if self._attention:
+            from runtime.attention import MissionState
+            self._attention.set_mission_state(MissionState.EXECUTING)
+
+        # Execute with layer callbacks
+        exec_start = time.monotonic()
+
+        def _on_layer_start(layer_ids, node_index, layer_idx, total_layers):
+            if self._narration:
+                text = self._narration.narrate_layer_start(
+                    layer_ids, node_index,
+                    self.executor.registry,
+                    layer_idx, total_layers,
+                    pre_narration_fired,
+                )
+                if text:
+                    self.output_channel.send(text)
+            if self._narration:
+                elapsed = time.monotonic() - exec_start
+                heartbeat = self._narration.narrate_heartbeat(elapsed)
+                if heartbeat:
+                    self.output_channel.send(heartbeat)
+
+        exec_result = self.run(
+            plan, snapshot,
+            on_layer_start=_on_layer_start,
+        )
+
+        # ── Transition: EXECUTING → REPORTING ──
+        if self._attention:
+            from runtime.attention import MissionState
+            self._attention.set_mission_state(MissionState.REPORTING)
+
+        # Build outcome
+        outcome = self._build_outcome(plan, exec_result)
+        conversation.outcomes.append(outcome)
+        OUTCOME_CAP = 10
+        if len(conversation.outcomes) > OUTCOME_CAP:
+            conversation.outcomes[:] = conversation.outcomes[-OUTCOME_CAP:]
+
+        # Drain insights
+        queued_insights: Optional[List[str]] = None
+        if self._attention:
+            queued = self._attention.drain_queue()
+            if queued:
+                queued_insights = [q.text for q in queued]
+
+        # Build report
+        report = self.report_builder.build(
+            mission=plan,
+            execution_result=exec_result,
+            timeline=self.timeline,
+            snapshot=snapshot,
+            conversation=conversation,
+            queued_insights=queued_insights,
+            pre_narration=pre_narration,
+        )
+
+        # Deliver
+        if report:
+            self.output_channel.send(report)
+        else:
+            self.output_channel.send_silent()
+
+        # ── Transition: REPORTING → IDLE ──
+        if self._attention:
+            from runtime.attention import MissionState
+            self._attention.set_mission_state(MissionState.IDLE)
+
+        # Update conversation
+        conversation.last_mission_id = plan.id
+        if outcome.active_domain:
+            conversation.active_domain = outcome.active_domain
+            conversation.context_frames[outcome.active_domain] = ContextFrame(
+                domain=outcome.active_domain,
+                data={
+                    "entity": outcome.active_entity,
+                    "artifacts": outcome.artifacts,
+                    "mission_id": plan.id,
+                },
+                produced_by=plan.id,
+            )
+        if outcome.active_entity:
+            conversation.active_entity = outcome.active_entity
+
         self._update_conversation_state(
             conversation=conversation,
             outcome=outcome,

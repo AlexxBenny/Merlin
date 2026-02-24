@@ -7,7 +7,7 @@ Deterministic. No LLM. Hot path only.
 
 Design principles:
 - Metadata-driven: reads SkillContract fields (description, domain,
-  narration_visibility, narration_verb) — no hardcoded skill→phrase maps
+  narration_visibility, narration_template) — no hardcoded skill→phrase maps
 - Layer-aware: narrates at DAG layer boundaries, not per-node
 - Compression: groups parallel nodes into domain phrases
 - Restraint: single-node missions are silent; pre-narration suppresses
@@ -16,7 +16,7 @@ Design principles:
 Scaling rules:
 - New skills auto-narrate via their contract.description field
 - Skills opt out with narration_visibility="silent"
-- Fine-tune with narration_verb without touching this module
+- Fine-tune with narration_template without touching this module
 """
 
 from __future__ import annotations
@@ -257,26 +257,26 @@ class NarrationPolicy:
 
     @staticmethod
     def _get_verb(node: "MissionNode", registry: "SkillRegistry") -> str:
-        """Extract narration verb from skill contract metadata.
+        """Extract narration phrase from skill contract metadata.
 
         Priority:
-        1. contract.narration_verb (explicit override)
-        2. contract.description (human-facing)
+        1. contract.narration_template (parameterized override)
+        2. contract.description (human-action phrase — governed field)
         3. contract.action with underscores → spaces (fallback)
         """
         try:
             skill = registry.get(node.skill)
             contract = skill.contract
 
-            if contract.narration_verb:
-                verb = contract.narration_verb.lower()
+            if contract.narration_template:
+                phrase = contract.narration_template
                 # Interpolate input values if template has {placeholders}
-                if "{" in verb:
+                if "{" in phrase:
                     try:
-                        verb = verb.format_map(node.inputs)
+                        phrase = phrase.format_map(node.inputs)
                     except (KeyError, IndexError):
                         pass
-                return verb
+                return phrase
 
             if contract.description:
                 # Use description as human verb — lowercase first char

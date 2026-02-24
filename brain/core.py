@@ -37,6 +37,7 @@ class Percept:
 
 class CognitiveRoute:
     REFLEX = "reflex"
+    MULTI_REFLEX = "multi_reflex"
     MISSION = "mission"
     REFUSE = "refuse"
 
@@ -83,8 +84,17 @@ class BrainCore:
         if any(k in text for k in self._refuse_indicators):
             return CognitiveRoute.REFUSE
 
-        # 2. Template-authoritative reflex detection
-        #    ReflexEngine.try_match() is cheap (regex only, no execution)
+        # 2. Multi-reflex: conjunction of known templates/intents
+        #    MUST be checked BEFORE single reflex because IntentMatcher
+        #    scores tokens greedily — for conjunction queries it matches
+        #    the strongest skill and ignores the rest.
+        #    Multi-reflex splits first, then matches per clause.
+        #    If ALL clauses match → skip LLM entirely (<200ms)
+        #    If ANY clause fails → fall through to single/MISSION
+        if self._reflex_engine and self._reflex_engine.try_match_multi(text):
+            return CognitiveRoute.MULTI_REFLEX
+
+        # 3. Single reflex: template/intent match
         if self._reflex_engine and self._reflex_engine.try_match(text):
             return CognitiveRoute.REFLEX
 

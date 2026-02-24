@@ -30,7 +30,10 @@ class CreateFolderSkill(Skill):
         name="fs.create_folder",
         action="create_folder",
         target_type="folder",
-        description="Create a directory at a location anchor with optional parent path",
+        description="Create a folder",
+        narration_template="create folder {name}",
+        intent_verbs=["create", "make", "new"],
+        intent_keywords=["folder", "directory", "dir"],
         domain="fs",
         inputs={
             "name": "folder_name",

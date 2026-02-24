@@ -42,6 +42,28 @@ class SkillRegistry:
                 )
             self._registered_actions.add(action)
 
+        # ── Description style enforcement (Phase 8B) ──
+        # description is a governed UX-visible field — not documentation.
+        # Style contract: imperative verb phrase, ≤6 words, no parens/commas.
+        desc = skill.contract.description
+        if desc:
+            _desc_violations = []
+            if not desc[0].isupper():
+                _desc_violations.append("must start with uppercase verb")
+            if "(" in desc or ")" in desc:
+                _desc_violations.append("must not contain parentheses")
+            if "," in desc:
+                _desc_violations.append("must not contain commas")
+            if desc.endswith("."):
+                _desc_violations.append("must not end with period")
+            if len(desc.split()) > 6:
+                _desc_violations.append(f"exceeds 6 words ({len(desc.split())})")
+            if _desc_violations:
+                logger.warning(
+                    "Skill '%s' description style: %s — '%s'",
+                    skill.name, "; ".join(_desc_violations), desc,
+                )
+
         self._skills[skill.name] = skill
 
     def get(self, name: str) -> Skill:

@@ -29,6 +29,7 @@ from ir.mission import IR_VERSION, MissionPlan, MissionNode
 
 if TYPE_CHECKING:
     from execution.executor import MissionExecutor
+    from cortex.intent_engine import IntentMatcher
 
 
 logger = logging.getLogger(__name__)
@@ -97,12 +98,15 @@ class ReflexEngine:
         timeline: WorldTimeline,
         registry: Optional[SkillRegistry] = None,
         executor: Optional["MissionExecutor"] = None,
+        intent_matcher: Optional["IntentMatcher"] = None,
     ):
         self.timeline = timeline
         self.registry = registry
         self.executor = executor
         self._rules: List[ReflexRule] = []
         self._templates: List[ReflexTemplate] = []
+        self._intent_matcher = intent_matcher
+        self._last_multi_matches: Optional[List[ReflexMatch]] = None  # cache for route→handler
 
     # ─────────────────────────────────────────────────────────
     # Registration
@@ -172,12 +176,10 @@ class ReflexEngine:
 
     def try_match(self, text: str) -> Optional[ReflexMatch]:
         """
-        Try to match user text against registered reflex templates.
+        Try to match user text against skills.
 
-        Returns ReflexMatch if a template matches, None otherwise.
-        First match wins (templates are checked in registration order).
-
-        Input is normalized via normalize_for_matching() before matching.
+        Priority: IntentMatcher (scored) → regex templates (legacy fallback).
+        First match wins.
         """
         from perception.normalize import normalize_for_matching
         text_normalized = normalize_for_matching(text)
@@ -187,33 +189,178 @@ class ReflexEngine:
             text[:50], text_normalized[:50],
         )
 
+        # ── Primary: IntentMatcher (Phase 10) ──
+        if self._intent_matcher:
+            intent_match = self._intent_matcher.match_clause(text_normalized)
+            if intent_match:
+                logger.debug(
+                    "Reflex match: HIT via IntentMatcher skill=%s score=%.1f",
+                    intent_match.skill_name, intent_match.score,
+                )
+                return ReflexMatch(
+                    skill=intent_match.skill_name,
+                    params=intent_match.params,
+                )
+
+        # ── Fallback: regex templates ──
         for template in self._templates:
             match = template.pattern.search(text_normalized)
             if match:
-                # Extract parameters using named groups
                 raw_params = match.groupdict()
-
-                # Map regex group names → skill parameter names
                 skill_params = {}
                 for group_name, param_name in template.param_map.items():
                     if group_name in raw_params:
                         skill_params[param_name] = raw_params[group_name]
 
                 logger.debug(
-                    "Reflex match: HIT skill=%s (checked %d templates)",
+                    "Reflex match: HIT via regex skill=%s (checked %d templates)",
                     template.skill, len(self._templates),
                 )
-
                 return ReflexMatch(
                     skill=template.skill,
                     params=skill_params,
                 )
 
         logger.debug(
-            "Reflex match: MISS (checked %d templates)",
-            len(self._templates),
+            "Reflex match: MISS (intent=%s, templates=%d)",
+            bool(self._intent_matcher), len(self._templates),
         )
         return None
+
+    # ─────────────────────────────────────────────────────────
+    # Multi-intent conjunction matching (Phase 9B + 10.1)
+    # ─────────────────────────────────────────────────────────
+
+    # Conjunction patterns — split on standardized separators
+    _CLAUSE_SPLITTERS = re.compile(
+        r"\s+(?:and|then|also|plus|,|;)\s+",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _normalize_separators(text: str) -> str:
+        """Pad separators with spaces so split regex works uniformly.
+
+        Converts: 'volume 5, brightness 65' → 'volume 5 , brightness 65'
+        Converts: 'a; b; c' → 'a ; b ; c'
+        Converts: 'a & b'   → 'a and b'
+        """
+        text = text.replace(',', ' , ')
+        text = text.replace(';', ' ; ')
+        text = text.replace(' & ', ' and ')
+        # Collapse multiple spaces
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def try_match_multi(self, text: str) -> Optional[List[ReflexMatch]]:
+        """Try to match multiple intents in a conjunction query.
+
+        Process:
+        1. Normalize separators (pad commas, semicolons)
+        2. Split on conjunction words
+        3. Match each clause
+        4. ALL must match → return list, else None
+
+        Results are cached in _last_multi_matches for handler consumption.
+        """
+        # Clear cache from previous call
+        self._last_multi_matches = None
+
+        from perception.normalize import normalize_for_matching
+        text_normalized = normalize_for_matching(text)
+
+        # Pre-normalize separators
+        text_normalized = self._normalize_separators(text_normalized)
+
+        # Split into clauses
+        clauses = self._CLAUSE_SPLITTERS.split(text_normalized)
+        clauses = [c.strip() for c in clauses if c.strip()]
+
+        # Must have 2+ clauses to be multi-reflex
+        if len(clauses) < 2:
+            return None
+
+        logger.debug(
+            "Multi-reflex: %d clauses from '%s': %r",
+            len(clauses), text_normalized[:60], clauses,
+        )
+
+        matches: List[ReflexMatch] = []
+        for clause in clauses:
+            match = self._match_clause(clause)
+            if match is None:
+                logger.debug(
+                    "Multi-reflex: clause '%s' unmatched → escalate to LLM",
+                    clause,
+                )
+                return None
+            matches.append(match)
+
+        logger.info(
+            "Multi-reflex: ALL %d clauses matched → %s",
+            len(matches),
+            [m.skill for m in matches],
+        )
+
+        # Cache for handler consumption (avoid duplicate work)
+        self._last_multi_matches = matches
+        return matches
+
+    def _match_clause(self, clause: str) -> Optional[ReflexMatch]:
+        """Match a single clause (no normalization — already done).
+
+        Priority: IntentMatcher → regex fallback.
+        """
+        # Primary: scored intent matching
+        if self._intent_matcher:
+            intent_match = self._intent_matcher.match_clause(clause)
+            if intent_match:
+                return ReflexMatch(
+                    skill=intent_match.skill_name,
+                    params=intent_match.params,
+                )
+
+        # Fallback: regex templates
+        for template in self._templates:
+            match = template.pattern.search(clause)
+            if match:
+                raw_params = match.groupdict()
+                skill_params = {}
+                for group_name, param_name in template.param_map.items():
+                    if group_name in raw_params:
+                        skill_params[param_name] = raw_params[group_name]
+                return ReflexMatch(skill=template.skill, params=skill_params)
+        return None
+
+    def execute_multi_reflex(
+        self,
+        matches: List[ReflexMatch],
+        snapshot: Optional[WorldSnapshot] = None,
+    ) -> MissionPlan:
+        """Build a multi-node MissionPlan from matched reflex clauses.
+
+        Returns the plan — caller routes through orchestrator for
+        narration + reporting + lifecycle management.
+
+        All nodes are independent (depends_on=[]) since multi-reflex
+        commands are structurally parallel atomic operations.
+        """
+        nodes = []
+        for i, match in enumerate(matches):
+            nodes.append(
+                MissionNode(
+                    id=f"reflex_{i}",
+                    skill=match.skill,
+                    inputs=match.params,
+                )
+            )
+
+        return MissionPlan(
+            id=f"multi_reflex_{int(time.time())}",
+            nodes=nodes,
+            metadata={"ir_version": IR_VERSION},
+        )
+
 
     def execute_reflex(
         self,

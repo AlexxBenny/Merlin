@@ -27,7 +27,10 @@ class OpenAppSkill(Skill):
         name="system.open_app",
         action="open_app",
         target_type="app",
-        description="Open an application by name",
+        description="Open an application",
+        narration_template="open {app_name}",
+        intent_verbs=["open", "launch", "start", "run"],
+        intent_keywords=["app", "application", "program"],
         domain="system",
         requires_focus=True,
         inputs={

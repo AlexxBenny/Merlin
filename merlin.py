@@ -196,6 +196,9 @@ class Merlin:
         if route == CognitiveRoute.REFLEX:
             return self._handle_reflex(percept, snapshot)
 
+        if route == CognitiveRoute.MULTI_REFLEX:
+            return self._handle_multi_reflex(percept, snapshot)
+
         # ── Gate 2: EscalationPolicy (only reached for MISSION) ──
         decision = self.escalation_policy.decide_for_user_input(
             user_text=percept.payload,
@@ -325,6 +328,66 @@ class Merlin:
             return self._REASON_RESPONSES.get(reason, f"Done. ({skill_name})")
 
         return f"Done. ({skill_name})"
+
+    def _handle_multi_reflex(
+        self, percept: Percept, snapshot: WorldSnapshot,
+    ) -> Optional[str]:
+        """
+        Handle conjunction commands deterministically. Zero LLM.
+
+        Flow:
+        1. Split on conjunctions, match each clause
+        2. Build multi-node plan from matches
+        3. Route through orchestrator (gets resolve + narrate + report for free)
+        4. Full lifecycle management (EXECUTING → REPORTING → IDLE)
+        """
+        try:
+            # Use cached matches from route() — avoid duplicate work
+            matches = self.reflex_engine._last_multi_matches
+            if not matches:
+                # Safety fallback — re-match if cache was somehow cleared
+                matches = self.reflex_engine.try_match_multi(percept.payload)
+            # Clear cache after consumption
+            self.reflex_engine._last_multi_matches = None
+
+            if not matches:
+                # Safety fallback — should not happen since route already matched
+                return self._handle_mission(percept, snapshot)
+
+            logger.info(
+                "Multi-reflex: %d clauses → %s",
+                len(matches),
+                [m.skill for m in matches],
+            )
+
+            plan = self.reflex_engine.execute_multi_reflex(matches)
+
+            result = self.orchestrator.handle_prebuilt_plan(
+                plan=plan,
+                user_text=percept.payload,
+                conversation=self.conversation,
+            )
+
+            if result:
+                self.conversation.append_turn(
+                    "assistant", result,
+                    mission_id=self.conversation.last_mission_id,
+                )
+            return result
+
+        except Exception as e:
+            # Safety net: fall back to mission if multi-reflex fails
+            if self.attention_manager:
+                from runtime.attention import MissionState
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+
+            logger.error(
+                "Multi-reflex failed for '%s': %s",
+                percept.payload[:80], e, exc_info=True,
+            )
+            response = f"I couldn't complete that request. Error: {e}"
+            self.output_channel.send(response)
+            return response
 
     def _handle_clarify(self, percept: Percept) -> str:
         """

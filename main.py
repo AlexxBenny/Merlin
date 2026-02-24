@@ -308,6 +308,14 @@ def main(args=None):
             "Fix skill contracts before starting."
         )
 
+    # ── Phase 10: Build IntentIndex + IntentMatcher (after skills loaded) ──
+    from cortex.intent_engine import IntentIndex, IntentMatcher
+    intent_index = IntentIndex()
+    intent_index.build(registry)
+    intent_matcher = IntentMatcher(intent_index, registry)
+    reflex._intent_matcher = intent_matcher
+    logger.info("IntentMatcher built and injected into ReflexEngine")
+
     # ── Output channel (TTS always-on, independent of input mode) ──
     console_channel = ConsoleOutputChannel(prefix="MERLIN")
     voice_config = execution_config.get("voice", {})

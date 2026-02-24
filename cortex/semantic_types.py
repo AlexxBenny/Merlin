@@ -1,46 +1,173 @@
 # cortex/semantic_types.py
 
 """
-Semantic Type Registry — Single source of truth for input/output type documentation.
+Semantic Type Registry — Typed coercion, validation, and documentation.
 
 Every semantic type declared in a SkillContract.inputs or SkillContract.outputs
-MUST have an entry here. The prompt builder generates type documentation
-dynamically from this registry, documenting only types actually used by
-available skills.
+MUST have an entry here. This registry serves THREE purposes:
+
+1. LLM prompt documentation — type descriptions ground the compiler
+2. Registration-time validation — direction constraints enforced
+3. Runtime parameter resolution — coerce, validate, clamp inputs
 
 INVARIANTS:
-- This is the ONLY place type documentation lives.
-- Adding a new type here auto-documents it in the LLM prompt.
+- This is the ONLY place type definitions live.
+- Adding a new type auto-documents it in the LLM prompt AND enables coercion.
 - A skill declaring a type NOT in this registry triggers a loud failure.
 - direction constrains where the type may appear:
     "input"  → may only appear in SkillContract.inputs
     "output" → may only appear in SkillContract.outputs
     "both"   → may appear in either
+
+Phase 9A: Types are now coercion-capable.
+  - resolve() performs alias lookup → type coercion → range enforcement
+  - strict=True → reject out-of-range values
+  - strict=False → clamp to bounds (default)
+  - Output-only types skip resolution (no user input to coerce)
 """
 
-from typing import Dict
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class SemanticType:
-    """A registered semantic type with documentation and direction."""
+    """A registered semantic type with coercion, validation, and documentation.
 
-    __slots__ = ("description", "direction")
+    Resolution priority (for input types):
+    1. Alias lookup (case-insensitive string match)
+    2. Type coercion (python_type or custom coerce_fn)
+    3. Range enforcement (clamp or reject based on strict flag)
+    """
 
-    def __init__(self, description: str, direction: str = "both"):
+    __slots__ = (
+        "description", "direction", "python_type", "coerce_fn",
+        "range_min", "range_max", "aliases", "strict",
+    )
+
+    def __init__(
+        self,
+        description: str,
+        direction: str = "both",
+        python_type: type = str,
+        coerce_fn: Optional[Callable[[Any], Any]] = None,
+        range_min: Optional[float] = None,
+        range_max: Optional[float] = None,
+        aliases: Optional[Dict[str, Any]] = None,
+        strict: bool = False,
+    ):
         if direction not in ("input", "output", "both"):
             raise ValueError(
                 f"direction must be 'input', 'output', or 'both', got '{direction}'"
             )
         self.description = description
         self.direction = direction
+        self.python_type = python_type
+        self.coerce_fn = coerce_fn
+        self.range_min = range_min
+        self.range_max = range_max
+        self.aliases = {k.lower(): v for k, v in (aliases or {}).items()}
+        self.strict = strict
+
+    def resolve(self, raw_value: Any) -> Any:
+        """Coerce, validate, and clamp a raw input value.
+
+        Returns the resolved value.
+        Raises ValueError on unresolvable input (with clear message).
+        """
+        value = raw_value
+
+        # 1. Alias lookup (case-insensitive)
+        if isinstance(value, str) and value.lower() in self.aliases:
+            value = self.aliases[value.lower()]
+
+        # 2. Type coercion
+        if self.coerce_fn:
+            try:
+                value = self.coerce_fn(value)
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"Cannot coerce {raw_value!r} using custom coercion: {e}"
+                ) from e
+        elif self.python_type is not str:
+            # Don't coerce if already correct type
+            if not isinstance(value, self.python_type):
+                try:
+                    value = self.python_type(value)
+                except (ValueError, TypeError) as e:
+                    raise ValueError(
+                        f"Cannot coerce {raw_value!r} to "
+                        f"{self.python_type.__name__}: {e}"
+                    ) from e
+
+        # 3. Range enforcement
+        if self.range_min is not None or self.range_max is not None:
+            try:
+                numeric = float(value)
+            except (ValueError, TypeError):
+                pass  # Non-numeric values skip range check
+            else:
+                if self.strict:
+                    if self.range_min is not None and numeric < self.range_min:
+                        raise ValueError(
+                            f"Value {raw_value!r} ({numeric}) is below "
+                            f"minimum {self.range_min}"
+                        )
+                    if self.range_max is not None and numeric > self.range_max:
+                        raise ValueError(
+                            f"Value {raw_value!r} ({numeric}) exceeds "
+                            f"maximum {self.range_max}"
+                        )
+                else:
+                    # Lenient: clamp silently
+                    if self.range_min is not None and numeric < self.range_min:
+                        value = self.python_type(self.range_min)
+                    if self.range_max is not None and numeric > self.range_max:
+                        value = self.python_type(self.range_max)
+
+        return value
+
+    @property
+    def is_resolvable(self) -> bool:
+        """Whether this type has resolution logic (not passthrough)."""
+        return bool(
+            self.aliases
+            or self.python_type is not str
+            or self.coerce_fn
+            or self.range_min is not None
+            or self.range_max is not None
+        )
 
     def __repr__(self) -> str:
-        return f"SemanticType({self.description!r}, direction={self.direction!r})"
+        parts = [f"description={self.description!r}", f"direction={self.direction!r}"]
+        if self.python_type is not str:
+            parts.append(f"python_type={self.python_type.__name__}")
+        if self.aliases:
+            parts.append(f"aliases={len(self.aliases)}")
+        if self.range_min is not None or self.range_max is not None:
+            parts.append(f"range=[{self.range_min}, {self.range_max}]")
+        if self.strict:
+            parts.append("strict=True")
+        return f"SemanticType({', '.join(parts)})"
 
 
 # ─────────────────────────────────────────────────────────────
 # Registry
 # ─────────────────────────────────────────────────────────────
+#
+# Scaling rule: define coercion per TYPE, not per skill.
+# 40 skills using volume_percentage all inherit the same aliases.
+
+# ── Shared alias sets (DRY) ──
+_PERCENTAGE_ALIASES = {
+    "full": 100, "max": 100, "maximum": 100,
+    "half": 50, "mid": 50, "middle": 50,
+    "low": 20, "min": 0, "minimum": 0,
+    "off": 0, "zero": 0,
+}
 
 SEMANTIC_TYPES: Dict[str, SemanticType] = {
 
@@ -93,6 +220,12 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
     "volume_percentage": SemanticType(
         description="Volume level as an integer 0–100.",
         direction="input",
+        python_type=int,
+        range_min=0, range_max=100,
+        aliases={
+            **_PERCENTAGE_ALIASES,
+            "mute": 0, "quiet": 15, "loud": 85,
+        },
     ),
     "actual_volume": SemanticType(
         description="The actual volume level after adjustment.",
@@ -101,6 +234,12 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
     "brightness_percentage": SemanticType(
         description="Brightness level as an integer 0–100.",
         direction="input",
+        python_type=int,
+        range_min=0, range_max=100,
+        aliases={
+            **_PERCENTAGE_ALIASES,
+            "dim": 20, "bright": 80,
+        },
     ),
     "actual_brightness": SemanticType(
         description="The actual brightness level after adjustment.",

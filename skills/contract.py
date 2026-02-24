@@ -33,7 +33,18 @@ class SkillContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str                                       # domain.action[.variant]
-    description: str = ""                           # For LLM skill manifest
+
+    # ── description (governed field — human-action phrase) ──
+    # This field serves THREE consumers simultaneously:
+    #   1. LLM skill manifest (compiler grounding)
+    #   2. Intent decomposition prompts
+    #   3. NarrationPolicy hot-path narration
+    # Style contract:
+    #   - Imperative human-action phrase: "Open an application"
+    #   - Start with verb, ≤ 6 words
+    #   - No parentheses, no commas, no technical adjectives
+    #   - Not documentation — this is UX-visible
+    description: str = ""
 
     # ── Capability metadata (for intent matching) ──
     action: str = ""                                # Canonical action: "set_volume", "open_app"
@@ -57,14 +68,30 @@ class SkillContract(BaseModel):
     resource_cost: str = "low"                      # "low" | "medium" | "high"
     conflicts_with: List[str] = Field(default_factory=list)  # Skill names that cannot run in parallel
 
+    # ── Intent matching metadata (Phase 10) ──
+    # Used by IntentIndex for scored clause matching — NOT regex.
+    # Contract describes capability. Matcher interprets intent.
+    #
+    # intent_verbs: verbs the user might use to invoke this skill.
+    #   e.g. media_play → ["play", "start", "resume"]
+    # intent_keywords: nouns/synonyms the user might reference.
+    #   e.g. set_volume → ["volume", "sound", "audio"]
+    # intent_priority: tie-breaker when scores are equal (higher wins).
+    #   e.g. mute=2, set_volume=1 → "mute" preferred over "set volume to 0"
+    intent_verbs: List[str] = Field(default_factory=list)
+    intent_keywords: List[str] = Field(default_factory=list)
+    intent_priority: int = 1
+
     # ── Narration metadata (Phase 8) ──
     # Controls how NarrationPolicy announces this skill during execution.
     # narration_visibility:
     #   "foreground" — included in pre-narration (default)
     #   "background" — omitted from narration but logged
     #   "silent"     — completely invisible to narration
-    # narration_verb:
-    #   Optional human-action phrase override, e.g. "Setting volume".
+    # narration_template:
+    #   Optional sentence fragment with {placeholder} interpolation.
+    #   e.g. "set brightness to {level}%"
     #   Empty = auto-generate from description field.
+    #   Use only when: parameterization needed, or shorter phrasing desired.
     narration_visibility: str = "foreground"
-    narration_verb: str = ""
+    narration_template: str = ""
