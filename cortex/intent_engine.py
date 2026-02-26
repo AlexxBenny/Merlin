@@ -275,31 +275,59 @@ class IntentMatcher:
 
         return score, verb_matched, kw_matched
 
+    # ─────────────────────────────────────────────────────────────
+    # Reflex extraction boundary constants
+    # ─────────────────────────────────────────────────────────────
+
+    # Structural words that introduce a parameter but aren't part of it
+    _STRUCTURAL_FILLERS = frozenset({"named", "called", "titled"})
+
+    # Prepositions that signal complex intent (location, direction, condition)
+    # Only trigger escalation for skills WITH optional inputs
+    _ESCALATION_PREPOSITIONS = frozenset({
+        "on", "in", "inside", "under", "at", "into", "from", "for",
+    })
+
+    # Conversational noise — always stripped from string extraction
+    # NOTE: 'my'/'your' intentionally excluded — they can be part of names
+    _CONVERSATIONAL_NOISE = frozenset({
+        "the", "a", "an", "to", "please",
+        "can", "you", "could", "would", "i", "want",
+    })
+
     def _extract_params(
         self,
         skill_name: str,
         raw_tokens: List[str],
         expanded_tokens: List[str],
     ) -> Dict[str, Any]:
-        """Extract parameters using SemanticType aliases + numeric detection."""
+        """Extract parameters using deterministic slot-filling.
+
+        Reflex extraction boundary rules:
+        1. ONLY required inputs are extracted — optional inputs use defaults
+        2. Numeric extraction restricted to numeric semantic types
+        3. Skills with 2+ required string params → return what we have (skip strings)
+        4. Escalation prepositions + optional inputs → skip string extraction
+        5. Single string param → positional (remaining tokens after noise)
+        """
         contract = self._index.contracts[skill_name]
-        all_inputs = {**contract.inputs, **contract.optional_inputs}
         params: Dict[str, Any] = {}
 
-        for key, sem_type_name in all_inputs.items():
+        # ── Step 1: Extract numeric + alias params (required only) ──
+        for key, sem_type_name in contract.inputs.items():
             sem_type = SEMANTIC_TYPES.get(sem_type_name)
             if not sem_type:
                 continue
 
-            # Check aliases first (raw tokens, case-insensitive)
+            # Alias check (e.g. "full" → 100, "max" → 100)
             if sem_type.aliases:
                 for token in raw_tokens:
                     if token.lower() in sem_type.aliases:
                         params[key] = token
                         break
 
-            # Check numeric tokens
-            if key not in params:
+            # Numeric check — ONLY for numeric semantic types
+            if key not in params and sem_type.python_type in (int, float):
                 for token in raw_tokens:
                     try:
                         float(token)
@@ -308,22 +336,63 @@ class IntentMatcher:
                     except ValueError:
                         pass
 
-            # For string-type inputs (like app_name), collect remaining
-            # non-verb, non-keyword tokens as value
-            if key not in params and sem_type.python_type is str:
-                # Find tokens that aren't verbs or keywords
-                noise = set()
-                for v in contract.intent_verbs:
-                    noise.add(v.lower())
-                for k in contract.intent_keywords:
-                    noise.add(k.lower())
-                # Also exclude synonym canonical forms
-                for v in VERB_SYNONYMS.values():
-                    noise.add(v)
-                for n in NOUN_SYNONYMS.values():
-                    noise.add(n)
-                remaining = [t for t in raw_tokens if t.lower() not in noise]
-                if remaining:
-                    params[key] = " ".join(remaining)
+        # ── Step 2: String param extraction ──
+        string_params = [
+            (k, v) for k, v in contract.inputs.items()
+            if k not in params  # not already extracted
+            and SEMANTIC_TYPES.get(v) is not None
+            and SEMANTIC_TYPES[v].python_type is str
+        ]
+
+        # 2a: Multiple required string params → cannot assign deterministically
+        #     Return what we have (numeric/alias), skip strings → forces mission
+        if len(string_params) >= 2:
+            return params
+
+        # 2b: Exactly one required string param → positional extraction
+        if len(string_params) == 1:
+            key, sem_type_name = string_params[0]
+
+            # Escalation guard: if skill has optional inputs AND
+            # a preposition is detected → skip string extraction (→ mission)
+            if contract.optional_inputs:
+                for token in raw_tokens:
+                    if token.lower() in self._ESCALATION_PREPOSITIONS:
+                        logger.debug(
+                            "IntentMatcher: preposition '%s' detected for "
+                            "skill with optional inputs → skip string extraction",
+                            token,
+                        )
+                        return params
+
+            # Build comprehensive noise set
+            noise: set = set()
+            for v in contract.intent_verbs:
+                noise.add(v.lower())
+            for k in contract.intent_keywords:
+                noise.add(k.lower())
+            noise.update(self._STRUCTURAL_FILLERS)
+            noise.update(self._CONVERSATIONAL_NOISE)
+            # Synonym canonical forms
+            for v in VERB_SYNONYMS.values():
+                noise.add(v)
+            for n in NOUN_SYNONYMS.values():
+                noise.add(n)
+            # Exclude numeric tokens (already extracted or not relevant)
+            numeric_tokens = set()
+            for t in raw_tokens:
+                try:
+                    float(t)
+                    numeric_tokens.add(t)
+                except ValueError:
+                    pass
+
+            remaining = [
+                t for t in raw_tokens
+                if t.lower() not in noise and t not in numeric_tokens
+            ]
+            if remaining:
+                params[key] = " ".join(remaining)
 
         return params
+

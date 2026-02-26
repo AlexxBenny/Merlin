@@ -240,9 +240,14 @@ class Merlin:
 
         Flow:
         1. Try template match (pattern → parameters → skill)
-        2. If template matches → execute, return structured result
-        3. If execution fails → report failure (NEVER escalate)
-        4. If no match → fallback to MISSION (safe bias)
+        2. Resolve parameters (alias coercion: "full"→100, "half"→50)
+        3. Execute directly (no LLM narration, no LLM report)
+        4. Format response from skill metadata (state-aware)
+        5. If no match → fallback to MISSION (safe bias)
+
+        Why not orchestrator? Reflex must be fast (<200ms).
+        Orchestrator adds LLM narration + LLM report generation.
+        ParameterResolver is injected directly here instead.
         """
 
         # Try template matching
@@ -254,6 +259,42 @@ class Merlin:
                 reflex_match.skill,
                 reflex_match.params,
             )
+
+            # ── Phase 9A: Resolve parameters (alias coercion) ──
+            # Build a temporary plan so resolver can do typed coercion
+            import time as _time
+            from ir.mission import MissionPlan, MissionNode, IR_VERSION
+            from cortex.parameter_resolver import ParameterResolver, ParameterError
+
+            temp_plan = MissionPlan(
+                id=f"reflex_{int(_time.time())}",
+                nodes=[
+                    MissionNode(
+                        id="reflex_0",
+                        skill=reflex_match.skill,
+                        inputs=reflex_match.params,
+                    )
+                ],
+                metadata={"ir_version": IR_VERSION},
+            )
+
+            try:
+                resolver = ParameterResolver(self.reflex_engine.registry)
+                resolved_plan = resolver.resolve_plan(temp_plan)
+                # Update match params with resolved values
+                resolved_inputs = resolved_plan.nodes[0].inputs
+                from runtime.reflex_engine import ReflexMatch
+                reflex_match = ReflexMatch(
+                    skill=reflex_match.skill,
+                    params=resolved_inputs,
+                )
+            except ParameterError as pe:
+                response = pe.user_message()
+                self.output_channel.send(response)
+                self.conversation.append_turn("assistant", response)
+                return response
+
+            # Execute directly — no narration, no LLM report
             result: ReflexResult = self.reflex_engine.execute_reflex(
                 reflex_match, snapshot=snapshot,
             )

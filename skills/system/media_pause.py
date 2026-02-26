@@ -59,7 +59,9 @@ class MediaPauseSkill(Skill):
         # ── State guard ──────────────────────────────────────
         media = snapshot.state.media if snapshot and snapshot.state else None
 
-        if media is None:
+        # After bootstrap, media is MediaState() (never None) even with
+        # no active session. Check for empty state: no platform + no title.
+        if media is None or (not media.platform and not media.title):
             return SkillResult(
                 outputs={"changed": False},
                 metadata={"domain": "system", "reason": "no_media_session"},
