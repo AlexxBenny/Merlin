@@ -261,6 +261,11 @@ def main(args=None):
     except Exception as e:
         logger.warning("clarifier init failed: %s", e)
 
+    # ── Structural Analyzer (deterministic, no LLM) ──
+    from brain.structural_classifier import StructuralAnalyzer
+    structural_analyzer = StructuralAnalyzer()
+    logger.info("StructuralAnalyzer enabled (deterministic feature analysis)")
+
     # ── Core components ──
     timeline = WorldTimeline()
     registry = SkillRegistry()
@@ -269,7 +274,7 @@ def main(args=None):
     paths_yaml = CONFIG_DIR / "paths.yaml"
     location_config = LocationConfig.from_yaml(paths_yaml)
 
-    # BrainCore — config-driven circuit breaker
+    # BrainCore — three-stage hybrid routing
     # ReflexEngine must be built first so BrainCore can delegate try_match()
     reflex = ReflexEngine(timeline, registry=registry)
     template_entries = routing_config.get("reflex_templates", [])
@@ -282,7 +287,9 @@ def main(args=None):
     brain = BrainCore(
         mission_indicators=routing_config.get("mission_indicators", []),
         refuse_indicators=routing_config.get("refuse_indicators", []),
+        relational_indicators=routing_config.get("relational_indicators", []),
         reflex_engine=reflex,
+        analyzer=structural_analyzer,
     )
 
     # EscalationPolicy — context-aware triage

@@ -193,6 +193,21 @@ class ReflexEngine:
         if self._intent_matcher:
             intent_match = self._intent_matcher.match_clause(text_normalized)
             if intent_match:
+                # Defense-in-depth: verify required params are present.
+                # If extraction failed (e.g., escalation preposition
+                # detected), reject the match → falls to MISSION.
+                contract = self._intent_matcher._index.contracts[
+                    intent_match.skill_name
+                ]
+                for key in contract.inputs:
+                    if key not in intent_match.params:
+                        logger.debug(
+                            "Reflex: '%s' matched %s but missing required "
+                            "param '%s' → reject",
+                            text[:50], intent_match.skill_name, key,
+                        )
+                        return None
+
                 logger.debug(
                     "Reflex match: HIT via IntentMatcher skill=%s score=%.1f",
                     intent_match.skill_name, intent_match.score,
@@ -280,6 +295,28 @@ class ReflexEngine:
         if len(clauses) < 2:
             return None
 
+        # Verb-or-keyword clause awareness:
+        # Each clause must contain at least one recognized verb or keyword
+        # to be a valid split point. This prevents noun conjunctions
+        # ("alex and ai") from being treated as clause separators.
+        if self._intent_matcher:
+            from cortex.synonyms import expand_token
+            idx = self._intent_matcher._index
+            for clause in clauses:
+                tokens = clause.lower().split()
+                has_signal = any(
+                    expand_token(t) in idx.verb_index
+                    or expand_token(t) in idx.keyword_index
+                    for t in tokens
+                )
+                if not has_signal:
+                    logger.debug(
+                        "Multi-reflex: clause '%s' has no verb/keyword "
+                        "signal → reject split",
+                        clause,
+                    )
+                    return None
+
         logger.debug(
             "Multi-reflex: %d clauses from '%s': %r",
             len(clauses), text_normalized[:60], clauses,
@@ -310,11 +347,26 @@ class ReflexEngine:
         """Match a single clause (no normalization — already done).
 
         Priority: IntentMatcher → regex fallback.
+        Defense-in-depth: reject matches with missing required params.
         """
         # Primary: scored intent matching
         if self._intent_matcher:
             intent_match = self._intent_matcher.match_clause(clause)
             if intent_match:
+                # Defense-in-depth: verify required params are present.
+                # If extraction returned empty for a required input
+                # (e.g., escalation preposition detected), reject the match.
+                contract = self._intent_matcher._index.contracts[
+                    intent_match.skill_name
+                ]
+                for key in contract.inputs:
+                    if key not in intent_match.params:
+                        logger.debug(
+                            "Multi-reflex: '%s' matched %s but missing "
+                            "required param '%s' → reject",
+                            clause, intent_match.skill_name, key,
+                        )
+                        return None
                 return ReflexMatch(
                     skill=intent_match.skill_name,
                     params=intent_match.params,

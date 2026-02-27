@@ -124,3 +124,43 @@ referential_markers:
   - "the previous"
   - "it"
   - "that"
+
+# ─────────────────────────────────────────────────────────────
+# Relational Indicators (Multi-Reflex Gate)
+# ─────────────────────────────────────────────────────────────
+# Tokens that signal inter-clause semantic dependency.
+# If ANY appear in a multi-clause command → skip multi-reflex → MISSION.
+#
+# Matched as normalized tokens, NOT substrings:
+#   - Unigrams: single token match (e.g., "inside" matches token "inside")
+#   - Bigrams: two-token sequence match (e.g., "after that" matches "after"+"that")
+#
+# This prevents "other" from matching "mother", "it" from matching "exit", etc.
+#
+# Categories:
+#   Hierarchy:    inter-clause spatial/structural dependency
+#   Pronouns:     coreference to prior clause output
+#   References:   entity reference across clauses
+#   Sequencing:   temporal dependency between clauses
+relational_indicators:
+  # Hierarchy / location
+  - "inside"
+  - "within"
+  - "between"
+  # Pronouns (coreference) — "it" and "this" removed (too many
+  # false positives on grammatical constructs like "what day is it").
+  # These are now handled by the structural classifier's
+  # requires_context flag when the classifier is available.
+  - "them"
+  - "those"
+  - "these"
+  # Reference indicators
+  - "another"
+  - "same"
+  - "previous"
+  - "other"
+  # Sequence dependency (bigrams — matched as token pairs)
+  - "after that"
+  - "once done"
+  - "based on"
+

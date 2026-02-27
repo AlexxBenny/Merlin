@@ -86,6 +86,11 @@ VERB_SYNONYMS: Dict[str, str] = {
     "show": "list",
     "display": "list",
     "what": "list",
+
+    # query/info family
+    "check": "status",
+    "report": "status",
+    "how": "status",
 }
 
 
@@ -97,6 +102,7 @@ NOUN_SYNONYMS: Dict[str, str] = {
     "speaker": "volume",
     "speakers": "volume",
     "audio": "volume",
+    "sounds": "volume",
 
     # brightness
     "light": "brightness",
@@ -116,10 +122,32 @@ NOUN_SYNONYMS: Dict[str, str] = {
     "program": "app",
     "window": "app",
     "process": "app",
+    "apps": "app",
+    "applications": "app",
+    "programs": "app",
+    "windows": "app",
 
     # folder
     "directory": "folder",
     "dir": "folder",
+    "folders": "folder",
+    "directories": "folder",
+    "dirs": "folder",
+
+    # battery / power
+    "power": "battery",
+    "charge": "battery",
+    "charging": "battery",
+
+    # system / computer
+    "computer": "system",
+    "machine": "system",
+    "pc": "system",
+    "laptop": "system",
+
+    # time / clock
+    "clock": "time",
+    "hour": "time",
 
     # night light
     "night light": "nightlight",

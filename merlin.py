@@ -340,9 +340,12 @@ class Merlin:
         """
         Format an intelligent reflex response from skill outputs/metadata.
 
-        State-aware skills return metadata with 'reason' keys.
-        This method maps those reasons to natural-language responses.
-        Falls back to generic "Done." for skills without metadata.
+        Priority:
+        1. reason-based (state-aware: already_playing, no_media_session)
+        2. changed-flag (play → Playing., pause → Paused.)
+        3. response_template in metadata (query skills: "It is {time}")
+        4. output data dump (fallback for query skills without template)
+        5. generic "Done." (mutating skills without metadata)
         """
         # Read reason from skill metadata channel (SkillResult.metadata)
         reason = result.metadata.get("reason") if result.metadata else None
@@ -367,6 +370,27 @@ class Merlin:
                 return "Previous track."
         elif changed is False and reason:
             return self._REASON_RESPONSES.get(reason, f"Done. ({skill_name})")
+
+        # Query skill formatting: skills with data outputs
+        # Priority: response_template in metadata > generic output dump
+        if result.outputs:
+            # 1. Template-based: skill provides format string in metadata
+            template = result.metadata.get("response_template") if result.metadata else None
+            if template:
+                try:
+                    return template.format(**result.outputs)
+                except (KeyError, IndexError):
+                    pass  # Fall through to generic
+
+            # 2. Generic: format all non-trivial outputs as readable text
+            # Skip outputs that are just status flags
+            data_outputs = {
+                k: v for k, v in result.outputs.items()
+                if v is not None and v != "unknown" and k != "changed"
+            }
+            if data_outputs:
+                parts = [f"{k}: {v}" for k, v in data_outputs.items()]
+                return ", ".join(parts)
 
         return f"Done. ({skill_name})"
 

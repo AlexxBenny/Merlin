@@ -11,7 +11,7 @@ Design rules:
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional, Union
 from urllib import request, error
 
 from models.base import LLMClient
@@ -49,6 +49,7 @@ class OllamaClient(LLMClient):
         prompt: str,
         *,
         temperature: Optional[float] = None,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> str:
         """
         Send a prompt to Ollama and return the response text.
@@ -57,6 +58,10 @@ class OllamaClient(LLMClient):
             prompt: The prompt string.
             temperature: Optional per-call override. Falls back to
                          default_temperature if not provided.
+            format: Optional output format constraint.
+                    - "json": basic JSON mode
+                    - dict: JSON schema for structured output (Ollama v0.5+)
+                    - None: unconstrained text output
 
         Raises:
             ConnectionError: if Ollama is unreachable
@@ -74,6 +79,8 @@ class OllamaClient(LLMClient):
         }
         if effective_temp is not None:
             payload_dict["options"] = {"temperature": effective_temp}
+        if format is not None:
+            payload_dict["format"] = format
 
         payload = json.dumps(payload_dict).encode("utf-8")
 

@@ -22,3 +22,10 @@ clarifier:
   model: llama3:8b
   base_url: http://localhost:11434
   temperature: 0.1
+
+query_classifier:
+  provider: ollama
+  model: phi3:mini
+  base_url: http://localhost:11434
+  temperature: 0.0
+  timeout: 5.0

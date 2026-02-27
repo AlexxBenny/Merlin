@@ -51,6 +51,18 @@ MATCH_THRESHOLD = 3      # Minimum score to accept a match
                          # protects against ambiguity.
 MARGIN_RATIO = 1.5       # Top score must be >= this × runner-up
 
+# Verbs that are semantically generic — they describe an action class,
+# not a specific operation. Require keyword disambiguation.
+# "create X" could be folder/file/project/etc — needs keyword to resolve.
+# "open chrome" is self-identifying — no keyword needed.
+# Long-term: move to per-skill contract.verb_specificity metadata.
+GENERIC_VERBS = frozenset({
+    "create", "make", "new",           # Creation verbs
+    "set", "adjust", "change",         # Configuration verbs
+    "show", "get", "check",            # Query verbs
+    "start",                           # Ambiguous (app? music? timer?)
+})
+
 
 # ─────────────────────────────────────────────────────────────
 # Data classes
@@ -201,8 +213,31 @@ class IntentMatcher:
                 )
                 return None
 
-        # 7. Extract parameters
+        # 7. Generic verb gate (symmetric — applies to ALL skills)
+        #    Generic verbs describe action classes, not specific operations.
+        #    Without keyword disambiguation, intent is ambiguous.
+        #    "create X" → folder? file? project? → need keyword.
+        #    "open chrome" → self-identifying verb → no keyword needed.
+        if top_verb in GENERIC_VERBS and not top_kw:
+            logger.debug(
+                "IntentMatcher: '%s' → generic verb '%s' without keyword → reject",
+                clause, top_verb,
+            )
+            return None
+
+        # 8. Extract parameters
         params = self._extract_params(top_name, tokens, expanded)
+
+        # Extraction failure → reject match entirely.
+        # This happens when escalation prepositions are detected
+        # for skills with optional inputs — the intent is too
+        # complex for deterministic extraction → escalate to MISSION.
+        if params is None:
+            logger.debug(
+                "IntentMatcher: '%s' → %s extraction failed → reject",
+                clause, top_name,
+            )
+            return None
 
         logger.info(
             "IntentMatcher: '%s' → %s (score=%.1f, verb=%s, kw=%s, params=%r)",
@@ -354,16 +389,18 @@ class IntentMatcher:
             key, sem_type_name = string_params[0]
 
             # Escalation guard: if skill has optional inputs AND
-            # a preposition is detected → skip string extraction (→ mission)
+            # a preposition is detected → extraction FAILS entirely.
+            # Return None to signal that this match should be rejected.
+            # The query is too complex for deterministic extraction.
             if contract.optional_inputs:
                 for token in raw_tokens:
                     if token.lower() in self._ESCALATION_PREPOSITIONS:
                         logger.debug(
                             "IntentMatcher: preposition '%s' detected for "
-                            "skill with optional inputs → skip string extraction",
+                            "skill with optional inputs → extraction failed",
                             token,
                         )
-                        return params
+                        return None
 
             # Build comprehensive noise set
             noise: set = set()

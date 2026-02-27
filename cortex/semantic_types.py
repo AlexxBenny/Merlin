@@ -271,6 +271,15 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="List of running applications.",
         direction="output",
     ),
+
+    # ── Reusable output type for query skills ──
+    # All human-readable string outputs use this ONE type.
+    # Output types are semantic categories, not per-field labels.
+    # Scales: 500 query skills, 1 output type.
+    "info_string": SemanticType(
+        description="A human-readable informational string.",
+        direction="output",
+    ),
 }
 
 

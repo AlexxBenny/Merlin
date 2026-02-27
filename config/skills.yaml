@@ -98,6 +98,24 @@ skills:
     module: "skills.system.media_previous"
     class: "MediaPreviousSkill"
 
+  # ── Tier 0: Query skills (read WorldSnapshot, zero LLM) ──
+
+  - name: "system.get_time"
+    module: "skills.system.get_time"
+    class: "GetTimeSkill"
+
+  - name: "system.get_battery"
+    module: "skills.system.get_battery"
+    class: "GetBatterySkill"
+
+  - name: "system.get_system_status"
+    module: "skills.system.get_system_status"
+    class: "GetSystemStatusSkill"
+
+  - name: "system.get_now_playing"
+    module: "skills.system.get_now_playing"
+    class: "GetNowPlayingSkill"
+
   # - name: "browser.open"
   #   module: "skills.browser.open"
   #   class: "BrowserOpenSkill"

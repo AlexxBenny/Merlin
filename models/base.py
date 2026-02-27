@@ -11,7 +11,7 @@ Design rules:
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Dict, Optional, Union
 
 
 class LLMClient(ABC):
@@ -28,6 +28,7 @@ class LLMClient(ABC):
         prompt: str,
         *,
         temperature: Optional[float] = None,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> str:
         """Send a prompt and return the response text.
 
@@ -35,6 +36,10 @@ class LLMClient(ABC):
             prompt: The prompt string.
             temperature: Optional per-call temperature override.
                          If None, use the client's default temperature.
+            format: Optional output format constraint.
+                    - "json": basic JSON mode
+                    - dict: JSON schema for structured output (Ollama v0.5+)
+                    - None: unconstrained text output
 
         Returns:
             The LLM's response as a string.
