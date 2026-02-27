@@ -4,28 +4,73 @@
 ModelRouter — role-based LLM client lookup.
 
 Reads config/models.yaml and produces one LLMClient per role.
-Currently supports only the 'ollama' provider.
+Supports: ollama, openrouter, gemini, huggingface.
 
 Design rules:
 - Config is the SINGLE SOURCE OF TRUTH for model selection.
-- No retries, no fallback, no provider abstraction beyond Ollama (Phase 2).
+- No retries, no fallback.
 - Temperature defaults come from config; callers can override per-call.
+- API key resolution: config.api_key → env var → error.
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from models.base import LLMClient
 from models.ollama_client import OllamaClient
+from models.openrouter_client import OpenRouterClient
+from models.gemini_client import GeminiClient
+from models.huggingface_client import HuggingFaceClient
 
 
 logger = logging.getLogger(__name__)
 
-# Supported providers — extend in future phases
+
+def _resolve_api_key(cfg: Dict[str, Any], env_var: str) -> str:
+    """Resolve API key: config → env → error."""
+    key = cfg.get("api_key") or os.environ.get(env_var)
+    if not key:
+        raise ValueError(
+            f"API key required. Set 'api_key' in models.yaml "
+            f"or {env_var} environment variable."
+        )
+    return key
+
+
+# Supported providers
 _PROVIDER_FACTORIES = {
     "ollama": lambda cfg: OllamaClient(
         model=cfg.get("model", "llama3"),
         base_url=cfg.get("base_url", "http://localhost:11434"),
+        timeout=cfg.get("timeout", 120.0),
+        temperature=cfg.get("temperature"),
+    ),
+    "openrouter": lambda cfg: OpenRouterClient(
+        model=cfg["model"],
+        api_key=_resolve_api_key(cfg, "OPENROUTER_API_KEY"),
+        base_url=cfg.get("base_url", "https://openrouter.ai/api/v1"),
+        timeout=cfg.get("timeout", 120.0),
+        temperature=cfg.get("temperature"),
+        max_tokens=cfg.get("max_tokens"),
+    ),
+    "gemini": lambda cfg: GeminiClient(
+        model=cfg["model"],
+        api_key=_resolve_api_key(cfg, "GEMINI_API_KEY"),
+        base_url=cfg.get(
+            "base_url",
+            "https://generativelanguage.googleapis.com/v1beta",
+        ),
+        timeout=cfg.get("timeout", 120.0),
+        temperature=cfg.get("temperature"),
+        max_tokens=cfg.get("max_tokens"),
+    ),
+    "huggingface": lambda cfg: HuggingFaceClient(
+        model=cfg["model"],
+        api_key=_resolve_api_key(cfg, "HUGGINGFACE_API_KEY"),
+        base_url=cfg.get(
+            "base_url", "https://api-inference.huggingface.co",
+        ),
         timeout=cfg.get("timeout", 120.0),
         temperature=cfg.get("temperature"),
     ),

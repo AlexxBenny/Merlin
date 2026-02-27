@@ -106,6 +106,10 @@ logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(__file__).parent / "config"
 
+# Load .env into os.environ before any config reads
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
+
 
 def load_yaml(filename: str) -> dict:
     """Load a YAML config file, return empty dict if missing."""
