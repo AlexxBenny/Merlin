@@ -28,6 +28,7 @@ class ListAppsSkill(Skill):
         description="List running applications",
         intent_verbs=["list", "show", "what"],
         intent_keywords=["apps", "applications", "running", "programs"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=False,
         inputs={},

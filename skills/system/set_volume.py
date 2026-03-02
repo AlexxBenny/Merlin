@@ -34,6 +34,7 @@ class SetVolumeSkill(Skill):
         narration_template="set volume to {level}%",
         intent_verbs=["set", "adjust", "change"],
         intent_keywords=["volume", "sound", "audio", "loudness"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=False,
         resource_cost="low",

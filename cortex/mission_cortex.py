@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from cortex.json_extraction import extract_json_block, extract_json_array
@@ -39,6 +40,20 @@ logger = logging.getLogger(__name__)
 
 class MissionCompilationError(Exception):
     """Raised when the LLM fails to produce a valid MissionPlan."""
+
+
+@dataclass
+class DecompositionResult:
+    """Result of intent decomposition — deterministic capability boundary.
+
+    valid_intents: actions that map to registered skills.
+    unsupported_intents: actions the user requested but no skill exists for.
+
+    This is the single point where capability gaps become explicit.
+    Downstream consumers never guess — they receive classified truth.
+    """
+    valid_intents: List[Dict[str, Any]] = field(default_factory=list)
+    unsupported_intents: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class MissionCortex:
@@ -141,7 +156,7 @@ class MissionCortex:
         self,
         user_query: str,
         domain_filter: Optional[set] = None,
-    ) -> Optional[List[Dict[str, str]]]:
+    ) -> Optional["DecompositionResult"]:
         """Pre-compile intent decomposition. Tier 2+ only.
 
         Args:
@@ -155,13 +170,11 @@ class MissionCortex:
         the canonical action vocabulary from registered skill contracts.
         Returns None on failure (graceful degradation to Tier 1).
 
-        Each intent unit:
-        {
-            "action": "set_volume",
-            "parameters": {"level": 70}
-        }
+        Returns a DecompositionResult partitioning intents into:
+        - valid_intents: actions mapped to registered skills
+        - unsupported_intents: actions the user requested but no skill exists for
 
-        Token cap: returns at most MAX_INTENT_INJECTION entries.
+        Token cap: valid_intents capped at MAX_INTENT_INJECTION entries.
         Verification must operate on the SAME set returned here.
         """
         if self.llm is None:
@@ -202,11 +215,19 @@ canonical action types listed below.
 Available actions:
 {vocab_block}
 
-Output a JSON array. Each element:
-{{"action": "<action_from_list>", "parameters": {{<key: value pairs>}}}}
+Output a JSON array. Each element is one of:
+  Supported:   {{"action": "<action_from_list>", "parameters": {{<key: value pairs>}}}}
+  Unsupported: {{"action": "UNSUPPORTED", "description": "<what the user wanted>"}}
 
 Rules:
-- "action" MUST be one of the action names listed above. Do not invent new ones.
+- "action" MUST be one of the action names listed above, OR "UNSUPPORTED".
+- If a part of the request cannot be mapped to any listed action, emit UNSUPPORTED
+  with a description of what the user wanted. Do NOT silently ignore it.
+- Do NOT approximate: if the requested operation does not semantically match
+  a listed action, emit UNSUPPORTED. Do not force-fit to a similar action.
+  Each action has a specific target type — do not substitute one for another.
+- Every meaningful clause in the user request must produce exactly one entry:
+  either a valid action or an UNSUPPORTED entry. No clause may be omitted.
 - "parameters" should contain the input values for that action.
 - One entry per distinct action. Do NOT merge actions.
 - Output ONLY the JSON array. No explanation. No markdown.
@@ -232,34 +253,49 @@ User query:
                 )
                 return None
 
-            # Validate structure: each entry must have "action"
-            valid_intents = []
+            # Partition into valid and unsupported intents
+            valid_intents: List[Dict[str, Any]] = []
+            unsupported_intents: List[Dict[str, Any]] = []
+
             for intent in intents:
-                if isinstance(intent, dict) and "action" in intent:
+                if not isinstance(intent, dict) or "action" not in intent:
+                    continue
+                action = str(intent["action"])
+                if action == "UNSUPPORTED":
+                    unsupported_intents.append({
+                        "action": "UNSUPPORTED",
+                        "description": str(intent.get("description", "")),
+                    })
+                else:
                     valid_intents.append({
-                        "action": str(intent.get("action", "")),
+                        "action": action,
                         "parameters": intent.get("parameters", {}),
                     })
 
-            if not valid_intents:
+            if not valid_intents and not unsupported_intents:
                 logger.warning(
-                    "[DECOMPOSE] No valid intents extracted — degrading to Tier 1"
+                    "[DECOMPOSE] No intents extracted — degrading to Tier 1"
                 )
                 return None
 
-            # Token cap: truncate to MAX_INTENT_INJECTION
+            # Token cap: truncate valid intents to MAX_INTENT_INJECTION
             if len(valid_intents) > self.MAX_INTENT_INJECTION:
                 logger.info(
-                    "[DECOMPOSE] Truncating %d intents to %d (token cap)",
+                    "[DECOMPOSE] Truncating %d valid intents to %d (token cap)",
                     len(valid_intents), self.MAX_INTENT_INJECTION,
                 )
                 valid_intents = valid_intents[:self.MAX_INTENT_INJECTION]
 
             logger.info(
-                "[DECOMPOSE] Extracted %d intent units for '%s'",
-                len(valid_intents), user_query[:80],
+                "[DECOMPOSE] Extracted %d valid + %d unsupported intent units "
+                "for '%s'",
+                len(valid_intents), len(unsupported_intents),
+                user_query[:80],
             )
-            return valid_intents
+            return DecompositionResult(
+                valid_intents=valid_intents,
+                unsupported_intents=unsupported_intents,
+            )
 
         except (ConnectionError, RuntimeError) as e:
             logger.warning(

@@ -433,6 +433,19 @@ def main(args=None):
     else:
         logger.info("Narration disabled in config")
 
+    # ── Cognitive Coordinator (bounded reasoning pre-phase) ──
+    from cortex.cognitive_coordinator import LLMCognitiveCoordinator
+    coordinator = None
+    try:
+        coordinator_client = router.get_client("cognitive_coordinator")
+        if coordinator_client.is_available():
+            coordinator = LLMCognitiveCoordinator(llm=coordinator_client)
+            logger.info("CognitiveCoordinator: LLMCognitiveCoordinator (Phase 1)")
+        else:
+            logger.warning("cognitive_coordinator LLM not available")
+    except Exception as e:
+        logger.warning("cognitive_coordinator init failed: %s", e)
+
     # ── Build Merlin ──
     merlin = Merlin(
         brain=brain,
@@ -452,6 +465,7 @@ def main(args=None):
         memory=memory_store,
         attention_manager=attention_manager,
         narration_policy=narration_policy,
+        coordinator=coordinator,
     )
 
 

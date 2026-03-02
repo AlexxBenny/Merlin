@@ -196,9 +196,10 @@ class BrainCore:
                 if self._reflex_engine and self._reflex_engine.try_match(text):
                     return CognitiveRoute.REFLEX
 
-            # Any flag true → MISSION (analyzer blocked reflex)
+            # Either a feature flag blocked reflex, or no unambiguous
+            # IntentMatcher match was found despite reflex eligibility.
             logger.info(
-                "BrainCore: analyzer blocked reflex for '%s': %s",
+                "BrainCore: no unambiguous reflex match for '%s' (features=%s)",
                 text[:50], features,
             )
             return CognitiveRoute.MISSION

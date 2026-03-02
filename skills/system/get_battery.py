@@ -1,14 +1,16 @@
 # skills/system/get_battery.py
 
 """
-GetBatterySkill — Deterministic battery query from WorldSnapshot.
+GetBatterySkill — Live battery query.
 
 Returns battery percentage, charging status, and health classification
-from HardwareState maintained by SystemSource. O(1), zero LLM.
+from psutil.sensors_battery(). Authoritative source: OS sensor.
 
-Battery is sensor data — it must never go through an LLM.
+data_freshness="live" — battery is ephemeral telemetry.
+The snapshot is passed but NOT used for the primary output.
 """
 
+import logging
 from typing import Any, Dict
 
 from skills.skill_result import SkillResult
@@ -17,12 +19,21 @@ from skills.contract import SkillContract, FailurePolicy
 from ir.mission import ExecutionMode
 from world.timeline import WorldTimeline
 
+logger = logging.getLogger(__name__)
+
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+    logger.warning("psutil not installed — GetBatterySkill will return unknown")
+
 
 class GetBatterySkill(Skill):
     """
     Get current battery status.
 
-    Reads directly from WorldSnapshot — no OS calls, no LLM.
+    Reads live from psutil.sensors_battery() — never stale.
     Zero inputs required.
     """
 
@@ -49,21 +60,19 @@ class GetBatterySkill(Skill):
         emits_events=[],
         mutates_world=False,
         idempotent=True,
+        data_freshness="live",
     )
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
-        if snapshot is None:
+        if not _HAS_PSUTIL:
             return SkillResult(
-                outputs={"percent": "unknown", "charging": "unknown", "status": "unknown"},
+                outputs={"percent": "unknown", "charging": "unknown", "status": "psutil not installed"},
                 metadata={"domain": "system"},
             )
 
-        hw = snapshot.state.system.hardware
-        percent = hw.battery_percent
-        charging = hw.battery_charging
-        status = hw.battery_status or "unknown"
+        battery = psutil.sensors_battery()
 
-        if percent is None:
+        if battery is None:
             return SkillResult(
                 outputs={"percent": "unknown", "charging": "unknown", "status": "no battery detected"},
                 metadata={
@@ -71,6 +80,18 @@ class GetBatterySkill(Skill):
                     "response_template": "No battery detected.",
                 },
             )
+
+        percent = battery.percent
+        charging = battery.power_plugged
+
+        if charging:
+            status = "charging"
+        elif percent <= 10:
+            status = "critical"
+        elif percent <= 20:
+            status = "low"
+        else:
+            status = "normal"
 
         charging_text = ", charging" if charging else ""
         return SkillResult(

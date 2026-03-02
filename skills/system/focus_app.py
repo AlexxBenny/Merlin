@@ -30,6 +30,7 @@ class FocusAppSkill(Skill):
         narration_template="focus {app_name}",
         intent_verbs=["focus", "switch", "bring"],
         intent_keywords=["app", "application", "window"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=True,
         inputs={"app_name": "application_name"},

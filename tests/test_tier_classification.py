@@ -70,7 +70,7 @@ class TestCognitiveTierEnum:
 
     def test_all_members(self):
         names = {t.name for t in CognitiveTier}
-        assert names == {"SIMPLE", "MULTI_INTENT", "HIERARCHICAL"}
+        assert names == {"SIMPLE", "MULTI_INTENT", "HIERARCHICAL", "REASONING"}
 
 
 # ── Protocol Tests ───────────────────────────────────────────

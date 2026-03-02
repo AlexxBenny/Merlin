@@ -31,6 +31,7 @@ class OpenAppSkill(Skill):
         narration_template="open {app_name}",
         intent_verbs=["open", "launch", "start", "run"],
         intent_keywords=["app", "application", "program"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=True,
         inputs={

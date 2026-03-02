@@ -29,8 +29,13 @@ mission_compiler:
   # model: mistralai/Mistral-7B-Instruct-v0.3
 
 report_generator:
-  provider: openrouter
-  model: deepseek/deepseek-chat
+  #provider: openrouter
+  #model: deepseek/deepseek-chat
+  #temperature: 0.6
+  #max_tokens: 4096
+  provider: ollama
+  model: llama3:8b
+  base_url: http://localhost:11434
   temperature: 0.6
   max_tokens: 4096
 
@@ -39,3 +44,23 @@ clarifier:
   model: llama3:8b
   base_url: http://localhost:11434
   temperature: 0.1
+
+cognitive_coordinator:
+  # Bounded reasoning engine — pure reasoning, date math, knowledge,
+  # and variable computation for mixed reasoning+action queries.
+  # Phase 1: single LLM call, no loops.
+  provider: openrouter
+  model: google/gemini-2.5-flash
+  temperature: 0.3
+  max_tokens: 2048
+  # ── Switch to Ollama ──
+  # provider: ollama
+  # model: llama3:8b
+  # base_url: http://localhost:11434
+  # ── Switch to Gemini ──
+  # provider: gemini
+  # model: gemini-2.0-flash
+  # max_tokens: 2048
+  # ── Switch to HuggingFace ──
+  # provider: huggingface
+  # model: mistralai/Mistral-7B-Instruct-v0.3

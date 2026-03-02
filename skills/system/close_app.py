@@ -30,6 +30,7 @@ class CloseAppSkill(Skill):
         narration_template="close {app_name}",
         intent_verbs=["close", "quit", "exit", "kill"],
         intent_keywords=["app", "application", "program"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=True,
         inputs={"app_name": "application_name"},

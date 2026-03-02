@@ -1,14 +1,16 @@
 # skills/system/get_time.py
 
 """
-GetTimeSkill — Deterministic clock query from WorldSnapshot.
+GetTimeSkill — Live clock query.
 
-Returns current time, date, and day of week from the TimeState
-maintained by TimeSource. O(1), zero LLM, zero OS calls.
+Returns current time, date, and day of week from datetime.now().
+O(1), zero LLM, zero latency. Authoritative source: stdlib.
 
-Time is sensor data — it must never go through an LLM.
+data_freshness="live" — time is ephemeral telemetry.
+The snapshot is passed but NOT used for the primary output.
 """
 
+from datetime import datetime
 from typing import Any, Dict
 
 from skills.skill_result import SkillResult
@@ -22,7 +24,7 @@ class GetTimeSkill(Skill):
     """
     Get current time, date, and day of week.
 
-    Reads directly from WorldSnapshot — no OS calls, no LLM.
+    Reads live from datetime.now() — never stale.
     Zero inputs required.
     """
 
@@ -49,29 +51,21 @@ class GetTimeSkill(Skill):
         emits_events=[],
         mutates_world=False,
         idempotent=True,
+        data_freshness="live",
     )
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
-        if snapshot is None or snapshot.state.time is None:
-            return SkillResult(
-                outputs={"time": "unknown", "date": "unknown", "day": "unknown"},
-                metadata={
-                    "domain": "system",
-                    "response_template": "I don't have the time right now.",
-                },
-            )
+        dt = datetime.now()
 
-        t = snapshot.state.time
-        # Format time as human-readable (e.g., "9:05 PM")
-        hour_12 = t.hour % 12 or 12
-        ampm = "AM" if t.hour < 12 else "PM"
-        time_str = f"{hour_12}:{t.minute:02d} {ampm}"
+        hour_12 = dt.hour % 12 or 12
+        ampm = "AM" if dt.hour < 12 else "PM"
+        time_str = f"{hour_12}:{dt.minute:02d} {ampm}"
 
         return SkillResult(
             outputs={
                 "time": time_str,
-                "date": t.date or "unknown",
-                "day": t.day_of_week or "unknown",
+                "date": dt.strftime("%Y-%m-%d"),
+                "day": dt.strftime("%A"),
             },
             metadata={
                 "domain": "system",

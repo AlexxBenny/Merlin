@@ -25,6 +25,7 @@ Two entry points:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -82,6 +83,7 @@ class StructuredReport:
     actions: List[ActionRecord]
     user_query: str
     mission_id: str
+    unsupported_requests: List[Dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -294,6 +296,9 @@ class ReportBuilder:
             actions=actions,
             user_query=user_query,
             mission_id=mission.id,
+            unsupported_requests=mission.metadata.get(
+                "unsupported_intents", [],
+            ),
         )
 
     @staticmethod
@@ -402,17 +407,30 @@ class ReportBuilder:
                 f"otherwise omit):\n{insight_lines}\n"
             )
 
+        # Build unsupported requests block
+        if report.unsupported_requests:
+            unsupported_lines = []
+            for u in report.unsupported_requests:
+                desc = u.get("description", "unknown")
+                unsupported_lines.append(f"  - {desc}")
+            unsupported_block = "\n".join(unsupported_lines)
+        else:
+            unsupported_block = "  none"
+
         return f"""You are MERLIN, a calm, precise, intelligent assistant.
 
 Convert the following execution report into a concise user-facing message.
 Do NOT add actions. Do NOT infer additional tasks.
 Only describe what is explicitly listed below.
 
-User request: "{report.user_query}"
+Context: The assistant executed the following plan.
 Result: {report.report_type.value}
 
-Actions:
+Executed actions:
 {actions_block}
+
+Unsupported requests (NOT executed — do NOT claim these happened):
+{unsupported_block}
 
 Issues:
 {issues_block}
@@ -424,11 +442,12 @@ Conversation context:
 Instructions:
 - Speak naturally, like JARVIS.
 - Be concise — one to three sentences.
-- Reference specific names and results from the actions above.
+- Reference specific names and results from the executed actions above.
+- For unsupported requests, state clearly that they were not performed.
 - [NO_OP] means the action was attempted but had no effect. Report it honestly.
   Do NOT claim a NO_OP action succeeded. State the reason if provided.
 - If there are failures, explain calmly and suggest what the user can do.
-- Do NOT claim actions that are not listed.
+- Do NOT claim actions that are not listed under executed actions.
 - Do NOT promise future actions.
 - Do NOT add commentary about the system.
 
@@ -444,22 +463,39 @@ Respond with plain text only."""
         skill_short = action.skill.rsplit(".", 1)[-1] if "." in action.skill else action.skill
         parts = [f"{skill_short}:"]
 
-        # Add key input details
-        for key in ("name", "query", "app_name", "url", "target", "level"):
-            if key in action.inputs:
-                val = action.inputs[key]
-                if isinstance(val, str) and not val.startswith("<ref:"):
-                    parts.append(f'{key}="{val}"')
+        # Add input details — ALL contract-bound inputs, no whitelist.
+        # Safety filters: skip internal keys, reference tokens, large objects.
+        for key, val in action.inputs.items():
+            if key.startswith("_"):
+                continue  # internal-only fields
+            if isinstance(val, bool):
+                parts.append(f'{key}="{("yes" if val else "no")}"')
+            elif isinstance(val, (int, float)):
+                parts.append(f'{key}="{val}"')
+            elif isinstance(val, str):
+                if val.startswith("<ref:"):
+                    continue  # output reference token
+                parts.append(f'{key}="{val}"')
+            elif isinstance(val, list) and len(val) <= 5:
+                parts.append(f'{key}={val}')
 
         # Add reason for no-op actions (takes priority over raw outputs)
         if action.reason:
             parts.append(f'(reason: {action.reason})')
-        # Add key output details for completed actions
+        # Add ALL output details for completed actions.
+        # Outputs are contract-bound — only declared keys appear.
+        # Large structures (list/dict) are summarized to prevent
+        # prompt blowup. Booleans are formatted as yes/no.
         elif action.status == NodeStatus.COMPLETED.value and action.outputs:
-            for key in ("created", "path", "result", "app_name", "changed"):
-                if key in action.outputs:
-                    val = action.outputs[key]
+            for key, val in action.outputs.items():
+                if isinstance(val, bool):
+                    parts.append(f'→ {key}="{("yes" if val else "no")}"')
+                elif isinstance(val, (str, int, float)):
                     parts.append(f'→ {key}="{val}"')
+                elif isinstance(val, list):
+                    parts.append(f'→ {key}="{len(val)} items"')
+                elif isinstance(val, dict):
+                    parts.append(f'→ {key}="{len(val)} entries"')
 
         # Add error for failed/timed-out actions
         if action.status in (NodeStatus.FAILED.value, NodeStatus.TIMED_OUT.value) and action.error:
@@ -476,12 +512,12 @@ Respond with plain text only."""
     ) -> None:
         """Validate LLM response against structured truth.
 
-        Phase 1: Log anomalies only. No rejection.
-        Phase 2 (future): Reject and fall back to deterministic text.
+        Phase 2: Reject hallucinated content, fall back to deterministic text.
 
         Checks:
         - LLM should mention entities from the report
-        - LLM should not mention entities NOT in the report
+        - LLM should not mention file names/extensions not present in
+          executed actions or unsupported descriptions
         """
         # Extract known entity names from structured report
         known_entities: set[str] = set()
@@ -496,6 +532,12 @@ Respond with plain text only."""
                     if "/" in clean:
                         known_entities.add(clean.rsplit("/", 1)[-1].lower())
                     known_entities.add(val.lower())
+
+        # Also include unsupported request descriptions as known context
+        for u in report.unsupported_requests:
+            desc = u.get("description", "")
+            if desc:
+                known_entities.add(desc.lower())
 
         if not known_entities:
             return
@@ -515,6 +557,42 @@ Respond with plain text only."""
                 sorted(known_entities)[:10],
                 response[:200],
             )
+
+        # Defense-in-depth: detect hallucinated file names
+        # Extract filenames (word.ext patterns) from LLM response
+        file_pattern = re.compile(r'\b[\w.-]+\.(?:py|txt|md|js|ts|html|css|json|yaml|yml|csv|xml|sh|bat|exe|log)\b', re.IGNORECASE)
+        mentioned_files = set(m.lower() for m in file_pattern.findall(response))
+
+        if mentioned_files:
+            # Build set of known filenames from actions + unsupported
+            known_files: set[str] = set()
+            for action in report.actions:
+                for val in action.inputs.values():
+                    if isinstance(val, str):
+                        known_files.update(
+                            m.lower() for m in file_pattern.findall(val)
+                        )
+                for val in action.outputs.values():
+                    if isinstance(val, str):
+                        known_files.update(
+                            m.lower() for m in file_pattern.findall(val)
+                        )
+            for u in report.unsupported_requests:
+                desc = u.get("description", "")
+                known_files.update(
+                    m.lower() for m in file_pattern.findall(desc)
+                )
+
+            hallucinated_files = mentioned_files - known_files
+            if hallucinated_files:
+                logger.warning(
+                    "[VALIDATION] LLM response mentions files not in report: %s. "
+                    "Rejecting — falling back to deterministic text.",
+                    sorted(hallucinated_files),
+                )
+                raise ValueError(
+                    f"Hallucinated files detected: {hallucinated_files}"
+                )
 
     # ─────────────────────────────────────────────────────────
     # Deterministic draft builders (proactive — unchanged)
@@ -657,6 +735,7 @@ Respond with plain text only.
 
         Produces per-action descriptions instead of generic counts.
         Uses NodeStatus values via centralized labels.
+        Includes unsupported requests for completeness.
         """
         lines = []
 
@@ -671,6 +750,9 @@ Respond with plain text only.
                 lines.append(f"Failed: {desc}")
             elif action.status == NodeStatus.SKIPPED.value:
                 lines.append(f"Skipped: {desc}")
+
+        for u in report.unsupported_requests:
+            lines.append(f"Not supported: {u.get('description', '?')}")
 
         return " ".join(lines) if lines else "Done."
 

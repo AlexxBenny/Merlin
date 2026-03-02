@@ -24,7 +24,7 @@ from brain.escalation_policy import (
     EscalationPolicy, EscalationDecision,
     CognitiveTier, HeuristicTierClassifier,
 )
-from cortex.mission_cortex import MissionCortex
+from cortex.mission_cortex import MissionCortex, DecompositionResult
 from execution.executor import MissionExecutor
 from execution.registry import SkillRegistry
 from world.timeline import WorldTimeline
@@ -40,6 +40,9 @@ from runtime.attention import AttentionManager, MissionState
 from reporting.report_builder import ReportBuilder
 from reporting.output import OutputChannel
 from reporting.notification_policy import NotificationPolicy
+from cortex.cognitive_coordinator import (
+    CognitiveCoordinator, CoordinatorMode, FALLBACK_RESULT,
+)
 from models.base import LLMClient
 from cortex.world_state_provider import WorldStateProvider, SimpleWorldStateProvider
 from memory.store import MemoryStore
@@ -72,6 +75,7 @@ class Merlin:
         memory: Optional[MemoryStore] = None,
         attention_manager: Optional[AttentionManager] = None,
         narration_policy=None,  # Optional[NarrationPolicy]
+        coordinator: Optional[CognitiveCoordinator] = None,
     ):
         # ── Cognitive components (frozen) ──
         self.brain = brain
@@ -115,9 +119,28 @@ class Merlin:
         # ── Tier classification (Phase 5A: deterministic, init-time) ──
         self.tier_classifier = HeuristicTierClassifier(registry)
 
+        # ── Cognitive Coordinator (Phase 1: bounded reasoning pre-phase) ──
+        # Optional — if None, REASONING tier degrades to SIMPLE.
+        self.coordinator = coordinator
+
         # ── Output ──
         self.output_channel = output_channel
         self.report_builder = report_builder
+
+        # ── Partial capability state (Option A: explicit, no re-decomposition) ──
+        # Stores valid + unsupported intents when waiting for user confirmation.
+        # Consumed on next percept, then cleared. Never recomputed.
+        self._pending_partial: Optional[Dict] = None
+
+        # ── Deterministic confirmation tokens ──
+        self._CONFIRM_TOKENS = frozenset({
+            "yes", "proceed", "continue", "do it", "go ahead",
+            "sure", "ok", "okay", "yep", "yeah", "y",
+        })
+        self._DECLINE_TOKENS = frozenset({
+            "no", "cancel", "stop", "abort", "nevermind",
+            "never mind", "don't", "nope", "n",
+        })
 
         # ── Runtime event loop (background thread) ──
         self.event_loop = RuntimeEventLoop(
@@ -172,6 +195,10 @@ class Merlin:
 
         # ── Record user turn (system boundary) ──
         self.conversation.append_turn("user", percept.payload)
+
+        # ── Gate 0: Pending partial capability confirmation ──
+        if self._pending_partial is not None:
+            return self._handle_partial_confirmation(percept)
 
         # ── Gate 1: BrainCore circuit breaker ──
         route = self.brain.route(percept)
@@ -454,6 +481,180 @@ class Merlin:
             self.output_channel.send(response)
             return response
 
+    # ─────────────────────────────────────────────────────────
+    # Partial capability gate (deterministic capability boundary)
+    # ─────────────────────────────────────────────────────────
+
+    def _handle_partial_capability(
+        self,
+        percept: Percept,
+        decomp: DecompositionResult,
+        snapshot: WorldSnapshot,
+        tier: CognitiveTier,
+    ) -> str:
+        """Gate: unsupported intents detected. Ask user to confirm partial execution.
+
+        If zero valid intents → deterministic rejection, no dialogue.
+        If some valid intents → store state, ask confirmation.
+        State is consumed on next percept via _handle_partial_confirmation.
+        """
+        unsupported_desc = "; ".join(
+            u["description"] for u in decomp.unsupported_intents
+            if u.get("description")
+        ) or "some parts of your request"
+
+        if not decomp.valid_intents:
+            # All-unsupported: deterministic rejection, no _pending_partial
+            logger.info(
+                "[CAPABILITY] All intents unsupported — rejecting: %s",
+                unsupported_desc[:200],
+            )
+            response = (
+                f"I'm not able to perform any part of this request. "
+                f"Unsupported: {unsupported_desc}."
+            )
+            # Reset mission state since nothing will execute
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+            self.output_channel.send(response)
+            self.conversation.append_turn("assistant", response)
+            return response
+
+        # Some valid, some unsupported: store state and ask
+        valid_desc = ", ".join(
+            f"{v['action']}({', '.join(f'{k}={val}' for k, val in v.get('parameters', {}).items())})"
+            for v in decomp.valid_intents
+        )
+        logger.info(
+            "[CAPABILITY] Partial capability — valid: %d, unsupported: %d",
+            len(decomp.valid_intents), len(decomp.unsupported_intents),
+        )
+
+        # Store immutable state — no recomputation on confirmation
+        self._pending_partial = {
+            "percept": percept,
+            "valid_intents": decomp.valid_intents,
+            "unsupported_intents": decomp.unsupported_intents,
+            "snapshot": snapshot,  # Frozen: do NOT rebuild on confirmation
+            "tier": tier,
+        }
+
+        response = (
+            f"I can handle part of your request, "
+            f"but I'm not able to: {unsupported_desc}. "
+            f"Should I proceed with what I can do?"
+        )
+        # Keep mission state as COMPILING — we're waiting for confirmation
+        self.output_channel.send(response)
+        self.conversation.append_turn("assistant", response)
+        return response
+
+    def _handle_partial_confirmation(self, percept: Percept) -> Optional[str]:
+        """Handle user response to partial capability prompt.
+
+        Deterministic token matching — no NLP, no LLM:
+        - Confirm tokens → resume with stored valid intents
+        - Decline tokens → cancel, clear state
+        - Anything else → treat as new query, clear pending state
+        """
+        pending = self._pending_partial
+        self._pending_partial = None  # Always clear — one-shot consumption
+
+        user_text = percept.payload.strip().lower()
+
+        if user_text in self._CONFIRM_TOKENS:
+            logger.info("[CAPABILITY] User confirmed partial execution")
+            return self._resume_partial_mission(pending)
+
+        if user_text in self._DECLINE_TOKENS:
+            logger.info("[CAPABILITY] User declined partial execution")
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+            response = "Understood. Request cancelled."
+            self.output_channel.send(response)
+            self.conversation.append_turn("assistant", response)
+            return response
+
+        # Not a confirmation — treat as entirely new query
+        logger.info(
+            "[CAPABILITY] User sent new query instead of confirmation — "
+            "clearing pending partial and routing normally"
+        )
+        if self.attention_manager:
+            self.attention_manager.set_mission_state(MissionState.IDLE)
+
+        # Re-route through normal pipeline (Gate 1 onward)
+        route = self.brain.route(percept)
+        events = self.timeline.all_events()
+        state = WorldState.from_events(events)
+        snapshot = WorldSnapshot.build(
+            state, events[-10:] if events else []
+        )
+
+        if route == CognitiveRoute.REFUSE:
+            return self._handle_refuse(percept)
+        if route == CognitiveRoute.REFLEX:
+            return self._handle_reflex(percept, snapshot)
+        if route == CognitiveRoute.MULTI_REFLEX:
+            return self._handle_multi_reflex(percept, snapshot)
+
+        decision = self.escalation_policy.decide_for_user_input(
+            user_text=percept.payload,
+            snapshot=snapshot,
+            frame=self.conversation,
+        )
+        if decision == EscalationDecision.IGNORE:
+            self.output_channel.send_silent()
+            return None
+        if decision == EscalationDecision.CLARIFY:
+            return self._handle_clarify(percept)
+        return self._handle_mission(percept, snapshot)
+
+    def _resume_partial_mission(
+        self, pending: Dict,
+    ) -> Optional[str]:
+        """Resume mission compilation with stored valid intents.
+
+        Uses the ORIGINAL snapshot — does not rebuild world state.
+        Deterministic decision, non-deterministic environment is acceptable.
+        """
+        percept = pending["percept"]
+        snapshot = pending["snapshot"]
+        tier = pending["tier"]
+        valid_intents = pending["valid_intents"]
+        unsupported_intents = pending["unsupported_intents"]
+
+        try:
+            result = self.orchestrator.handle_user_input(
+                user_text=percept.payload,
+                conversation=self.conversation,
+                world_state_schema=self.world_state_provider.build_schema(
+                    snapshot, query=percept.payload,
+                ),
+                cognitive_tier=tier,
+                intent_units=valid_intents,
+                unsupported_intents=unsupported_intents,
+            )
+
+            if result:
+                self.conversation.append_turn(
+                    "assistant", result,
+                    mission_id=self.conversation.last_mission_id,
+                )
+            return result
+
+        except Exception as e:
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+            logger.error(
+                "Partial mission failed for '%s': %s",
+                percept.payload[:80], e, exc_info=True,
+            )
+            response = f"I couldn't complete that request. Error: {e}"
+            self.output_channel.send(response)
+            self.conversation.append_turn("assistant", response)
+            return response
+
     def _handle_clarify(self, percept: Percept) -> str:
         """
         Ask for clarification when context is insufficient.
@@ -514,22 +715,25 @@ class Merlin:
 
     def _handle_mission(
         self, percept: Percept, snapshot: WorldSnapshot,
+        _coordinator_done: bool = False,
     ) -> Optional[str]:
         """
         Compile and execute a full mission.
 
-        Tiered cognitive flow (Phase 5A):
-        - Tier 1 (SIMPLE):       compile directly (existing behavior, zero overhead)
-        - Tier 2 (MULTI_INTENT): decompose → compile with checklist → coverage verify
-        - Tier 3 (HIERARCHICAL): gate only — treated as Tier 2 in 5A
-
-        Delegates to MissionOrchestrator.handle_user_input().
-        Catches all errors to prevent LLM/compilation failures from
-        crashing the interactive loop.
+        Flow:
+        1. Coordinator pre-phase (all non-reflex queries go here first)
+           - DIRECT_ANSWER → respond immediately (no skills)
+           - UNSUPPORTED → explain missing capabilities
+           - REASONED_PLAN → mutate percept with refined query → compile
+           - SKILL_PLAN → continue to tier classification + compile
+        2. Tier classification (deterministic, decomposition complexity only)
+        3. Conditional decomposition (Tier 2+ only)
+        4. Compile + execute via MissionOrchestrator
 
         Args:
-            snapshot: Pre-built WorldSnapshot (built once in handle_percept,
-                      shared with EscalationPolicy — never rebuilt here).
+            percept: The user percept (may be refined by coordinator).
+            snapshot: Pre-built WorldSnapshot.
+            _coordinator_done: Internal flag to prevent re-entry.
         """
         try:
             # ── Reference resolution (BEFORE cortex) ──
@@ -539,7 +743,95 @@ class Merlin:
             if self.attention_manager:
                 self.attention_manager.set_mission_state(MissionState.COMPILING)
 
-            # ── Tier classification (deterministic, no LLM) ──
+            # ─────────────────────────────────────────────────
+            # Coordinator pre-phase (runs ONCE, before tier)
+            # ─────────────────────────────────────────────────
+            original_query = percept.payload
+            computed_vars = {}
+
+            if self.coordinator and not _coordinator_done:
+                try:
+                    skill_manifest = (
+                        self.orchestrator.cortex._build_skill_manifest()
+                    )
+                    result = self.coordinator.process(
+                        query=percept.payload,
+                        snapshot=snapshot,
+                        skill_manifest=skill_manifest,
+                    )
+
+                    logger.info(
+                        "[COORDINATOR] '%s' → mode=%s, trace=%s",
+                        percept.payload[:50], result.mode.value,
+                        result.reasoning_trace[:100]
+                        if result.reasoning_trace else "",
+                    )
+
+                    # ── DIRECT_ANSWER: respond immediately ──
+                    if result.mode == CoordinatorMode.DIRECT_ANSWER:
+                        if self.attention_manager:
+                            self.attention_manager.set_mission_state(
+                                MissionState.IDLE
+                            )
+                        response = result.answer
+                        self.output_channel.send(response)
+                        self.conversation.append_turn(
+                            "assistant", response
+                        )
+                        return response
+
+                    # ── UNSUPPORTED: capability gap ──
+                    if result.mode == CoordinatorMode.UNSUPPORTED:
+                        if self.attention_manager:
+                            self.attention_manager.set_mission_state(
+                                MissionState.IDLE
+                            )
+                        missing = ", ".join(
+                            result.missing_capabilities
+                        ) or "some required operations"
+                        response = (
+                            f"I don't currently have the ability to: "
+                            f"{missing}."
+                        )
+                        if result.suggestion:
+                            response += f" {result.suggestion}"
+                        logger.info(
+                            "[COORDINATOR] UNSUPPORTED — missing: %s",
+                            missing,
+                        )
+                        self.output_channel.send(response)
+                        self.conversation.append_turn(
+                            "assistant", response
+                        )
+                        return response
+
+                    # ── REASONED_PLAN: refine percept ──
+                    if result.mode == CoordinatorMode.REASONED_PLAN:
+                        logger.info(
+                            "[COORDINATOR] computed=%s, refined='%s'",
+                            result.computed_vars,
+                            result.refined_query[:80],
+                        )
+                        computed_vars = result.computed_vars
+                        percept = Percept(
+                            modality=percept.modality,
+                            payload=result.refined_query,
+                            confidence=percept.confidence,
+                            timestamp=percept.timestamp,
+                        )
+
+                    # SKILL_PLAN: fall through to tier classification
+
+                except Exception as coord_err:
+                    logger.warning(
+                        "[COORDINATOR] Failed, continuing without: %s",
+                        coord_err,
+                    )
+                    # Continue to compile — safe degradation
+
+            # ─────────────────────────────────────────────────
+            # Tier classification (decomposition complexity)
+            # ─────────────────────────────────────────────────
             tier = self.tier_classifier.classify(percept.payload)
             logger.info(
                 "[TIER] Query '%s' → %s",
@@ -548,17 +840,24 @@ class Merlin:
 
             # ── Conditional decomposition (Tier 2+ only) ──
             intent_units = None
+            unsupported_intents = []
             if tier != CognitiveTier.SIMPLE:
-                intent_units = self.orchestrator.cortex.decompose_intents(
+                decomp = self.orchestrator.cortex.decompose_intents(
                     percept.payload,
                 )
-                if intent_units is None:
+                if decomp is None:
                     # Decomposition failed → graceful degradation to Tier 1
                     logger.info(
                         "[TIER] Decomposition failed, degrading to Tier 1"
                     )
                     tier = CognitiveTier.SIMPLE
+                elif decomp.unsupported_intents:
+                    # ── CAPABILITY GATE: do NOT compile if unsupported ──
+                    return self._handle_partial_capability(
+                        percept, decomp, snapshot, tier,
+                    )
                 else:
+                    intent_units = decomp.valid_intents
                     logger.info(
                         "[TIER] Decomposed %d intent units",
                         len(intent_units),
@@ -572,6 +871,9 @@ class Merlin:
                 ),
                 cognitive_tier=tier,
                 intent_units=intent_units,
+                unsupported_intents=unsupported_intents,
+                original_query=original_query,
+                computed_variables=computed_vars,
             )
 
             # Orchestrator handles EXECUTING → REPORTING → IDLE lifecycle.

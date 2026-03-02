@@ -30,6 +30,7 @@ class ToggleNightlightSkill(Skill):
         description="Toggle night light",
         intent_verbs=["toggle", "turn", "switch"],
         intent_keywords=["nightlight", "night light", "blue light"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=False,
         resource_cost="low",

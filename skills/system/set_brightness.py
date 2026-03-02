@@ -34,6 +34,7 @@ class SetBrightnessSkill(Skill):
         narration_template="set brightness to {level}%",
         intent_verbs=["set", "adjust", "change"],
         intent_keywords=["brightness", "light", "screen"],
+        verb_specificity="generic",
         domain="system",
         requires_focus=False,
         resource_cost="low",

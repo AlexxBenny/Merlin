@@ -53,10 +53,14 @@ class CognitiveTier(str, Enum):
     SIMPLE:       Tier 1 — single LLM compile (existing behavior).
     MULTI_INTENT: Tier 2 — decompose → compile with checklist → coverage verify.
     HIERARCHICAL: Tier 3 — future (GoalGraph decomposition). Gate only in 5A.
+    REASONING:    Tier R — CognitiveCoordinator pre-phase. Pure reasoning
+                  or mixed reasoning + skills. No DAG compilation until
+                  coordinator decides.
     """
     SIMPLE = "simple"
     MULTI_INTENT = "multi"
     HIERARCHICAL = "hierarchical"
+    REASONING = "reasoning"
 
 
 # ───────────────────────────────────────────────────────────────
@@ -155,7 +159,11 @@ class HeuristicTierClassifier:
         )
 
     def classify(self, user_text: str) -> CognitiveTier:
-        """Classify query cognitive depth. Deterministic, O(n) lookups."""
+        """Classify query decomposition complexity. Deterministic, O(n) lookups.
+
+        This classifier decides HOW DEEP the compilation pipeline runs,
+        not WHETHER reasoning is needed (that's the coordinator's job).
+        """
         if not self._keyword_index:
             # No registry → safe fallback
             return CognitiveTier.SIMPLE
@@ -168,7 +176,6 @@ class HeuristicTierClassifier:
         conjunction_count = 0
 
         for token in tokens:
-            # Strip basic punctuation for matching
             clean = token.strip("(),.:;!?\"'")
 
             if clean in _CONJUNCTIONS:

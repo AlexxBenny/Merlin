@@ -51,17 +51,9 @@ MATCH_THRESHOLD = 3      # Minimum score to accept a match
                          # protects against ambiguity.
 MARGIN_RATIO = 1.5       # Top score must be >= this × runner-up
 
-# Verbs that are semantically generic — they describe an action class,
-# not a specific operation. Require keyword disambiguation.
-# "create X" could be folder/file/project/etc — needs keyword to resolve.
-# "open chrome" is self-identifying — no keyword needed.
-# Long-term: move to per-skill contract.verb_specificity metadata.
-GENERIC_VERBS = frozenset({
-    "create", "make", "new",           # Creation verbs
-    "set", "adjust", "change",         # Configuration verbs
-    "show", "get", "check",            # Query verbs
-    "start",                           # Ambiguous (app? music? timer?)
-})
+# NOTE: Generic verb gate has been moved to per-skill metadata.
+# Each skill contract declares verb_specificity="generic" or "specific".
+# See SkillContract.verb_specificity in skills/contract.py.
 
 
 # ─────────────────────────────────────────────────────────────
@@ -213,15 +205,16 @@ class IntentMatcher:
                 )
                 return None
 
-        # 7. Generic verb gate (symmetric — applies to ALL skills)
-        #    Generic verbs describe action classes, not specific operations.
-        #    Without keyword disambiguation, intent is ambiguous.
-        #    "create X" → folder? file? project? → need keyword.
-        #    "open chrome" → self-identifying verb → no keyword needed.
-        if top_verb in GENERIC_VERBS and not top_kw:
+        # 7. Per-skill verb specificity gate
+        #    Skills declare verb_specificity in their contract:
+        #    "generic" → verb describes an action CLASS, needs keyword.
+        #    "specific" → verb IS the complete intent (mute, play, etc.).
+        top_contract = self._index.contracts[top_name]
+        if top_contract.verb_specificity == "generic" and not top_kw:
             logger.debug(
-                "IntentMatcher: '%s' → generic verb '%s' without keyword → reject",
-                clause, top_verb,
+                "IntentMatcher: '%s' → skill '%s' has generic verb '%s' "
+                "without keyword → reject",
+                clause, top_name, top_verb,
             )
             return None
 

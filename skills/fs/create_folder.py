@@ -34,6 +34,7 @@ class CreateFolderSkill(Skill):
         narration_template="create folder {name}",
         intent_verbs=["create", "make", "new"],
         intent_keywords=["folder", "directory", "dir"],
+        verb_specificity="generic",
         domain="fs",
         inputs={
             "name": "folder_name",

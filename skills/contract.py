@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, Set, List
+from typing import Dict, Literal, Set, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,9 +78,16 @@ class SkillContract(BaseModel):
     #   e.g. set_volume → ["volume", "sound", "audio"]
     # intent_priority: tie-breaker when scores are equal (higher wins).
     #   e.g. mute=2, set_volume=1 → "mute" preferred over "set volume to 0"
+    # verb_specificity:
+    #   "specific" — verb alone IS the complete intent (mute, play, pause).
+    #     No keyword reinforcement needed. Reflex executes on verb match.
+    #   "generic" — verb describes an action CLASS (create, set, list, open).
+    #     Requires keyword reinforcement to disambiguate intent.
+    #     Verb-only matches are rejected → escalated to MISSION.
     intent_verbs: List[str] = Field(default_factory=list)
     intent_keywords: List[str] = Field(default_factory=list)
     intent_priority: int = 1
+    verb_specificity: Literal["generic", "specific"] = "specific"
 
     # ── Narration metadata (Phase 8) ──
     # Controls how NarrationPolicy announces this skill during execution.
@@ -95,3 +102,22 @@ class SkillContract(BaseModel):
     #   Use only when: parameterization needed, or shorter phrasing desired.
     narration_visibility: str = "foreground"
     narration_template: str = ""
+
+    # ── Data freshness policy ──
+    # Declares whether this skill reads from the frozen WorldSnapshot
+    # or from a live authoritative source at execution time.
+    #
+    # "snapshot" — Reads snapshot.state.* (default).
+    #   Suitable for: actuation guards, decision inputs, state checks.
+    #   Data is as fresh as the last event source poll.
+    #
+    # "live" — Reads the authoritative source directly (OS, stdlib, etc.).
+    #   Required for: ephemeral telemetry queries (time, battery, CPU).
+    #   The snapshot parameter is still passed but MUST NOT be the data
+    #   source for the skill's primary output.
+    #
+    # CONSTRAINT: Skills with data_freshness="live" must NOT be used as
+    # branching inputs (condition_on) in mission plans. Their outputs
+    # are non-deterministic across replays.
+    data_freshness: Literal["snapshot", "live"] = "snapshot"
+

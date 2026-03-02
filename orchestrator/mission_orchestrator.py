@@ -75,6 +75,9 @@ class MissionOrchestrator:
         world_state_schema: Dict[str, Any],
         cognitive_tier: Optional[CognitiveTier] = None,
         intent_units: Optional[List[Dict[str, str]]] = None,
+        unsupported_intents: Optional[List[Dict[str, str]]] = None,
+        original_query: Optional[str] = None,
+        computed_variables: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         The correct public API for user-initiated missions.
@@ -90,6 +93,8 @@ class MissionOrchestrator:
             cognitive_tier: Optional tier classification for this query.
             intent_units: Optional decomposed intent list (Tier 2+ only).
                 Passed into compile as checklist and used for coverage gate.
+            original_query: Pre-coordinator query text (for metadata/debugging).
+            computed_variables: Values computed by coordinator (REASONED_PLAN).
 
         Returns the report text (or None if silent).
         """
@@ -119,6 +124,13 @@ class MissionOrchestrator:
             return report
 
         plan = result
+
+        # ── Inject metadata for explainability ──
+        plan.metadata["unsupported_intents"] = unsupported_intents or []
+        if original_query and original_query != user_text:
+            plan.metadata["original_query"] = original_query
+        if computed_variables:
+            plan.metadata["computed_variables"] = computed_variables
 
         # ── Coverage gate (Tier 2+ only, after structural validation) ──
         if intent_units:

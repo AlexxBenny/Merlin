@@ -419,8 +419,12 @@ class TestConstrainedPrompt:
         assert "FAILED" in prompt
         assert "Permission denied" in prompt
 
-    def test_prompt_contains_user_query(self):
-        """LLM prompt includes the original user query."""
+    def test_prompt_does_not_contain_raw_user_query(self):
+        """LLM prompt must NOT contain the raw user query (hallucination vector).
+
+        Instead it should contain 'Context: The assistant executed the following plan.'
+        and an 'Unsupported requests' section.
+        """
         builder = ReportBuilder()
         report = StructuredReport(
             report_type=ReportType.SUCCESS,
@@ -439,7 +443,13 @@ class TestConstrainedPrompt:
         conv = _make_conversation()
 
         prompt = builder._build_llm_prompt(report, conv)
-        assert "create folders X and Y" in prompt
+
+        # Raw user query must NOT appear in prompt
+        assert 'User request:' not in prompt
+        # New context header must be present
+        assert "Context: The assistant executed the following plan." in prompt
+        # Unsupported requests section must exist
+        assert "Unsupported requests" in prompt
 
     def test_prompt_multi_action_lists_each(self):
         """Multi-action missions list each action separately."""

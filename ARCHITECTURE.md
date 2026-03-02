@@ -154,6 +154,50 @@ Explicit data flow
 
 Once emitted, the DAG is final.
 
+3.3a Cognitive Coordinator (within Cortex Layer)
+
+Responsibility
+
+Compute intermediate values and direct answers using world state + LLM reasoning.
+
+Allowed
+
+Reasoning over world state
+
+Arithmetic, date math, factual recall
+
+Producing direct answers (no skills needed)
+
+Computing variables that feed into DAG compilation
+
+Forbidden
+
+Execution
+
+OS mutation
+
+Skill invocation
+
+Replanning (Phase 1)
+
+Looping (Phase 1)
+
+Output
+
+DIRECT_ANSWER: final user-facing text (no skills)
+
+SKILL_PLAN: pass-through to Mission Cortex (unchanged)
+
+REASONED_PLAN: computed variables + rewritten query for compilation
+
+Constraint: Maximum 1 LLM call per invocation. No loops. No retries.
+
+Evolution seams:
+
+Phase 2 — evaluate() for post-execution bounded replan (MAX_REPLAN=1)
+
+Phase 3 — plan_iterative() for GoalGraph decomposition
+
 3.4 Skill Layer
 
 Responsibility
