@@ -11,6 +11,7 @@ Design rules:
 - No retries, no fallback, no caching.
 - API key resolved at construction time.
 - format="json" → generationConfig.responseMimeType = "application/json"
+- If pool metadata provided, 429 errors trigger key rotation + retry.
 """
 
 import json
@@ -46,6 +47,8 @@ class GeminiClient(LLMClient):
         timeout: float = 120.0,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        _pool_provider: Optional[str] = None,
+        _pool_role: Optional[str] = None,
     ):
         self.model = model
         self.api_key = api_key
@@ -53,6 +56,9 @@ class GeminiClient(LLMClient):
         self.timeout = timeout
         self.default_temperature = temperature
         self.max_tokens = max_tokens
+        # Pool metadata for 429 retry with key rotation
+        self._pool_provider = _pool_provider
+        self._pool_role = _pool_role
 
     def complete(
         self,
@@ -76,6 +82,42 @@ class GeminiClient(LLMClient):
             ConnectionError: if Gemini is unreachable
             RuntimeError: if the API returns an error
         """
+        # Determine retry budget from pool
+        max_attempts = 1
+        if self._pool_provider and self._pool_role:
+            from models.key_pool import pool_size
+            max_attempts = pool_size(self._pool_provider, self._pool_role)
+
+        last_error = None
+        for attempt in range(max_attempts):
+            # Resolve current key (rotates on each call if pool exists)
+            if self._pool_provider and self._pool_role and attempt > 0:
+                from models.key_pool import resolve_api_key
+                self.api_key = resolve_api_key(
+                    self._pool_provider, self._pool_role,
+                )
+                logger.info(
+                    "[KEY_ROTATION] Gemini 429 → rotated to next key "
+                    "(attempt %d/%d)", attempt + 1, max_attempts,
+                )
+
+            try:
+                return self._do_request(prompt, temperature, format)
+            except RuntimeError as e:
+                if "429" in str(e) and attempt < max_attempts - 1:
+                    last_error = e
+                    continue
+                raise
+
+        raise last_error or RuntimeError("All keys rate limited.")
+
+    def _do_request(
+        self,
+        prompt: str,
+        temperature: Optional[float],
+        format: Optional[Union[str, Dict[str, Any]]],
+    ) -> str:
+        """Execute a single HTTP request to Gemini."""
         url = (
             f"{self.base_url}/models/{self.model}:generateContent"
             f"?key={self.api_key}"

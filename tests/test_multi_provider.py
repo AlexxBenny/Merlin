@@ -16,7 +16,8 @@ import os
 import pytest
 
 from models.base import LLMClient
-from models.router import ModelRouter, _PROVIDER_FACTORIES, _resolve_api_key
+from models.router import ModelRouter, _build_client, _resolve_api_key_for_role
+from models.key_pool import reset_pools
 from models.ollama_client import OllamaClient
 from models.openrouter_client import OpenRouterClient
 from models.gemini_client import GeminiClient
@@ -28,22 +29,33 @@ from models.huggingface_client import HuggingFaceClient
 # ──────────────────────────────────────────────
 
 class TestProviderFactoryRegistration:
-    """All four providers must be registered in _PROVIDER_FACTORIES."""
+    """All four providers must produce correct client types via _build_client."""
 
-    def test_ollama_registered(self):
-        assert "ollama" in _PROVIDER_FACTORIES
+    def test_ollama_produces_correct_type(self):
+        client = _build_client({"model": "llama3"}, "ollama", "test")
+        assert isinstance(client, OllamaClient)
 
-    def test_openrouter_registered(self):
-        assert "openrouter" in _PROVIDER_FACTORIES
+    def test_openrouter_produces_correct_type(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+        reset_pools()
+        client = _build_client({"model": "m"}, "openrouter", "test")
+        assert isinstance(client, OpenRouterClient)
 
-    def test_gemini_registered(self):
-        assert "gemini" in _PROVIDER_FACTORIES
+    def test_gemini_produces_correct_type(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test")
+        reset_pools()
+        client = _build_client({"model": "m"}, "gemini", "test")
+        assert isinstance(client, GeminiClient)
 
-    def test_huggingface_registered(self):
-        assert "huggingface" in _PROVIDER_FACTORIES
+    def test_huggingface_produces_correct_type(self, monkeypatch):
+        monkeypatch.setenv("HUGGINGFACE_API_KEY", "test")
+        reset_pools()
+        client = _build_client({"model": "m"}, "huggingface", "test")
+        assert isinstance(client, HuggingFaceClient)
 
-    def test_exactly_four_providers(self):
-        assert len(_PROVIDER_FACTORIES) == 4
+    def test_unsupported_provider_raises(self):
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            _build_client({"model": "m"}, "invalid_provider", "test")
 
 
 # ──────────────────────────────────────────────
@@ -51,33 +63,40 @@ class TestProviderFactoryRegistration:
 # ──────────────────────────────────────────────
 
 class TestAPIKeyResolution:
-    """API key must resolve from config first, then env, then error."""
+    """API key must resolve from config first, then env pool, then error."""
 
     def test_config_key_takes_priority(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+        reset_pools()
         cfg = {"api_key": "config-key"}
-        assert _resolve_api_key(cfg, "OPENROUTER_API_KEY") == "config-key"
+        assert _resolve_api_key_for_role(cfg, "openrouter", "test") == "config-key"
 
     def test_env_fallback(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+        reset_pools()
         cfg = {}
-        assert _resolve_api_key(cfg, "OPENROUTER_API_KEY") == "env-key"
+        assert _resolve_api_key_for_role(cfg, "openrouter", "test") == "env-key"
 
     def test_missing_key_raises(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEYS", raising=False)
+        monkeypatch.delenv("OPENROUTER_TEST_API_KEYS", raising=False)
+        reset_pools()
         cfg = {}
-        with pytest.raises(ValueError, match="API key required"):
-            _resolve_api_key(cfg, "OPENROUTER_API_KEY")
+        with pytest.raises(ValueError, match="No API keys"):
+            _resolve_api_key_for_role(cfg, "openrouter", "test")
 
     def test_empty_config_key_falls_to_env(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+        reset_pools()
         cfg = {"api_key": ""}
-        assert _resolve_api_key(cfg, "GEMINI_API_KEY") == "env-key"
+        assert _resolve_api_key_for_role(cfg, "gemini", "test") == "env-key"
 
     def test_none_config_key_falls_to_env(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+        reset_pools()
         cfg = {"api_key": None}
-        assert _resolve_api_key(cfg, "GEMINI_API_KEY") == "env-key"
+        assert _resolve_api_key_for_role(cfg, "gemini", "test") == "env-key"
 
 
 # ──────────────────────────────────────────────
@@ -220,6 +239,9 @@ class TestRouterProviderIntegration:
     def test_missing_api_key_raises_on_get_client(self, monkeypatch):
         """Cloud provider without key must fail at get_client time."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEYS", raising=False)
+        monkeypatch.delenv("OPENROUTER_TEST_ROLE_API_KEYS", raising=False)
+        reset_pools()
         config = {
             "test_role": {
                 "provider": "openrouter",
@@ -227,7 +249,7 @@ class TestRouterProviderIntegration:
             }
         }
         router = ModelRouter(config)
-        with pytest.raises(ValueError, match="API key required"):
+        with pytest.raises(ValueError, match="No API keys"):
             router.get_client("test_role")
 
 
