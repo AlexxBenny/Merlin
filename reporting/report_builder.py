@@ -417,6 +417,26 @@ class ReportBuilder:
         else:
             unsupported_block = "  none"
 
+        # ── Generated content: extract long outputs for dedicated block ──
+        content_blocks = []
+        for action in report.actions:
+            if action.status != NodeStatus.COMPLETED.value:
+                continue
+            for key, val in action.outputs.items():
+                if isinstance(val, str) and len(val) > 200:
+                    content_blocks.append(
+                        f"  [{action.skill} → {key}]:\n"
+                        f"  {val}"
+                    )
+
+        generated_block = ""
+        if content_blocks:
+            generated_block = (
+                "\nGenerated content (present this to the user):\n"
+                + "\n\n".join(content_blocks)
+                + "\n"
+            )
+
         return f"""You are MERLIN, a calm, precise, intelligent assistant.
 
 Convert the following execution report into a concise user-facing message.
@@ -434,14 +454,14 @@ Unsupported requests (NOT executed — do NOT claim these happened):
 
 Issues:
 {issues_block}
-{pre_narration_block}{insights_block}
+{pre_narration_block}{insights_block}{generated_block}
 Conversation context:
 - Active domain: {conversation.active_domain}
 - Active entity: {conversation.active_entity}
 
 Instructions:
 - Speak naturally, like JARVIS.
-- Be concise — one to three sentences.
+- Be concise — one to three sentences for operational actions.
 - Reference specific names and results from the executed actions above.
 - For unsupported requests, state clearly that they were not performed.
 - [NO_OP] means the action was attempted but had no effect. Report it honestly.
@@ -450,6 +470,8 @@ Instructions:
 - Do NOT claim actions that are not listed under executed actions.
 - Do NOT promise future actions.
 - Do NOT add commentary about the system.
+- If generated content is present, include it in your response.
+  Introduce it briefly, then present the content itself.
 
 Respond with plain text only."""
 
@@ -485,12 +507,24 @@ Respond with plain text only."""
         # Add ALL output details for completed actions.
         # Outputs are contract-bound — only declared keys appear.
         # Large structures (list/dict) are summarized to prevent
-        # prompt blowup. Booleans are formatted as yes/no.
+        # prompt blowup. Long strings are truncated with preview.
         elif action.status == NodeStatus.COMPLETED.value and action.outputs:
             for key, val in action.outputs.items():
                 if isinstance(val, bool):
                     parts.append(f'→ {key}="{("yes" if val else "no")}"')
-                elif isinstance(val, (str, int, float)):
+                elif isinstance(val, str):
+                    if len(val) > 200:
+                        # Long content (generated text, file content) —
+                        # truncate to preview. Full content is in the
+                        # dedicated content block.
+                        preview = val[:100].replace("\n", " ")
+                        parts.append(
+                            f'→ {key}="{preview}..." '
+                            f'({len(val)} chars)'
+                        )
+                    else:
+                        parts.append(f'→ {key}="{val}"')
+                elif isinstance(val, (int, float)):
                     parts.append(f'→ {key}="{val}"')
                 elif isinstance(val, list):
                     parts.append(f'→ {key}="{len(val)} items"')

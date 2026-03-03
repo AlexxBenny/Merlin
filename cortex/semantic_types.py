@@ -293,6 +293,19 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="LLM-generated text content (story, summary, poem, etc.).",
         direction="output",
     ),
+
+    # ── File system ──
+    "file_path_input": SemanticType(
+        description=(
+            "A file name or relative path for file operations "
+            "(e.g., \"poem.txt\", \"notes/ideas.md\")."
+        ),
+        direction="input",
+    ),
+    "file_content": SemanticType(
+        description="Text content of a file (read or to be written).",
+        direction="both",
+    ),
 }
 
 

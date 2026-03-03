@@ -45,6 +45,14 @@ skills:
     module: "skills.fs.create_folder"
     class: "CreateFolderSkill"
 
+  - name: "fs.write_file"
+    module: "skills.fs.write_file"
+    class: "WriteFileSkill"
+
+  - name: "fs.read_file"
+    module: "skills.fs.read_file"
+    class: "ReadFileSkill"
+
   - name: "system.open_app"
     module: "skills.system.open_app"
     class: "OpenAppSkill"

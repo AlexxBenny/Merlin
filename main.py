@@ -422,11 +422,13 @@ def main(args=None):
         logger.info("ContextProvider: SimpleContextProvider")
 
     # ── Cortex (after all providers are initialized) ──
+    from cortex.scored_discovery import DomainScoredDiscovery
     cortex = MissionCortex(
         llm_client=compiler_client,
         registry=registry,
         location_config=location_config,
         context_provider=context_provider,
+        skill_discovery=DomainScoredDiscovery(),
     )
 
     # ── Attention Arbitration ──
