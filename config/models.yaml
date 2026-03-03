@@ -64,3 +64,13 @@ cognitive_coordinator:
   # ── Switch to HuggingFace ──
   # provider: huggingface
   # model: mistralai/Mistral-7B-Instruct-v0.3
+
+content_generator:
+  # Used by reasoning.generate_text skill for content generation
+  # within missions. Separate from report_generator (which formats
+  # execution results — different purpose, different temperature).
+  provider: openrouter
+  model: google/gemini-2.5-flash
+  temperature: 0.7
+  max_tokens: 4096
+

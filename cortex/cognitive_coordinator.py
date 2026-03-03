@@ -120,6 +120,16 @@ MUTATION_VERBS = frozenset({
     "increase", "decrease", "adjust", "switch",
 })
 
+# ─────────────────────────────────────────────────────────────
+# Generation verbs — if present, DIRECT_ANSWER is illegal
+# Content generation belongs in MISSION (as a skill), not DIRECT.
+# ─────────────────────────────────────────────────────────────
+
+GENERATION_VERBS = frozenset({
+    "tell", "compose", "draft", "summarize", "describe",
+    "explain", "generate", "narrate", "outline",
+})
+
 
 # ─────────────────────────────────────────────────────────────
 # Protocol (seam for swappable implementations)
@@ -132,6 +142,7 @@ class CognitiveCoordinator(Protocol):
     Phase 1: process() only.
     Phase 2 seam: evaluate() for post-execution assessment.
     Phase 3 seam: plan_iterative() for goal-graph decomposition.
+
 
     Implementations must never execute skills or mutate OS state.
     """
@@ -212,6 +223,26 @@ class LLMCognitiveCoordinator:
                             "DIRECT_ANSWER overridden to SKILL_PLAN for safety."
                         ),
                     )
+
+                # ── Generation guard: content generation → SKILL_PLAN ──
+                # "tell me a story" / "compose a poem" must use
+                # reasoning.generate_text skill, not DIRECT chat.
+                # Rule: if a registered skill can handle it → MISSION.
+                if result.mode == CoordinatorMode.DIRECT_ANSWER:
+                    if tokens & GENERATION_VERBS and not is_interrogative:
+                        logger.info(
+                            "[COORDINATOR] DIRECT_ANSWER blocked — generation "
+                            "verb detected in '%s'. Upgrading to SKILL_PLAN.",
+                            query[:60],
+                        )
+                        return CoordinatorResult(
+                            mode=CoordinatorMode.SKILL_PLAN,
+                            reasoning_trace=(
+                                f"Generation intent detected "
+                                f"({tokens & GENERATION_VERBS}). "
+                                "DIRECT_ANSWER overridden to SKILL_PLAN."
+                            ),
+                        )
 
             return result
 

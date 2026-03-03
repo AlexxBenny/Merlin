@@ -38,6 +38,7 @@ domain_state_mapping:
     - "system.hardware"
   browser:
     - "system.session"
+  reasoning: []  # Pure generation — no world state needed
 
 skills:
   - name: "fs.create_folder"
@@ -115,6 +116,10 @@ skills:
   - name: "system.get_now_playing"
     module: "skills.system.get_now_playing"
     class: "GetNowPlayingSkill"
+
+  - name: "reasoning.generate_text"
+    module: "skills.reasoning.generate_text"
+    class: "GenerateTextSkill"
 
   # - name: "browser.open"
   #   module: "skills.browser.open"

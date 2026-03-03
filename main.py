@@ -153,11 +153,23 @@ def load_skills(
             # Inspect __init__ to inject dependencies
             sig = inspect.signature(skill_class.__init__)
             kwargs = {}
+            skip = False
             for param_name, param in sig.parameters.items():
                 if param_name == "self":
                     continue
                 if param_name in deps:
+                    if deps[param_name] is None and param.default is inspect.Parameter.empty:
+                        # Required dep is None — skip this skill entirely
+                        logger.warning(
+                            "Skill '%s' skipped: required dep '%s' is unavailable",
+                            name, param_name,
+                        )
+                        skip = True
+                        break
                     kwargs[param_name] = deps[param_name]
+
+            if skip:
+                continue
 
             skill_instance = skill_class(**kwargs)
             registry.register(skill_instance)
@@ -305,9 +317,20 @@ def main(args=None):
     from infrastructure.system_controller import SystemController
     system_controller = SystemController()
 
+    # Content generation LLM (for reasoning.generate_text skill)
+    content_llm = None
+    try:
+        content_llm = router.get_client("content_generator")
+        if not content_llm.is_available():
+            logger.warning("content_generator LLM not available")
+            content_llm = None
+    except Exception as e:
+        logger.warning("content_generator init failed: %s", e)
+
     skill_deps = {
         "location_config": location_config,
         "system_controller": system_controller,
+        "content_llm": content_llm,
     }
     load_skills(registry, skills_config, deps=skill_deps)
 

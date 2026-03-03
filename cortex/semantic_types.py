@@ -280,6 +280,19 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="A human-readable informational string.",
         direction="output",
     ),
+
+    # ── Content generation ──
+    "text_prompt": SemanticType(
+        description=(
+            "A natural language prompt or topic for content generation "
+            "(e.g., \"a short poem about AI\", \"summary of India\")."
+        ),
+        direction="input",
+    ),
+    "generated_text": SemanticType(
+        description="LLM-generated text content (story, summary, poem, etc.).",
+        direction="output",
+    ),
 }
 
 
