@@ -51,11 +51,33 @@ class OutputReference(BaseModel):
     $ref is the external wire format (LLM boundary) — it is stripped
     by the parser before reaching this model. OutputReference has
     NO $ref field.
+
+    Resolution order (strict, one-level only):
+      value = results[node][output]
+      if index is not None: value = value[index]   # list access
+      if field is not None: value = value[field]    # dict access
+
+    Constraints:
+      - index requires output to be a list at runtime
+      - field requires value (after index) to be a dict at runtime
+      - No nested index/field chains (one level only)
+      - No computed indices, no slices, no expressions
     """
     node: str
     output: str
+    index: Optional[int] = None   # 0-based list element access
+    field: Optional[str] = None   # single-level dict field access
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _validate_bounded_access(self) -> "OutputReference":
+        # index must be non-negative if provided
+        if self.index is not None and self.index < 0:
+            raise ValueError(
+                f"OutputReference.index must be >= 0, got {self.index}"
+            )
+        return self
 
 
 # LiteralValue: any JSON-serializable value that is NOT an OutputReference

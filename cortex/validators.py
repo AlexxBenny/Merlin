@@ -14,6 +14,9 @@ class MissionValidationError(Exception):
     pass
 
 
+logger = logging.getLogger(__name__)
+
+
 def validate_mission_plan(
     plan: MissionPlan,
     available_skills: Set[str],
@@ -138,6 +141,24 @@ def validate_mission_plan(
                         f"Node '{node.id}' references output from "
                         f"node '{value.node}' but does not depend on it"
                     )
+
+                # 6b. Heuristic type guard for index/field (compile-time)
+                # Uses semantic type name from referenced node's output declaration.
+                # Not runtime-safe — just catches obvious LLM misuse early.
+                if registry is not None and (value.index is not None or value.field is not None):
+                    ref_skill = registry.get(ref_node.skill)
+                    if ref_skill:
+                        out_semantic_type = ref_skill.contract.outputs.get(
+                            value.output, ""
+                        ).lower()
+                        if value.index is not None and "list" not in out_semantic_type:
+                            logger.warning(
+                                "OutputReference index=%d on '%s.%s' but "
+                                "semantic type '%s' does not contain 'list'. "
+                                "Possible LLM hallucination — may fail at runtime.",
+                                value.index, value.node, value.output,
+                                out_semantic_type,
+                            )
 
     # 7. At least one root
     if not any(len(n.depends_on) == 0 for n in plan.nodes):

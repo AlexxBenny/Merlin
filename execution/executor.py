@@ -189,7 +189,49 @@ class MissionExecutor:
                     f"on node '{node_id}'",
                 )
 
-            return True, node_outputs[out_key], ""
+            value = node_outputs[out_key]
+
+            # Bounded index access (list only, one level)
+            if raw_value.index is not None:
+                if not isinstance(value, list):
+                    return (
+                        False,
+                        None,
+                        f"OutputReference index={raw_value.index} on "
+                        f"'{node_id}.{out_key}' but value is "
+                        f"{type(value).__name__}, not list",
+                    )
+                if raw_value.index >= len(value):
+                    return (
+                        False,
+                        None,
+                        f"OutputReference index={raw_value.index} out of "
+                        f"bounds for '{node_id}.{out_key}' "
+                        f"(length={len(value)})",
+                    )
+                value = value[raw_value.index]
+
+            # Bounded field access (dict only, one level)
+            if raw_value.field is not None:
+                if not isinstance(value, dict):
+                    return (
+                        False,
+                        None,
+                        f"OutputReference field='{raw_value.field}' on "
+                        f"'{node_id}.{out_key}' but value is "
+                        f"{type(value).__name__}, not dict",
+                    )
+                if raw_value.field not in value:
+                    return (
+                        False,
+                        None,
+                        f"OutputReference field='{raw_value.field}' not "
+                        f"found in '{node_id}.{out_key}' "
+                        f"(keys={sorted(value.keys())})",
+                    )
+                value = value[raw_value.field]
+
+            return True, value, ""
 
         # Literal value — pass through
         return True, raw_value, ""

@@ -32,6 +32,7 @@ Reflex eligibility rule:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import List, Set
 
@@ -55,6 +56,8 @@ class QueryFeatures:
     requires_computation: bool = False
     requires_condition: bool = False
     requires_context: bool = False
+    requires_scheduling: bool = False
+    is_multi_clause: bool = False
 
     @property
     def reflex_eligible(self) -> bool:
@@ -65,7 +68,27 @@ class QueryFeatures:
             and not self.requires_computation
             and not self.requires_condition
             and not self.requires_context
+            and not self.requires_scheduling
         )
+
+    @property
+    def intra_query_coreference(self) -> bool:
+        """Does this query contain pronouns that refer to entities
+        introduced in the SAME query, not in prior conversation?
+
+        True when BOTH:
+        - requires_context is True (coreferential pronoun detected)
+        - is_multi_clause is True (query has multiple clauses)
+
+        When multi-clause, pronouns like 'it' likely refer to an
+        entity introduced in an earlier clause of the same query:
+          'Create folder alex. Inside IT create man.'
+        The compiler can resolve this without prior context.
+
+        Single-clause with pronoun = conversational reference:
+          'Delete it.' → refers to prior conversation
+        """
+        return self.requires_context and self.is_multi_clause
 
     def __repr__(self) -> str:
         flags = []
@@ -79,9 +102,14 @@ class QueryFeatures:
             flags.append("condition")
         if self.requires_context:
             flags.append("context")
+        if self.requires_scheduling:
+            flags.append("scheduling")
         if not flags:
             return "QueryFeatures(reflex_eligible)"
-        return f"QueryFeatures(requires=[{', '.join(flags)}])"
+        label = f"QueryFeatures(requires=[{', '.join(flags)}])"
+        if self.intra_query_coreference:
+            label = label[:-1] + ", intra_query_coref)"
+        return label
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,6 +196,59 @@ _CONDITION_BIGRAMS: frozenset = frozenset({
     ("only", "if"), ("only", "when"),
     ("in", "case"),
 })
+
+
+# Scheduling: deferred, timed, or recurring execution.
+# Distinct from temporal (date arithmetic) — this is ACTION TIMING.
+# "after 10 seconds" = scheduling. "what day is tomorrow" = temporal.
+#
+# Safety bias: FALSE POSITIVES > FALSE NEGATIVES.
+# If uncertain → force MISSION → coordinator classifies.
+# Silent truncation (reflex dropping "after 10 seconds") is the
+# worst failure mode. An unnecessary MISSION route is acceptable.
+_SCHEDULING_TOKENS: frozenset = frozenset({
+    "after",                              # "pause after 10 seconds"
+    "wait", "delay", "delayed",            # "wait 5 seconds then pause"
+    "schedule", "scheduled",              # "schedule a mute at 3pm"
+    "timer", "timeout",                   # "set a timer for 10 minutes"
+    "remind", "reminder",                 # "remind me to pause in 5 min"
+    "recurring", "repeat", "every",       # "check battery every hour"
+    "once",                               # "once it finishes, pause"
+})
+
+_SCHEDULING_BIGRAMS: frozenset = frozenset({
+    # "in N seconds/minutes/hours" — deferred execution
+    ("in", "seconds"), ("in", "minutes"), ("in", "hours"),
+    # "at TIME" — scheduled execution
+    ("at", "pm"), ("at", "am"),
+    # "after N units" — delay
+    ("after", "seconds"), ("after", "minutes"), ("after", "hours"),
+    # "every N units" — recurring execution
+    ("every", "minute"), ("every", "hour"), ("every", "second"),
+    ("every", "day"), ("every", "week"), ("every", "month"),
+    # "N seconds/minutes later" — deferred
+    ("seconds", "later"), ("minutes", "later"), ("hours", "later"),
+})
+
+# Temporal pattern regex — CLASS detection, not token enumeration.
+# Catches digit-adjacent time units (fused or separated), vague temporal
+# phrases, and "at + digit" scheduling patterns.
+#
+# Purpose: REFLEX SAFETY GATING ONLY.
+#   False positives → acceptable (mission path handles correctly).
+#   False negatives → dangerous (silent semantic truncation).
+#
+# This covers gaps that bigram detection cannot:
+#   "mute at 3pm"      → fused "3pm" not caught by ("at","pm") bigram
+#   "mute at 3 pm"     → number between "at" and "pm" breaks adjacency
+#   "pause music in a bit" → vague temporal not in any token set
+_TEMPORAL_PATTERN: re.Pattern = re.compile(
+    r'\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|'
+    r'pm|am|oclock)\b'
+    r'|(?:in\s+(?:a\s+)?(?:bit|moment|while|sec|min))'
+    r'|(?:at\s+\d)',
+    re.IGNORECASE,
+)
 
 
 # Context: references to prior conversation or unspecified entities.
@@ -274,6 +355,11 @@ class StructuralAnalyzer:
             ),
             requires_condition=self._detect_condition(token_set, bigrams),
             requires_context=self._detect_context(token_set, bigrams, tokens),
+            requires_scheduling=(
+                self._detect_scheduling(token_set, bigrams)
+                or self._detect_scheduling_pattern(text)
+            ),
+            is_multi_clause=self._detect_multi_clause(text, token_set),
         )
 
         logger.info(
@@ -312,6 +398,12 @@ class StructuralAnalyzer:
         if tokens & _HISTORY_TOKENS:
             return True
         if tokens & _CONTEXT_TOKENS:
+            return True
+        if tokens & _SCHEDULING_TOKENS:
+            return True
+        # Temporal pattern regex — catches fused time units and
+        # vague temporal phrases missed by token/bigram detection
+        if _TEMPORAL_PATTERN.search(text):
             return True
         # Check for pronouns that MIGHT be coreferential
         if tokens & {"it", "this", "that", "them", "those", "these"}:
@@ -382,6 +474,65 @@ class StructuralAnalyzer:
         if token_set & _CONDITION_TOKENS:
             return True
         if bigrams & _CONDITION_BIGRAMS:
+            return True
+        return False
+
+    @staticmethod
+    def _detect_scheduling(
+        token_set: frozenset, bigrams: Set[tuple],
+    ) -> bool:
+        """Detect deferred, scheduled, or recurring execution qualifiers.
+
+        Distinct from temporal detection (date/time arithmetic).
+        This catches action TIMING modifiers that reflex cannot handle.
+
+        Safety bias: false positives > false negatives.
+        Silent truncation (reflex ignoring scheduling qualifier)
+        is worse than an unnecessary MISSION escalation.
+        """
+        if token_set & _SCHEDULING_TOKENS:
+            return True
+        if bigrams & _SCHEDULING_BIGRAMS:
+            return True
+        return False
+
+    @staticmethod
+    def _detect_scheduling_pattern(text: str) -> bool:
+        """Regex-based temporal pattern detection.
+
+        Complements token/bigram detection for cases where
+        time expressions are fused ('3pm') or have intervening
+        tokens ('at 3 pm').
+
+        Called by analyze() to augment _detect_scheduling.
+        """
+        return bool(_TEMPORAL_PATTERN.search(text))
+
+    @staticmethod
+    def _detect_multi_clause(text: str, token_set: frozenset) -> bool:
+        """Detect multi-clause structure in the query.
+
+        Multi-clause queries contain multiple actions or clauses
+        joined by conjunctions or sentence boundaries.
+
+        Used to derive intra_query_coreference: if a query has
+        coreferential pronouns AND multiple clauses, the pronoun
+        likely refers to an entity in an earlier clause, not
+        to prior conversation.
+
+        Reuses _CONJUNCTION_TOKENS already defined for BrainCore
+        Stage 1 disqualification. No new token sets needed.
+        """
+        # Conjunctions: "and", "then", "also", "plus", etc.
+        if token_set & _CONJUNCTION_TOKENS:
+            return True
+        # Sentence-internal periods: "Create folder alex. Inside it..."
+        # Exclude trailing period (not a clause boundary).
+        stripped = text.rstrip(". ")
+        if "." in stripped:
+            return True
+        # Comma-separated clauses: "create folder alex, inside it..."
+        if "," in text:
             return True
         return False
 

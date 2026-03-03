@@ -101,6 +101,10 @@ class BrainCore:
             self._relational_unigrams = frozenset(unigrams)
             self._relational_bigrams = frozenset(bigrams)
 
+    # Last computed structural features — exposed for downstream layers
+    # (e.g., EscalationPolicy) so they don't re-run linguistic heuristics.
+    last_features: Any = None
+
     def _has_relational_dependency(self, text: str) -> bool:
         """Detect inter-clause semantic dependency via tokenized matching.
 
@@ -170,6 +174,7 @@ class BrainCore:
         # Deterministic token/bigram analysis. ~5ms. No LLM.
         if self._analyzer:
             features = self._analyzer.analyze(text)
+            self.last_features = features
 
             # Stage 2: Capability gate
             if features.reflex_eligible:

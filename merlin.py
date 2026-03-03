@@ -16,7 +16,9 @@ Design rules:
 - There is exactly ONE Merlin instance per process.
 """
 
-from typing import Any, Dict, List, Optional
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal, Optional
 import logging
 
 from brain.core import BrainCore, CognitiveRoute, Percept
@@ -49,6 +51,31 @@ from memory.store import MemoryStore
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PendingMission:
+    """Suspended mission context awaiting user response.
+
+    Immutable after creation. One-shot consumption.
+    Consumed or discarded on the next user percept.
+
+    Kinds:
+        clarification: EscalationPolicy → CLARIFY.
+            Stores original percept + snapshot.
+            User's response is merged and mission re-enters pipeline.
+        partial: Decomposer found unsupported intents.
+            Stores valid + unsupported intents + snapshot.
+            User confirms → resume with valid only.
+    """
+    kind: Literal["clarification", "partial"]
+    original_percept: Percept
+    snapshot: WorldSnapshot
+    question: str
+    tier: Optional[CognitiveTier] = None
+    valid_intents: Optional[List[Dict[str, Any]]] = None
+    unsupported_intents: Optional[List[Dict[str, Any]]] = None
+    created_at: float = field(default_factory=time.time)
 
 
 class Merlin:
@@ -127,10 +154,11 @@ class Merlin:
         self.output_channel = output_channel
         self.report_builder = report_builder
 
-        # ── Partial capability state (Option A: explicit, no re-decomposition) ──
-        # Stores valid + unsupported intents when waiting for user confirmation.
+        # ── Pending mission state (suspend/resume) ──
+        # Stores mission context when waiting for user response.
         # Consumed on next percept, then cleared. Never recomputed.
-        self._pending_partial: Optional[Dict] = None
+        # Covers: clarification, partial capability confirmation.
+        self._pending_mission: Optional[PendingMission] = None
 
         # ── Deterministic confirmation tokens ──
         self._CONFIRM_TOKENS = frozenset({
@@ -196,9 +224,9 @@ class Merlin:
         # ── Record user turn (system boundary) ──
         self.conversation.append_turn("user", percept.payload)
 
-        # ── Gate 0: Pending partial capability confirmation ──
-        if self._pending_partial is not None:
-            return self._handle_partial_confirmation(percept)
+        # ── Gate 0: Pending mission response (clarification or partial) ──
+        if self._pending_mission is not None:
+            return self._handle_pending_response(percept)
 
         # ── Gate 1: BrainCore circuit breaker ──
         route = self.brain.route(percept)
@@ -231,6 +259,7 @@ class Merlin:
             user_text=percept.payload,
             snapshot=snapshot,
             frame=self.conversation,
+            features=self.brain.last_features,
         )
 
         logger.info(
@@ -244,7 +273,7 @@ class Merlin:
             return None
 
         if decision == EscalationDecision.CLARIFY:
-            return self._handle_clarify(percept)
+            return self._handle_clarify(percept, snapshot)
 
         return self._handle_mission(percept, snapshot)
 
@@ -495,8 +524,8 @@ class Merlin:
         """Gate: unsupported intents detected. Ask user to confirm partial execution.
 
         If zero valid intents → deterministic rejection, no dialogue.
-        If some valid intents → store state, ask confirmation.
-        State is consumed on next percept via _handle_partial_confirmation.
+        If some valid intents → store PendingMission, ask confirmation.
+        State is consumed on next percept via _handle_pending_response.
         """
         unsupported_desc = "; ".join(
             u["description"] for u in decomp.unsupported_intents
@@ -504,7 +533,7 @@ class Merlin:
         ) or "some parts of your request"
 
         if not decomp.valid_intents:
-            # All-unsupported: deterministic rejection, no _pending_partial
+            # All-unsupported: deterministic rejection, no pending
             logger.info(
                 "[CAPABILITY] All intents unsupported — rejecting: %s",
                 unsupported_desc[:200],
@@ -521,53 +550,57 @@ class Merlin:
             return response
 
         # Some valid, some unsupported: store state and ask
-        valid_desc = ", ".join(
-            f"{v['action']}({', '.join(f'{k}={val}' for k, val in v.get('parameters', {}).items())})"
-            for v in decomp.valid_intents
-        )
         logger.info(
             "[CAPABILITY] Partial capability — valid: %d, unsupported: %d",
             len(decomp.valid_intents), len(decomp.unsupported_intents),
         )
-
-        # Store immutable state — no recomputation on confirmation
-        self._pending_partial = {
-            "percept": percept,
-            "valid_intents": decomp.valid_intents,
-            "unsupported_intents": decomp.unsupported_intents,
-            "snapshot": snapshot,  # Frozen: do NOT rebuild on confirmation
-            "tier": tier,
-        }
 
         response = (
             f"I can handle part of your request, "
             f"but I'm not able to: {unsupported_desc}. "
             f"Should I proceed with what I can do?"
         )
+
+        # Store immutable PendingMission — no recomputation on confirmation
+        self._pending_mission = PendingMission(
+            kind="partial",
+            original_percept=percept,
+            snapshot=snapshot,
+            question=response,
+            tier=tier,
+            valid_intents=decomp.valid_intents,
+            unsupported_intents=decomp.unsupported_intents,
+        )
+
         # Keep mission state as COMPILING — we're waiting for confirmation
         self.output_channel.send(response)
         self.conversation.append_turn("assistant", response)
         return response
 
-    def _handle_partial_confirmation(self, percept: Percept) -> Optional[str]:
-        """Handle user response to partial capability prompt.
+    # ─────────────────────────────────────────────────────────
+    # Unified pending response handler (suspend/resume)
+    # ─────────────────────────────────────────────────────────
 
-        Deterministic token matching — no NLP, no LLM:
-        - Confirm tokens → resume with stored valid intents
-        - Decline tokens → cancel, clear state
-        - Anything else → treat as new query, clear pending state
+    def _handle_pending_response(self, percept: Percept) -> Optional[str]:
+        """Handle user response to a suspended mission (clarification or partial).
+
+        Deterministic routing by pending.kind:
+        - partial: confirm/decline/new-query (existing behavior)
+        - clarification: merge answer into original query and resume
+
+        Non-confirmation input (new query) always clears pending
+        and re-routes through the normal pipeline.
         """
-        pending = self._pending_partial
-        self._pending_partial = None  # Always clear — one-shot consumption
+        pending = self._pending_mission
+        self._pending_mission = None  # Always clear — one-shot consumption
 
         user_text = percept.payload.strip().lower()
 
-        if user_text in self._CONFIRM_TOKENS:
-            logger.info("[CAPABILITY] User confirmed partial execution")
-            return self._resume_partial_mission(pending)
-
+        # ── Decline tokens: cancel regardless of kind ──
         if user_text in self._DECLINE_TOKENS:
-            logger.info("[CAPABILITY] User declined partial execution")
+            logger.info(
+                "[PENDING] User declined (%s)", pending.kind,
+            )
             if self.attention_manager:
                 self.attention_manager.set_mission_state(MissionState.IDLE)
             response = "Understood. Request cancelled."
@@ -575,10 +608,24 @@ class Merlin:
             self.conversation.append_turn("assistant", response)
             return response
 
-        # Not a confirmation — treat as entirely new query
+        # ── Kind-specific handling ──
+        if pending.kind == "partial":
+            if user_text in self._CONFIRM_TOKENS:
+                logger.info("[PENDING] User confirmed partial execution")
+                return self._resume_partial_mission(pending)
+            # Not a confirmation — fall through to new-query routing
+        elif pending.kind == "clarification":
+            # Any non-decline response is treated as the clarification answer
+            logger.info(
+                "[PENDING] Clarification answer received: '%s'",
+                percept.payload[:80],
+            )
+            return self._resume_from_clarification(pending, percept.payload)
+
+        # ── New query: clear pending, route normally ──
         logger.info(
-            "[CAPABILITY] User sent new query instead of confirmation — "
-            "clearing pending partial and routing normally"
+            "[PENDING] New query during pending (%s) — routing normally",
+            pending.kind,
         )
         if self.attention_manager:
             self.attention_manager.set_mission_state(MissionState.IDLE)
@@ -607,22 +654,22 @@ class Merlin:
             self.output_channel.send_silent()
             return None
         if decision == EscalationDecision.CLARIFY:
-            return self._handle_clarify(percept)
+            return self._handle_clarify(percept, snapshot)
         return self._handle_mission(percept, snapshot)
 
     def _resume_partial_mission(
-        self, pending: Dict,
+        self, pending: PendingMission,
     ) -> Optional[str]:
         """Resume mission compilation with stored valid intents.
 
         Uses the ORIGINAL snapshot — does not rebuild world state.
         Deterministic decision, non-deterministic environment is acceptable.
         """
-        percept = pending["percept"]
-        snapshot = pending["snapshot"]
-        tier = pending["tier"]
-        valid_intents = pending["valid_intents"]
-        unsupported_intents = pending["unsupported_intents"]
+        percept = pending.original_percept
+        snapshot = pending.snapshot
+        tier = pending.tier
+        valid_intents = pending.valid_intents
+        unsupported_intents = pending.unsupported_intents
 
         try:
             result = self.orchestrator.handle_user_input(
@@ -655,9 +702,47 @@ class Merlin:
             self.conversation.append_turn("assistant", response)
             return response
 
-    def _handle_clarify(self, percept: Percept) -> str:
+    def _resume_from_clarification(
+        self, pending: PendingMission, user_answer: str,
+    ) -> Optional[str]:
+        """Resume mission after user answers a clarification question.
+
+        Merges the original query with the user's clarification answer
+        and re-enters the mission pipeline with the ORIGINAL snapshot.
+
+        The conversation history already contains the clarification exchange
+        (question + answer), so the compiler LLM sees full context.
         """
-        Ask for clarification when context is insufficient.
+        # Merge original query + clarification answer
+        merged_query = f"{pending.original_percept.payload} ({user_answer})"
+
+        merged_percept = Percept(
+            modality=pending.original_percept.modality,
+            payload=merged_query,
+            confidence=pending.original_percept.confidence,
+            timestamp=pending.original_percept.timestamp,
+        )
+
+        logger.info(
+            "[PENDING] Resuming from clarification: '%s' → '%s'",
+            pending.original_percept.payload[:50],
+            merged_query[:80],
+        )
+
+        # Re-enter mission pipeline with original snapshot
+        return self._handle_mission(merged_percept, pending.snapshot)
+
+    # ─────────────────────────────────────────────────────────
+    # Clarification handler (now stores context for resume)
+    # ─────────────────────────────────────────────────────────
+
+    def _handle_clarify(
+        self, percept: Percept, snapshot: WorldSnapshot,
+    ) -> str:
+        """Ask for clarification when context is insufficient.
+
+        Stores mission context as PendingMission so the user's
+        response resumes the mission instead of starting fresh.
 
         Uses clarifier LLM if available for context-aware questions.
         Falls back to deterministic response otherwise.
@@ -674,6 +759,15 @@ class Merlin:
                 response = self._default_clarify_response()
         else:
             response = self._default_clarify_response()
+
+        # Store context for resume
+        self._pending_mission = PendingMission(
+            kind="clarification",
+            original_percept=percept,
+            snapshot=snapshot,
+            question=response,
+        )
+
         self.output_channel.send(response)
         self.conversation.append_turn("assistant", response)
         return response

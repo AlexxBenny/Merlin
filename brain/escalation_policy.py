@@ -270,23 +270,44 @@ class EscalationPolicy:
         user_text: str,
         snapshot: WorldSnapshot,
         frame: ConversationFrame,
+        features: Any = None,
     ) -> EscalationDecision:
         """
         Escalation decision for user input.
 
         This is ONLY called after BrainCore routes to MISSION.
-        No keyword checks here — BrainCore already handled that.
 
-        Focus: context-dependent decisions only.
+        If StructuralAnalyzer features are provided (preferred path),
+        uses feature-based decision. No redundant linguistic heuristics.
+
+        Layer discipline:
+        - StructuralAnalyzer does syntax (pronouns, clauses, etc.)
+        - EscalationPolicy does policy (clarify vs proceed)
+        - Escalation NEVER re-runs linguistic detection.
         """
 
-        text = user_text.lower()
+        # ── Feature-based path (preferred) ──
+        if features is not None:
+            if features.requires_context:
+                # Intra-query coreference: pronoun refers to entity
+                # in an earlier clause of the SAME query.
+                # Compiler resolves this — no clarification needed.
+                if features.intra_query_coreference:
+                    return EscalationDecision.MISSION
+                # Single-clause with pronoun: conversational reference.
+                # Check if prior context can resolve it.
+                if self._can_resolve_reference(snapshot, frame):
+                    return EscalationDecision.MISSION
+                return EscalationDecision.CLARIFY
+            # No context requirements → proceed
+            return EscalationDecision.MISSION
 
-        # ── Referential language: does context exist to resolve it? ──
+        # ── Fallback: substring-based (when features unavailable) ──
+        text = user_text.lower()
         if self._has_referential_language(text):
             if self._can_resolve_reference(snapshot, frame):
-                return EscalationDecision.MISSION   # Context exists, proceed
-            return EscalationDecision.CLARIFY        # No context, ask user
+                return EscalationDecision.MISSION
+            return EscalationDecision.CLARIFY
 
         # ── Default: MISSION (safe bias) ──
         return EscalationDecision.MISSION
@@ -299,7 +320,8 @@ class EscalationPolicy:
         """
         Does the text contain words that refer to prior context?
 
-        Examples: "the second video", "that one", "it"
+        DEPRECATED: Only used as fallback when features unavailable.
+        Prefer feature-based path (features.requires_context).
         """
         return any(marker in text for marker in self._referential_markers)
 

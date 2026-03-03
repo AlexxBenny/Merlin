@@ -400,6 +400,86 @@ If a component is required for every task, it is not part of intelligence.
 
 Violating this rule recreates AURA-style collapse.
 
+11. Execution Domains (Two, Strict)
+
+The system has exactly two execution domains.
+
+Immediate Mission
+
+Executes synchronously with user request.
+
+Has no persistent identity.
+
+Dies with request lifecycle.
+
+Handled by Executor (DAG walker).
+
+Uses IR v1 MissionPlan.
+
+Persistent Job
+
+Has persistent identity (TaskStore).
+
+Survives beyond request lifecycle.
+
+Executed by SchedulerManager.
+
+Uses TaskSchedule for temporal metadata.
+
+Must be fully self-contained.
+
+These domains are orthogonal.
+
+A single user query may produce units in both domains.
+
+Domain is a property of executable units, not queries.
+
+12. Persistent Execution Invariants (Frozen)
+
+12.1 Persistent units must be fully grounded
+
+No pronoun ambiguity survives decomposition.
+
+All referents are resolved to concrete skill parameters.
+
+"mute it" → "set_volume(level=0, target=YouTube)" before submission.
+
+12.2 No cross-domain OutputReference
+
+Persistent units may reference world state (always live).
+
+Persistent units may NOT reference outputs of immediate missions.
+
+If cross-domain data flow detected → UNSUPPORTED.
+
+12.3 Persistent submission requires immediate completion
+
+Persistent units are submitted to scheduler ONLY if
+
+the immediate MissionPlan status is COMPLETED.
+
+Partial success does not qualify.
+
+12.4 Scheduler condition semantics
+
+Recurring tasks evaluate condition_on each tick.
+
+If condition false → skip execution for that cycle.
+
+Task remains active. No implicit cancellation.
+
+Only explicit user cancellation or max_repeats exhaustion terminates a task.
+
+12.5 Temporal values must be absolute
+
+delay_seconds is relative to submission time.
+
+schedule_at is UTC epoch timestamp.
+
+No relative-to-previous-unit offsets.
+
+Scheduler operates without knowledge of unit ordering context.
+
 Repository Structure (Enforces the Architecture)
 
 This structure is designed to make architectural violations uncomfortable.

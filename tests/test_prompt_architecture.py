@@ -285,7 +285,7 @@ class TestPromptContent:
             "fs.create_folder": {
                 "description": "Create folder",
                 "inputs": {"name": "folder_name", "anchor": "anchor_name"},
-                "output_keys": ["created"],
+                "outputs": {"created": "filesystem_path"},
                 "allowed_modes": ["foreground"],
             },
         }
@@ -323,3 +323,67 @@ class TestPromptContent:
         prompt = self._make_prompt()
         assert "system.open_app" in prompt
         assert "notepad" in prompt
+
+    def test_prompt_contains_ref_example(self):
+        """Compiler prompt must include $ref example with index/field."""
+        prompt = self._make_prompt()
+        assert '"$ref"' in prompt
+        assert '"index"' in prompt
+        assert '"field"' in prompt
+        assert "system.list_apps" in prompt
+
+    def test_prompt_documents_ref_negative_examples(self):
+        """Compiler prompt must forbid string-path $ref syntax."""
+        prompt = self._make_prompt()
+        assert 'Do NOT use string paths' in prompt
+
+
+    def test_prompt_contains_clarification_rules(self):
+        """Compiler prompt must include clarification precedence + intent replacement rules."""
+        prompt = self._make_prompt()
+        assert "CLARIFICATION RULES:" in prompt
+        assert "overrides any conflicting parameters" in prompt
+        assert "discard earlier conflicting parameter values" in prompt
+
+
+# ==================================================================
+# 6. Decomposer Prompt Content
+# ==================================================================
+
+
+class TestDecomposerPromptContent:
+    """Decomposer prompt must include NL dependency and ordinal rules."""
+
+    def _make_decomposer_prompt(self):
+        from unittest.mock import MagicMock
+        from cortex.mission_cortex import MissionCortex
+        from execution.registry import SkillRegistry
+
+        cortex = MissionCortex(
+            llm_client=MagicMock(),
+            registry=SkillRegistry(),
+            location_config=None,
+        )
+        # Access the prompt by calling decompose_intents internals
+        # The prompt is built inside decompose_intents, so we check
+        # the prompt template string in the source
+        import inspect
+        source = inspect.getsource(cortex.decompose_intents)
+        return source
+
+    def test_decomposer_has_nl_dependency_rule(self):
+        """Decomposer must teach NL dependency expression."""
+        src = self._make_decomposer_prompt()
+        assert "depends on the OUTPUT of a previous action" in src
+
+    def test_decomposer_has_ordinal_scope(self):
+        """Decomposer must constrain ordinals to numeric only."""
+        src = self._make_decomposer_prompt()
+        assert "numeric ordinals" in src.lower() or "Ambiguous ordinals" in src
+
+    def test_decomposer_rejects_predicate_selection(self):
+        """Decomposer must reject attribute-based selection."""
+        src = self._make_decomposer_prompt()
+        assert "most memory" in src or "Selection by attribute" in src
+
+

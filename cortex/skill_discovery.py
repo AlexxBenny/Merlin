@@ -34,7 +34,7 @@ class SkillDiscovery(ABC):
         Each key is a skill name, each value has:
         - description
         - inputs: {key: semantic_type}
-        - output_keys
+        - outputs: {key: semantic_type}
         - allowed_modes
         """
         ...
@@ -64,7 +64,9 @@ class AllSkillsDiscovery(SkillDiscovery):
                 "inputs": {
                     k: v for k, v in skill.contract.inputs.items()
                 },
-                "output_keys": sorted(skill.contract.outputs.keys()),
+                "outputs": {
+                    k: v for k, v in skill.contract.outputs.items()
+                },
                 "allowed_modes": sorted(
                     m.value for m in skill.contract.allowed_modes
                 ),

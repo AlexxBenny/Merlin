@@ -229,6 +229,14 @@ Rules:
 - Every meaningful clause in the user request must produce exactly one entry:
   either a valid action or an UNSUPPORTED entry. No clause may be omitted.
 - "parameters" should contain the input values for that action.
+- If a parameter depends on the OUTPUT of a previous action in the sequence,
+  describe the dependency in natural language as the parameter value.
+  A known action with a runtime-dependent parameter is NOT unsupported.
+  Example: "list apps and open the second one" →
+  [{{"action": "list_apps"}}, {{"action": "open_app", "parameters": {{"app_name": "the second app from the list"}}}}]
+- Only numeric ordinals are valid references: first, second, third (or 1st, 2nd, 3rd).
+  Ambiguous ordinals like "last", "next", "previous" → emit UNSUPPORTED.
+  Selection by attribute ("the one with most memory") → emit UNSUPPORTED.
 - One entry per distinct action. Do NOT merge actions.
 - Output ONLY the JSON array. No explanation. No markdown.
 
@@ -500,7 +508,9 @@ User query:
                 "inputs": {
                     k: v for k, v in skill.contract.inputs.items()
                 },
-                "output_keys": sorted(skill.contract.outputs.keys()),
+                "outputs": {
+                    k: v for k, v in skill.contract.outputs.items()
+                },
                 "allowed_modes": sorted(
                     m.value for m in skill.contract.allowed_modes
                 ),
@@ -673,8 +683,20 @@ IMPORTANT:
 - Nodes are ordered. The first node is index 0, the second is index 1, etc.
 - depends_on uses integer step indices referencing earlier nodes in the array.
 - To reference another node's output, use: {{"$ref": {{"node": 0, "output": "output_name"}}}}
-- Do NOT use $node.output string format. Use the $ref object.
+- $ref supports optional "index" (integer, 0-based) for list element access
+  and optional "field" (string) for dict field access. One level only.
+  Example: {{"$ref": {{"node": 0, "output": "apps", "index": 1, "field": "name"}}}}
+- Do NOT use string paths like "apps[1].name" or "$node.output". Use the $ref object.
 - Output names must be namespaced (e.g. "research.findings.v1")
+
+CLARIFICATION RULES:
+- If conversation history shows a clarification exchange (system asked a question,
+  user answered), the user's most recent answer overrides any conflicting parameters
+  in the original query. Use the answer as the authoritative source.
+- If the user's response modifies a previously stated parameter (e.g. renaming,
+  changing drive, adjusting value), treat the latest instruction as authoritative
+  and discard earlier conflicting parameter values. Do NOT produce nodes that
+  use both the old and new values.
 
 INVALID — This will be rejected:
 {{"id": "1", "skill": "system.media_play", "inputs": {{}}, "depends_on": [], "mode": "foreground", "condition_on": {{"source": "1", "equals": true}}}}
@@ -720,6 +742,14 @@ User: "unmute, set brightness to 10, and play music"
     {{"skill": "system.unmute", "inputs": {{}}, "outputs": {{}}, "depends_on": [], "mode": "foreground"}},
     {{"skill": "system.set_brightness", "inputs": {{"level": 10}}, "outputs": {{}}, "depends_on": [], "mode": "foreground"}},
     {{"skill": "system.media_play", "inputs": {{}}, "outputs": {{}}, "depends_on": [], "mode": "foreground"}}
+  ]
+}}
+
+User: "list the running apps and open the second one"
+{{
+  "nodes": [
+    {{"skill": "system.list_apps", "inputs": {{}}, "outputs": {{"apps": {{"name": "system.list_apps.apps", "type": "application_list"}}}}, "depends_on": [], "mode": "foreground"}},
+    {{"skill": "system.open_app", "inputs": {{"app_name": {{"$ref": {{"node": 0, "output": "apps", "index": 1, "field": "name"}}}}}}, "outputs": {{}}, "depends_on": [0], "mode": "foreground"}}
   ]
 }}
 
@@ -909,6 +939,8 @@ User Request:
                 parsed[key] = OutputReference(
                     node=resolved_ref,
                     output=ref["output"],
+                    index=ref.get("index"),     # Optional[int]
+                    field=ref.get("field"),      # Optional[str]
                 )
             else:
                 parsed[key] = value

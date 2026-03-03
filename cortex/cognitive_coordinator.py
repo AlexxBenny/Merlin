@@ -53,11 +53,16 @@ class CoordinatorMode(str, Enum):
     SKILL_PLAN:     Pass-through — existing MissionCortex handles it.
     REASONED_PLAN:  Computed variables + refined query for compiler.
     UNSUPPORTED:    Required capabilities do not exist in skill manifest.
+    PERSISTENT_JOB: Requires deferred/scheduled/recurring execution.
+                    Phase 2 seam — not wired into merlin.py yet.
+                    Coordinator does NOT create Task objects.
+                    Task creation is SchedulerManager's responsibility (Phase 3).
     """
     DIRECT_ANSWER = "DIRECT_ANSWER"
     SKILL_PLAN = "SKILL_PLAN"
     REASONED_PLAN = "REASONED_PLAN"
     UNSUPPORTED = "UNSUPPORTED"
+    PERSISTENT_JOB = "PERSISTENT_JOB"
 
 
 @dataclass(frozen=True)
@@ -181,9 +186,20 @@ class LLMCognitiveCoordinator:
             result = self._parse_response(raw, query)
 
             # ── Imperative guard: block DIRECT_ANSWER for mutation queries ──
+            # Only applies to imperative statements, NOT interrogative queries.
+            # "open the app" = imperative → override to SKILL_PLAN (safe)
+            # "why can't you open it?" = interrogative → trust DIRECT_ANSWER
             if result.mode == CoordinatorMode.DIRECT_ANSWER:
                 tokens = set(query.lower().split())
-                if tokens & MUTATION_VERBS:
+                first_word = query.lower().split()[0] if query.strip() else ""
+                _QUESTION_WORDS = frozenset({
+                    "why", "how", "what", "when", "where", "who", "which",
+                    "can", "could", "would", "should", "do", "does", "did",
+                    "is", "are", "was", "were", "will", "don't", "doesn't",
+                    "isn't", "aren't", "won't", "wouldn't",
+                })
+                is_interrogative = first_word in _QUESTION_WORDS or "?" in query
+                if tokens & MUTATION_VERBS and not is_interrogative:
                     logger.warning(
                         "[COORDINATOR] DIRECT_ANSWER blocked — mutation verb "
                         "detected in '%s'. Upgrading to SKILL_PLAN.",

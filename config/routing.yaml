@@ -103,7 +103,7 @@ reflex_templates:
     param_map: {}
 
   # ── Filesystem ──
-  - pattern: "create folder (?P<name>.+) on (?P<anchor>\\w+)"
+  - pattern: "^create folder (?P<name>.+) on (?P<anchor>\\w+)$"
     skill: "fs.create_folder"
     param_map:
       name: "name"
