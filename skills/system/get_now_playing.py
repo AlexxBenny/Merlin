@@ -48,6 +48,7 @@ class GetNowPlayingSkill(Skill):
         emits_events=[],
         mutates_world=False,
         idempotent=True,
+        output_style="templated",
     )
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:

@@ -44,6 +44,7 @@ class ToggleNightlightSkill(Skill):
         emits_events=["nightlight_toggled"],
         mutates_world=True,
         idempotent=False,  # Toggle is NOT idempotent
+        output_style="terse",
     )
 
     def __init__(self, system_controller: SystemController):

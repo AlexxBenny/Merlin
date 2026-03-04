@@ -50,6 +50,7 @@ class MediaPlaySkill(Skill):
         emits_events=[],
         mutates_world=False,
         idempotent=True,
+        output_style="terse",
     )
 
     def __init__(self, system_controller: SystemController):

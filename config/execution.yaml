@@ -15,6 +15,20 @@ event_loop:
   tick_interval: 0.1
 
 # ─────────────────────────────────────────────────────────────
+# Scheduler — Persistent Job Orchestration
+# ─────────────────────────────────────────────────────────────
+#
+# Controls the TickSchedulerManager for deferred/scheduled/recurring jobs.
+# Jobs are persisted in state/jobs/jobs.json (separate from config).
+
+scheduler:
+  enabled: true
+  job_store_path: "state/jobs/jobs.json"
+  max_retry_attempts: 3
+  missed_job_staleness_seconds: 300     # 5 minutes
+  max_concurrent_jobs: 2
+
+# ─────────────────────────────────────────────────────────────
 # Attention Arbitration
 # ─────────────────────────────────────────────────────────────
 #

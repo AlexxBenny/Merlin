@@ -484,6 +484,115 @@ class MissionOrchestrator:
 
 
     # ─────────────────────────────────────────────────────────
+    # PUBLIC API: Unified skill result rendering (Phase 14)
+    # ─────────────────────────────────────────────────────────
+
+    # Reason-based responses for terse formatting (state-aware)
+    _REASON_RESPONSES = {
+        "already_playing": "Already playing.",
+        "already_paused": "Already paused.",
+        "already_muted": "Already muted.",
+        "already_unmuted": "Already unmuted.",
+        "no_media_session": "No media session detected.",
+    }
+
+    def render_skill_result(
+        self,
+        skill_name: str,
+        inputs: Dict[str, Any],
+        outputs: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+        output_style: str,
+        user_query: str,
+        snapshot: WorldSnapshot,
+        conversation: ConversationFrame,
+    ) -> str:
+        """Unified rendering for reflex skill results.
+
+        Single entrypoint that handles all three output styles.
+        Keeps merlin.py decoupled from ReportBuilder internals.
+
+        Args:
+            skill_name:   e.g. "system.list_jobs"
+            inputs:       resolved inputs dict
+            outputs:      skill result outputs dict
+            metadata:     skill result metadata dict
+            output_style: "terse" | "templated" | "rich"
+            user_query:   original user text
+            snapshot:     current world snapshot
+            conversation: conversation frame
+        """
+        if output_style == "rich":
+            return self.report_builder.build_from_skill_result(
+                skill_name=skill_name,
+                inputs=inputs,
+                outputs=outputs,
+                user_query=user_query,
+                snapshot=snapshot,
+                conversation=conversation,
+            )
+
+        if output_style == "templated":
+            template = metadata.get("response_template") if metadata else None
+            if template:
+                try:
+                    return template.format(**outputs)
+                except (KeyError, IndexError):
+                    pass  # fall through to terse
+
+        # ── Terse (default) ──
+        return self._format_terse_response(skill_name, outputs, metadata)
+
+    def _format_terse_response(
+        self,
+        skill_name: str,
+        outputs: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> str:
+        """Deterministic formatting for terse reflex responses.
+
+        Priority:
+        1. reason-based (state-aware: already_playing, no_media_session)
+        2. changed-flag (play → Playing., pause → Paused.)
+        3. generic output dump (query skills without template)
+        4. "Done." fallback
+        """
+        reason = metadata.get("reason") if metadata else None
+
+        # Reason-based responses take priority
+        if reason and reason in self._REASON_RESPONSES:
+            return self._REASON_RESPONSES[reason]
+
+        # Changed flag
+        changed = outputs.get("changed")
+        if changed is True:
+            if "play" in skill_name:
+                return "Playing."
+            elif "pause" in skill_name:
+                return "Paused."
+            elif "mute" in skill_name:
+                return "Muted." if "unmute" not in skill_name else "Unmuted."
+            elif "next" in skill_name:
+                return "Next track."
+            elif "previous" in skill_name:
+                return "Previous track."
+        elif changed is False and reason:
+            return self._REASON_RESPONSES.get(reason, f"Done. ({skill_name})")
+
+        # Generic output dump
+        if outputs:
+            data_outputs = {
+                k: v for k, v in outputs.items()
+                if v is not None and v != "unknown" and k != "changed"
+            }
+            if data_outputs:
+                parts = [f"{k}: {v}" for k, v in data_outputs.items()]
+                return ", ".join(parts)
+
+        return f"Done. ({skill_name})"
+
+
+    # ─────────────────────────────────────────────────────────
     # Conversation state updates (v2)
     # ─────────────────────────────────────────────────────────
 
@@ -675,13 +784,20 @@ class MissionOrchestrator:
 
         # malformed_plan or incomplete_coverage
         if failure.error_type == "incomplete_coverage":
+            logger.warning(
+                "[ORCHESTRATOR] Incomplete coverage: %s",
+                failure.error_message,
+            )
             return (
-                "I built a plan, but it doesn't cover all of your requests.\n\n"
-                f"Details: {failure.error_message}\n\n"
-                "Please try rephrasing or simplifying your request."
+                "I couldn't fully handle everything you asked for. "
+                "Could you try rephrasing or simplifying your request?"
             )
 
+        logger.warning(
+            "[ORCHESTRATOR] Plan failure (%s): %s",
+            failure.error_type, failure.error_message,
+        )
         return (
-            "I couldn't build a valid plan for your request.\n\n"
-            f"Reason: {failure.error_message}"
+            "Something went wrong while preparing that task. "
+            "Would you like me to try again?"
         )

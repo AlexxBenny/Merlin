@@ -103,6 +103,8 @@ class Merlin:
         attention_manager: Optional[AttentionManager] = None,
         narration_policy=None,  # Optional[NarrationPolicy]
         coordinator: Optional[CognitiveCoordinator] = None,
+        scheduler: Optional["TickSchedulerManager"] = None,
+        completion_queue: Optional["CompletionQueue"] = None,
     ):
         # ── Cognitive components (frozen) ──
         self.brain = brain
@@ -122,12 +124,13 @@ class Merlin:
         # ── Conversation (working context) ──
         self.conversation = ConversationFrame()
 
-        # ── Shared executor (used by both orchestrator and reflex engine) ──
+        # ── Shared executor (used by orchestrator, reflex engine, and scheduler) ──
         executor = MissionExecutor(
             registry, timeline,
             max_workers=max_workers,
             node_timeout=node_timeout,
         )
+        self.executor = executor  # exposed for job_executor callback
         self.reflex_engine.executor = executor
 
         # ── Execution ──
@@ -150,6 +153,10 @@ class Merlin:
         # Optional — if None, REASONING tier degrades to SIMPLE.
         self.coordinator = coordinator
 
+        # ── Job Scheduling Subsystem ──
+        self.scheduler = scheduler
+        self.completion_queue = completion_queue
+
         # ── Output ──
         self.output_channel = output_channel
         self.report_builder = report_builder
@@ -171,6 +178,10 @@ class Merlin:
         })
 
         # ── Runtime event loop (background thread) ──
+        # job_executor is raw executor.run — the scheduler thread must NEVER
+        # touch orchestrator, ConversationFrame, or AttentionManager state.
+        # Output delivery happens via CompletionQueue → _drain_completions
+        # → AttentionManager (on the event loop thread).
         self.event_loop = RuntimeEventLoop(
             timeline=timeline,
             reflex_engine=reflex_engine,
@@ -180,6 +191,9 @@ class Merlin:
             output_channel=output_channel,
             get_conversation=lambda: self.conversation,
             attention_manager=attention_manager,
+            scheduler=scheduler,
+            completion_queue=completion_queue,
+            job_executor=executor.run if scheduler else None,
         )
 
     # ─────────────────────────────────────────────────────────
@@ -356,8 +370,20 @@ class Merlin:
             )
 
             if result.success:
-                # Format intelligent response from skill metadata
-                response = self._format_reflex_response(reflex_match.skill, result)
+                # Route through unified rendering pipeline (Phase 14)
+                contract = self.reflex_engine.registry.get(
+                    reflex_match.skill,
+                ).contract
+                response = self.orchestrator.render_skill_result(
+                    skill_name=reflex_match.skill,
+                    inputs=reflex_match.params,
+                    outputs=result.outputs,
+                    metadata=result.metadata,
+                    output_style=contract.output_style,
+                    user_query=percept.payload,
+                    snapshot=snapshot,
+                    conversation=self.conversation,
+                )
                 self.output_channel.send(response)
                 self.conversation.append_turn("assistant", response)
                 return response
@@ -375,80 +401,6 @@ class Merlin:
         )
         return self._handle_mission(percept, snapshot)
 
-    # ─────────────────────────────────────────────────────────
-    # Reflex response formatting
-    # ─────────────────────────────────────────────────────────
-
-    # Maps skill metadata 'reason' → natural-language response.
-    # Skills that return reason in metadata get intelligent replies.
-    # Skills without reason metadata get the generic fallback.
-    _REASON_RESPONSES = {
-        "already_playing": "Already playing.",
-        "already_paused": "Already paused.",
-        "already_muted": "Already muted.",
-        "already_unmuted": "Already unmuted.",
-        "no_media_session": "No media session detected.",
-    }
-
-    def _format_reflex_response(
-        self, skill_name: str, result: ReflexResult,
-    ) -> str:
-        """
-        Format an intelligent reflex response from skill outputs/metadata.
-
-        Priority:
-        1. reason-based (state-aware: already_playing, no_media_session)
-        2. changed-flag (play → Playing., pause → Paused.)
-        3. response_template in metadata (query skills: "It is {time}")
-        4. output data dump (fallback for query skills without template)
-        5. generic "Done." (mutating skills without metadata)
-        """
-        # Read reason from skill metadata channel (SkillResult.metadata)
-        reason = result.metadata.get("reason") if result.metadata else None
-
-        # Reason-based responses take priority
-        if reason and reason in self._REASON_RESPONSES:
-            return self._REASON_RESPONSES[reason]
-
-        # Check if skill returned a 'changed' flag in outputs
-        changed = result.outputs.get("changed")
-        if changed is True:
-            # Derive action verb from skill name
-            if "play" in skill_name:
-                return "Playing."
-            elif "pause" in skill_name:
-                return "Paused."
-            elif "mute" in skill_name:
-                return "Muted." if "unmute" not in skill_name else "Unmuted."
-            elif "next" in skill_name:
-                return "Next track."
-            elif "previous" in skill_name:
-                return "Previous track."
-        elif changed is False and reason:
-            return self._REASON_RESPONSES.get(reason, f"Done. ({skill_name})")
-
-        # Query skill formatting: skills with data outputs
-        # Priority: response_template in metadata > generic output dump
-        if result.outputs:
-            # 1. Template-based: skill provides format string in metadata
-            template = result.metadata.get("response_template") if result.metadata else None
-            if template:
-                try:
-                    return template.format(**result.outputs)
-                except (KeyError, IndexError):
-                    pass  # Fall through to generic
-
-            # 2. Generic: format all non-trivial outputs as readable text
-            # Skip outputs that are just status flags
-            data_outputs = {
-                k: v for k, v in result.outputs.items()
-                if v is not None and v != "unknown" and k != "changed"
-            }
-            if data_outputs:
-                parts = [f"{k}: {v}" for k, v in data_outputs.items()]
-                return ", ".join(parts)
-
-        return f"Done. ({skill_name})"
 
     def _handle_multi_reflex(
         self, percept: Percept, snapshot: WorldSnapshot,
@@ -899,6 +851,12 @@ class Merlin:
                         )
                         return response
 
+                    # ── PERSISTENT_JOB: scheduling required ──
+                    if result.mode == CoordinatorMode.PERSISTENT_JOB:
+                        return self._handle_persistent_job(
+                            percept, snapshot, result,
+                        )
+
                     # ── REASONED_PLAN: refine percept ──
                     if result.mode == CoordinatorMode.REASONED_PLAN:
                         logger.info(
@@ -994,6 +952,199 @@ class Merlin:
             self.output_channel.send(response)
             self.conversation.append_turn("assistant", response)
             return response
+
+    # ─────────────────────────────────────────────────────────
+    # Job scheduling handlers
+    # ─────────────────────────────────────────────────────────
+
+    def _handle_persistent_job(
+        self, percept: Percept, snapshot: WorldSnapshot,
+        coord_result: "CoordinatorResult",
+    ) -> Optional[str]:
+        """Handle PERSISTENT_JOB: schedule a deferred action.
+
+        Flow:
+            1. Execute immediate_actions synchronously (if any)
+            2. If immediate fails → abort scheduling (preserve logical integrity)
+            3. Resolve trigger via TemporalResolver
+            4. Compile deferred action into Task
+            5. Submit to scheduler
+            6. Respond deterministically (no LLM)
+        """
+        import uuid
+        from runtime.temporal_resolver import TemporalResolver
+        from runtime.task_store import Task, TaskSchedule, TaskStatus, TaskType
+
+        try:
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+
+            # ── 1. Execute immediate actions ──
+            if coord_result.immediate_actions:
+                for action_spec in coord_result.immediate_actions:
+                    action_desc = action_spec.get("action", "")
+                    if action_desc:
+                        logger.info(
+                            "[PERSISTENT_JOB] Executing immediate action: %s",
+                            action_desc,
+                        )
+                        try:
+                            imm_result = self.orchestrator.handle_user_input(
+                                user_text=action_desc,
+                                conversation=self.conversation,
+                                world_state_schema=self.world_state_provider.build_schema(
+                                    snapshot, query=action_desc,
+                                ),
+                            )
+                            if imm_result is None:
+                                # Immediate action failed → abort scheduling
+                                response = (
+                                    f"I couldn't complete the immediate action "
+                                    f"'{action_desc}', so I won't schedule "
+                                    f"the deferred action."
+                                )
+                                self.output_channel.send(response)
+                                self.conversation.append_turn(
+                                    "assistant", response,
+                                )
+                                return response
+                        except Exception as imm_err:
+                            response = (
+                                f"The immediate action '{action_desc}' failed: "
+                                f"{imm_err}. Scheduling aborted."
+                            )
+                            self.output_channel.send(response)
+                            self.conversation.append_turn(
+                                "assistant", response,
+                            )
+                            return response
+
+            # ── 2. Check scheduler availability ──
+            if not self.scheduler:
+                response = (
+                    "Scheduling is not currently available. "
+                    "I can only execute actions immediately."
+                )
+                self.output_channel.send(response)
+                self.conversation.append_turn("assistant", response)
+                return response
+
+            # ── 3. Resolve trigger time ──
+            resolver = TemporalResolver()
+            trigger_spec = coord_result.trigger_spec
+            next_run = resolver.resolve(trigger_spec)
+
+            if next_run is None:
+                response = (
+                    f"I couldn't understand the timing: "
+                    f"'{trigger_spec.get('expression', '?')}'. "
+                    f"Could you rephrase?"
+                )
+                self.output_channel.send(response)
+                self.conversation.append_turn("assistant", response)
+                return response
+
+            # ── 4. Compile deferred action into MissionPlan NOW ──
+            # Critical: compile once at scheduling time.
+            # At dispatch time, execute the compiled plan directly
+            # via MissionExecutor.run() — no re-interpretation.
+            from ir.mission import MissionPlan, IR_VERSION
+            from errors import FailureIR
+
+            deferred_query = coord_result.deferred_action_query
+            compiled = self.orchestrator.cortex.compile(
+                user_query=deferred_query,
+                world_state_schema=self.world_state_provider.build_schema(
+                    snapshot, query=deferred_query,
+                ),
+                conversation=self.conversation,
+            )
+
+            if isinstance(compiled, FailureIR):
+                response = (
+                    f"I understood the timing, but couldn't compile "
+                    f"the action '{deferred_query}': {compiled.reason}"
+                )
+                self.output_channel.send(response)
+                self.conversation.append_turn("assistant", response)
+                return response
+
+            # ── 5. Determine task type ──
+            kind = trigger_spec.get("kind", "delay")
+            if kind == "delay":
+                task_type = TaskType.DELAYED
+            elif kind == "absolute_time":
+                task_type = TaskType.SCHEDULED
+            else:
+                task_type = TaskType.DELAYED
+
+            # ── 6. Build Task with serialized compiled plan ──
+            task = Task(
+                id=str(uuid.uuid4()),
+                type=task_type,
+                query=percept.payload,
+                mission_data={
+                    "compiled_plan": compiled.model_dump(mode="json"),
+                    "ir_version": IR_VERSION,
+                    "schema_version": 1,
+                    "deferred_query": deferred_query,
+                },
+                schedule=TaskSchedule(
+                    delay_seconds=(
+                        resolver.resolve_delay_seconds(
+                            trigger_spec.get("expression", ""),
+                        )
+                        if kind == "delay" else None
+                    ),
+                    schedule_at=next_run if kind == "absolute_time" else None,
+                    time_expression=trigger_spec.get("expression", ""),
+                    timezone=resolver.get_local_timezone(),
+                ),
+                next_run=next_run,
+            )
+
+            # ── 7. Submit to scheduler ──
+            task_id = self.scheduler.submit(task)
+            stored = self.scheduler._store.get(task_id)
+            short_id = stored.short_id if stored else "?"
+
+            # ── 8. Build deterministic response ──
+            expression = trigger_spec.get("expression", "?")
+            plan_nodes = len(compiled.nodes)
+
+            if kind == "delay":
+                response = (
+                    f"Got it. I'll {deferred_query} in {expression}. "
+                    f"(Job {short_id}, {plan_nodes} step{'s' if plan_nodes > 1 else ''} compiled)"
+                )
+            else:
+                response = (
+                    f"Scheduled: {deferred_query} at {expression}. "
+                    f"(Job {short_id}, {plan_nodes} step{'s' if plan_nodes > 1 else ''} compiled)"
+                )
+
+            logger.info(
+                "[PERSISTENT_JOB] Submitted %s: '%s' → next_run=%.1f, plan_nodes=%d",
+                short_id, deferred_query, next_run, plan_nodes,
+            )
+
+            self.output_channel.send(response)
+            self.conversation.append_turn("assistant", response)
+            return response
+
+        except Exception as e:
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+
+            logger.error(
+                "[PERSISTENT_JOB] Failed: %s", e, exc_info=True,
+            )
+            response = f"I couldn't schedule that: {e}"
+            self.output_channel.send(response)
+            self.conversation.append_turn("assistant", response)
+            return response
+
+
 
     def _resolve_references(self, user_text: str) -> None:
         """

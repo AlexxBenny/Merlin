@@ -16,6 +16,7 @@ Design rules:
 from abc import ABC, abstractmethod
 from typing import List
 import logging
+import threading
 
 
 logger = logging.getLogger(__name__)
@@ -45,13 +46,16 @@ class OutputChannel(ABC):
 class ConsoleOutputChannel(OutputChannel):
     """
     Prints to stdout. Primary channel during development.
+    Thread-safe: uses a lock to prevent interleaved output.
     """
 
     def __init__(self, prefix: str = "MERLIN"):
         self.prefix = prefix
+        self._lock = threading.Lock()
 
     def send(self, message: str) -> None:
-        print(f"[{self.prefix}] {message}")
+        with self._lock:
+            print(f"[{self.prefix}] {message}")
 
     def send_silent(self) -> None:
         logger.debug("ConsoleOutputChannel: silence")

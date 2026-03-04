@@ -40,6 +40,7 @@ class UnmuteSkill(Skill):
         emits_events=["mute_toggled"],
         mutates_world=True,
         idempotent=True,
+        output_style="terse",
     )
 
     def __init__(self, system_controller: SystemController):

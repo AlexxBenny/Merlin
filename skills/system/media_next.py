@@ -38,6 +38,7 @@ class MediaNextSkill(Skill):
         emits_events=[],
         mutates_world=False,
         idempotent=False,
+        output_style="terse",
     )
 
     def __init__(self, system_controller: SystemController):

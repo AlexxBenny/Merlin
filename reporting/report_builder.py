@@ -213,6 +213,148 @@ class ReportBuilder:
             return self._fallback_event_text(draft)
 
     # ─────────────────────────────────────────────────────────
+    # REFLEX RICH: Skill result reporting (Phase 14)
+    # ─────────────────────────────────────────────────────────
+
+    def build_from_skill_result(
+        self,
+        skill_name: str,
+        inputs: Dict[str, Any],
+        outputs: Dict[str, Any],
+        user_query: str,
+        snapshot: WorldSnapshot,
+        conversation: "ConversationFrame",
+    ) -> str:
+        """Returns user-facing text for a single skill's output.
+
+        Third input type: alongside build() for missions and
+        build_from_event() for proactive events.
+
+        Used when a reflex-routed skill has output_style="rich" —
+        its structured data (lists, dicts) needs LLM narration
+        instead of raw f"{k}: {v}" dumps.
+
+        No MissionPlan is fabricated. The StructuredReport is built
+        directly from the skill result.
+
+        Scaling note: _describe_action() summarizes lists as "{N} items"
+        so the LLM prompt stays bounded. However, the LLM can't enumerate
+        items it didn't see. When list skills (list_files, list_tabs) arrive
+        with potentially 50+ items, introduce a list_size_threshold:
+            ≤ threshold → pass items inline (LLM enumerates)
+            > threshold → pass count + sample (LLM summarizes)
+        """
+        if not self.llm:
+            return self._format_skill_fallback(skill_name, outputs, user_query)
+
+        try:
+            return self._render_skill_result_with_llm(
+                skill_name, inputs, outputs, user_query,
+                snapshot, conversation,
+            )
+        except Exception:
+            return self._format_skill_fallback(skill_name, outputs, user_query)
+
+    def _render_skill_result_with_llm(
+        self,
+        skill_name: str,
+        inputs: Dict[str, Any],
+        outputs: Dict[str, Any],
+        user_query: str,
+        snapshot: "WorldSnapshot",
+        conversation: "ConversationFrame",
+    ) -> str:
+        """Render a skill result using a result-focused LLM prompt.
+
+        Unlike _render_with_llm() (mission prompt), this prompt:
+        - Talks about the outcome, not the execution process
+        - Never mentions plans, nodes, or system internals
+        - Includes the user's original query for context
+        """
+        prompt = self._build_skill_result_prompt(
+            skill_name, outputs, user_query, conversation,
+        )
+        response = self.llm.complete(prompt)
+        return response.strip()
+
+    def _build_skill_result_prompt(
+        self,
+        skill_name: str,
+        outputs: Dict[str, Any],
+        user_query: str,
+        conversation: "ConversationFrame",
+    ) -> str:
+        """Build a result-focused prompt for reflex skill output.
+
+        This is NOT the mission prompt. It focuses on what the user
+        asked and what the result is — no execution terminology.
+        """
+        # Format outputs for prompt
+        result_lines = []
+        for key, val in outputs.items():
+            if isinstance(val, list):
+                if len(val) == 0:
+                    result_lines.append(f"  {key}: (empty list)")
+                elif len(val) <= 10:
+                    result_lines.append(f"  {key}: {val}")
+                else:
+                    result_lines.append(
+                        f"  {key}: {len(val)} items "
+                        f"(first 5: {val[:5]})"
+                    )
+            elif isinstance(val, dict):
+                result_lines.append(f"  {key}: {val}")
+            else:
+                result_lines.append(f"  {key}: {val}")
+
+        result_block = "\n".join(result_lines) if result_lines else "  (no data)"
+
+        return f"""You are MERLIN, a calm, precise, intelligent assistant.
+
+The user asked: "{user_query}"
+
+The result is:
+{result_block}
+
+Conversation context:
+- Active domain: {conversation.active_domain}
+- Active entity: {conversation.active_entity}
+
+Instructions:
+- Answer the user's question naturally based on the result above.
+- Be concise — one to three sentences.
+- Speak naturally, like JARVIS.
+- Do NOT mention plans, nodes, execution reports, or internal processes.
+- Do NOT say "I executed" or "I ran" or "the skill returned".
+- Only talk about the outcome — what the user asked about.
+- If the result is empty, say so clearly and helpfully.
+- If the result contains items, enumerate them naturally.
+
+Respond with plain text only."""
+
+    @staticmethod
+    def _format_skill_fallback(
+        skill_name: str,
+        outputs: Dict[str, Any],
+        user_query: str,
+    ) -> str:
+        """Deterministic fallback for skill results when LLM is unavailable."""
+        if not outputs:
+            return f"Done. ({skill_name})"
+
+        parts = []
+        for key, val in outputs.items():
+            if isinstance(val, list):
+                if len(val) == 0:
+                    parts.append(f"No {key} found.")
+                else:
+                    parts.append(f"{len(val)} {key}.")
+            elif val is not None:
+                parts.append(f"{key}: {val}")
+
+        return " ".join(parts) if parts else f"Done. ({skill_name})"
+
+    # ─────────────────────────────────────────────────────────
     # Channel A: Structured Report Construction
     # ─────────────────────────────────────────────────────────
 

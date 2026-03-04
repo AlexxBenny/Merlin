@@ -79,6 +79,9 @@ class CoordinatorResult:
         missing_capabilities: Skills/operations not found (UNSUPPORTED only).
         suggestion:           Helpful alternative suggestion (UNSUPPORTED only).
         reasoning_trace:      Human-readable trace of how the decision was made.
+        trigger_spec:         Temporal trigger for PERSISTENT_JOB.
+        immediate_actions:    Actions to execute immediately (PERSISTENT_JOB, mixed queries).
+        deferred_action_query: Query describing the deferred action (PERSISTENT_JOB).
     """
     mode: CoordinatorMode
     answer: str = ""
@@ -87,6 +90,10 @@ class CoordinatorResult:
     missing_capabilities: List[str] = field(default_factory=list)
     suggestion: str = ""
     reasoning_trace: str = ""
+    # PERSISTENT_JOB fields
+    trigger_spec: Dict[str, Any] = field(default_factory=dict)
+    immediate_actions: List[Dict[str, Any]] = field(default_factory=list)
+    deferred_action_query: str = ""
 
 
 # Deterministic fallback — used when coordinator fails or is unavailable
@@ -299,7 +306,12 @@ Step 4: Choose the correct mode based on this matrix:
   │ No reasoning needed     │ SKILL_PLAN       │ UNSUPPORTED           │
   │ Reasoning needed        │ REASONED_PLAN    │ UNSUPPORTED           │
   │ No skills needed at all │ DIRECT_ANSWER    │ DIRECT_ANSWER         │
+  │ Scheduling/timing req'd │ PERSISTENT_JOB   │ UNSUPPORTED           │
   └─────────────────────────┴──────────────────┴───────────────────────┘
+
+  Scheduling/timing trigger words: "after", "in X minutes", "at 4 PM",
+  "every hour", "remind me", "later", "schedule", "delay", "timer".
+  If the query has a time trigger AND requires a skill action, choose PERSISTENT_JOB.
 
 ═══════════════════════════════════════════════════
 HARD RULES (these override everything):
@@ -336,6 +348,16 @@ For REASONED_PLAN (reasoning first, then skills):
 
 For UNSUPPORTED (required capabilities do not exist):
 {{"mode": "UNSUPPORTED", "missing": ["capability1", "capability2"], "suggestion": "what the user could do instead", "reasoning": "which operations have no skill"}}
+
+For PERSISTENT_JOB (action + timing/scheduling required):
+{{"mode": "PERSISTENT_JOB", "trigger": {{"kind": "delay|absolute_time", "expression": "10 seconds|4 PM"}}, "deferred_action": "description of the action to perform later", "immediate_actions": ["optional: actions to execute NOW before scheduling"], "reasoning": "why this needs scheduling"}}
+
+PERSISTENT_JOB RULES:
+- trigger.expression must be a HUMAN-READABLE time string. NEVER compute Unix timestamps.
+- Use kind="delay" for relative times ("10 seconds", "2 minutes", "1 hour")
+- Use kind="absolute_time" for clock times ("4 PM", "3:30 PM", "23:30", "tomorrow at 9 AM")
+- immediate_actions: ONLY use for mixed queries like "mute now AND unmute in 10 seconds" — mute is immediate, unmute is deferred.
+- If the query is purely deferred ("pause after 10 seconds"), leave immediate_actions as empty list.
 """
 
     @staticmethod
@@ -442,6 +464,39 @@ For UNSUPPORTED (required capabilities do not exist):
                 mode=CoordinatorMode.UNSUPPORTED,
                 missing_capabilities=missing if isinstance(missing, list) else [str(missing)],
                 suggestion=suggestion,
+                reasoning_trace=reasoning,
+            )
+
+        if mode_str == "PERSISTENT_JOB":
+            trigger = data.get("trigger", {})
+            deferred = data.get("deferred_action", "")
+            immediate = data.get("immediate_actions", [])
+
+            if not trigger or not isinstance(trigger, dict):
+                logger.warning(
+                    "[COORDINATOR] PERSISTENT_JOB without trigger spec"
+                )
+                return FALLBACK_RESULT
+            if not deferred:
+                logger.warning(
+                    "[COORDINATOR] PERSISTENT_JOB without deferred_action"
+                )
+                return FALLBACK_RESULT
+
+            # Normalize immediate_actions to list of dicts
+            if isinstance(immediate, list):
+                immediate_dicts = [
+                    {"action": a} if isinstance(a, str) else a
+                    for a in immediate
+                ]
+            else:
+                immediate_dicts = []
+
+            return CoordinatorResult(
+                mode=CoordinatorMode.PERSISTENT_JOB,
+                trigger_spec=trigger,
+                deferred_action_query=deferred,
+                immediate_actions=immediate_dicts,
                 reasoning_trace=reasoning,
             )
 

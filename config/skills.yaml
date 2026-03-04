@@ -129,6 +129,16 @@ skills:
     module: "skills.reasoning.generate_text"
     class: "GenerateTextSkill"
 
+  # ── Scheduler domain (job lifecycle) ──
+
+  - name: "system.list_jobs"
+    module: "skills.system.list_jobs"
+    class: "ListJobsSkill"
+
+  - name: "system.cancel_job"
+    module: "skills.system.cancel_job"
+    class: "CancelJobSkill"
+
   # - name: "browser.open"
   #   module: "skills.browser.open"
   #   class: "BrowserOpenSkill"

@@ -668,10 +668,10 @@ MissionPlan JSON Schema:
       "skill": "domain.action[.variant]",
       "inputs": {{
         "key": "literal_value",
-        "key2": {{"$ref": {{"node": 0, "output": "namespaced.output.name"}}}}
+        "key2": {{"$ref": {{"node": 0, "output": "key"}}}}
       }},
       "outputs": {{
-        "key": {{"name": "namespaced.output.name", "type": "semantic_type"}}
+        "key": {{"name": "skill.output.label", "type": "semantic_type"}}
       }},
       "depends_on": [0],
       "mode": "foreground | background | side_effect"
@@ -682,12 +682,16 @@ MissionPlan JSON Schema:
 IMPORTANT:
 - Nodes are ordered. The first node is index 0, the second is index 1, etc.
 - depends_on uses integer step indices referencing earlier nodes in the array.
-- To reference another node's output, use: {{"$ref": {{"node": 0, "output": "output_name"}}}}
+- To reference another node's output, use: {{"$ref": {{"node": 0, "output": "OUTPUT_KEY"}}}}
+  OUTPUT_KEY is the dict key from the "outputs" object — NOT the namespaced name.
+  Example: if outputs = {{"text": {{"name": "...", "type": "..."}}}}, use "output": "text".
+  WRONG: "output": "reasoning.generate_text.text" (this is the name, not the key).
 - $ref supports optional "index" (integer, 0-based) for list element access
   and optional "field" (string) for dict field access. One level only.
   Example: {{"$ref": {{"node": 0, "output": "apps", "index": 1, "field": "name"}}}}
 - Do NOT use string paths like "apps[1].name" or "$node.output". Use the $ref object.
-- Output names must be namespaced (e.g. "research.findings.v1")
+- The "name" field inside outputs is a namespaced label (e.g. "reasoning.generate_text.text").
+  This is for documentation only. $ref.output always uses the SHORT KEY (e.g. "text").
 
 CLARIFICATION RULES:
 - If conversation history shows a clarification exchange (system asked a question,
@@ -938,13 +942,33 @@ User Request:
 
                 parsed[key] = OutputReference(
                     node=resolved_ref,
-                    output=ref["output"],
+                    output=self._normalize_ref_output(ref["output"]),
                     index=ref.get("index"),     # Optional[int]
                     field=ref.get("field"),      # Optional[str]
                 )
             else:
                 parsed[key] = value
         return parsed
+
+    @staticmethod
+    def _normalize_ref_output(output: str) -> str:
+        """Normalize $ref.output to use the short key, not namespaced name.
+
+        LLMs occasionally confuse OutputSpec.name (e.g. "reasoning.generate_text.text")
+        with the output dict key (e.g. "text"). This guard strips the prefix.
+
+        Example: "reasoning.generate_text.text" → "text"
+        Pass-through: "text" → "text", "apps" → "apps"
+        """
+        if "." in output:
+            short_key = output.rsplit(".", 1)[-1]
+            logger.warning(
+                "[NORMALIZER] $ref.output '%s' contains dots — "
+                "normalized to '%s' (expected short key, not namespaced name)",
+                output, short_key,
+            )
+            return short_key
+        return output
 
     def _resolve_depends_on(
         self,

@@ -306,6 +306,30 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="Text content of a file (read or to be written).",
         direction="both",
     ),
+
+    # ── Scheduler domain ──
+    # Domain entity: Job
+    # Canonical types: job_identifier (input), job_list (output)
+    # Do NOT add job_summary / job_details / job_info — use info_string
+    # for human-readable outputs instead.
+    "job_list": SemanticType(
+        description="List of scheduled jobs with metadata.",
+        direction="output",
+    ),
+    "job_identifier": SemanticType(
+        description=(
+            "Short ID of a scheduled job (e.g., \"J-3\", \"3\", or \"job 3\"). "
+            "Normalized internally."
+        ),
+        direction="input",
+    ),
+    "filter_value": SemanticType(
+        description=(
+            "A filter/qualifier for list queries "
+            "(e.g., \"active\", \"completed\", \"failed\", \"all\")."
+        ),
+        direction="input",
+    ),
 }
 
 

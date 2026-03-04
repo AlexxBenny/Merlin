@@ -51,6 +51,7 @@ class OpenAppSkill(Skill):
         },
         emits_events=["app_launched"],
         mutates_world=True,
+        output_style="terse",
     )
 
     def __init__(self, system_controller: SystemController):

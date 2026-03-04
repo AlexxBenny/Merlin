@@ -327,10 +327,30 @@ def main(args=None):
     except Exception as e:
         logger.warning("content_generator init failed: %s", e)
 
+    # ── Task store (created early so job skills can use it) ──
+    task_store = None
+    scheduler_config = execution_config.get("scheduler", {})
+    if scheduler_config.get("enabled", False):
+        try:
+            import os
+            from runtime.json_task_store import JsonTaskStore
+
+            job_store_path = scheduler_config.get(
+                "job_store_path", "state/jobs/jobs.json"
+            )
+            job_dir = os.path.dirname(job_store_path)
+            if job_dir:
+                os.makedirs(job_dir, exist_ok=True)
+
+            task_store = JsonTaskStore(path=job_store_path)
+        except Exception as e:
+            logger.warning("Task store init failed: %s", e)
+
     skill_deps = {
         "location_config": location_config,
         "system_controller": system_controller,
         "content_llm": content_llm,
+        "task_store": task_store,
     }
     load_skills(registry, skills_config, deps=skill_deps)
 
@@ -471,6 +491,36 @@ def main(args=None):
     except Exception as e:
         logger.warning("cognitive_coordinator init failed: %s", e)
 
+    # ── Job Scheduler (persistent, tick-based) ──
+    scheduler = None
+    completion_queue = None
+
+    if scheduler_config.get("enabled", False) and task_store is not None:
+        try:
+            from runtime.tick_scheduler import TickSchedulerManager
+            from runtime.completion_event import CompletionQueue
+
+            max_concurrent = scheduler_config.get("max_concurrent_jobs", 2)
+            max_retries = scheduler_config.get("max_retry_attempts", 3)
+
+            scheduler = TickSchedulerManager(
+                store=task_store,
+                max_concurrent_jobs=max_concurrent,
+            )
+            completion_queue = CompletionQueue()
+
+            logger.info(
+                "Scheduler: TickSchedulerManager (max_concurrent=%d, "
+                "max_retries=%d)",
+                max_concurrent, max_retries,
+            )
+        except Exception as e:
+            logger.warning("Scheduler init failed — running without: %s", e)
+            scheduler = None
+            completion_queue = None
+    else:
+        logger.info("Scheduler disabled in config")
+
     # ── Build Merlin ──
     merlin = Merlin(
         brain=brain,
@@ -491,6 +541,8 @@ def main(args=None):
         attention_manager=attention_manager,
         narration_policy=narration_policy,
         coordinator=coordinator,
+        scheduler=scheduler,
+        completion_queue=completion_queue,
     )
 
 

@@ -61,6 +61,7 @@ class GetBatterySkill(Skill):
         mutates_world=False,
         idempotent=True,
         data_freshness="live",
+        output_style="templated",
     )
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:

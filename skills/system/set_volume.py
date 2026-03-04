@@ -48,6 +48,7 @@ class SetVolumeSkill(Skill):
         emits_events=["volume_changed"],
         mutates_world=True,
         idempotent=True,
+        output_style="terse",
     )
 
     def __init__(self, system_controller: SystemController):

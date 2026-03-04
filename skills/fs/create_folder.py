@@ -51,6 +51,7 @@ class CreateFolderSkill(Skill):
         },
         emits_events=["folder_created"],
         mutates_world=True,
+        output_style="terse",
     )
 
     def __init__(self, location_config: LocationConfig):

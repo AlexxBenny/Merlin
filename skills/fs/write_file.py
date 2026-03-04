@@ -51,6 +51,7 @@ class WriteFileSkill(Skill):
         },
         emits_events=["file_written"],
         mutates_world=True,
+        output_style="terse",
     )
 
     def __init__(self, location_config: LocationConfig):

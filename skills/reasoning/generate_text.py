@@ -79,6 +79,7 @@ class GenerateTextSkill(Skill):
         mutates_world=False,
         idempotent=True,
         data_freshness="snapshot",
+        output_style="terse",
     )
 
     def __init__(self, content_llm: LLMClient):

@@ -70,6 +70,7 @@ class GetSystemStatusSkill(Skill):
         mutates_world=False,
         idempotent=True,
         data_freshness="live",
+        output_style="templated",
     )
 
     def __init__(self, system_controller: SystemController):

@@ -9,3 +9,6 @@ __pycache__
 .cursor
 
 .pytest_cache
+
+state/
+state

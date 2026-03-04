@@ -40,6 +40,7 @@ class ListAppsSkill(Skill):
         emits_events=[],
         mutates_world=False,
         idempotent=True,
+        output_style="rich",
     )
 
     def __init__(self, system_controller: SystemController):

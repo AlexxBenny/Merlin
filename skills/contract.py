@@ -121,3 +121,19 @@ class SkillContract(BaseModel):
     # are non-deterministic across replays.
     data_freshness: Literal["snapshot", "live"] = "snapshot"
 
+    # ── Output formatting style (Phase 14) ──
+    # Controls how the reflex path formats skill output for the user.
+    # This is a PRESENTATION concern, not a capability concern.
+    #
+    # "terse"     — one-word/Done/changed flag (mutating skills: play, mute)
+    #               Handler: deterministic formatting in _format_reflex_response
+    #
+    # "templated" — skill provides response_template in SkillResult.metadata
+    #               Handler: template.format(**outputs) → deterministic text
+    #               Examples: get_time → "It's {time}, {day}, {date}."
+    #
+    # "rich"      — structured/list data that needs LLM narration
+    #               Handler: routed through ReportBuilder.build_from_skill_result()
+    #               Examples: list_jobs, list_apps (output is list of dicts)
+    output_style: Literal["terse", "templated", "rich"] = "terse"
+
