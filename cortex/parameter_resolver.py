@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from cortex.semantic_types import SEMANTIC_TYPES
-from ir.mission import MissionPlan, MissionNode
+from ir.mission import MissionPlan, MissionNode, IRReference
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +142,12 @@ class ParameterResolver:
         all_inputs = {**contract.inputs, **contract.optional_inputs}
 
         for key, raw_value in node.inputs.items():
+            # IRReference values (OutputReference, future StateReference, etc.)
+            # are runtime-resolved pipes. Skip — the Executor resolves these.
+            if isinstance(raw_value, IRReference):
+                resolved[key] = raw_value
+                continue
+
             semantic_type_name = all_inputs.get(key)
 
             if not semantic_type_name or semantic_type_name not in SEMANTIC_TYPES:

@@ -105,7 +105,13 @@ class TestParseResponseResilience:
         assert result.computed_vars == {"volume_level": 35}
         assert result.refined_query == "set volume to 35"
 
-    def test_unsupported_parsed(self):
+    def test_unsupported_maps_to_skill_plan(self):
+        """Backward compat: LLM returns UNSUPPORTED → maps to SKILL_PLAN.
+
+        Capability validation has moved downstream to the decomposer.
+        The coordinator now maps UNSUPPORTED to SKILL_PLAN so the query
+        flows through to per-clause classification.
+        """
         coord = _make_coordinator()
         raw = json.dumps({
             "mode": "UNSUPPORTED",
@@ -114,8 +120,8 @@ class TestParseResponseResilience:
             "reasoning": "no email skill",
         })
         result = coord._parse_response(raw, "send an email")
-        assert result.mode == CoordinatorMode.UNSUPPORTED
-        assert "email_send" in result.missing_capabilities
+        assert result.mode == CoordinatorMode.SKILL_PLAN
+        assert "backward compat" in result.reasoning_trace.lower()
 
     def test_unknown_mode_falls_back(self):
         coord = _make_coordinator()

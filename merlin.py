@@ -427,14 +427,18 @@ class Merlin:
         sched_clause: dict,
         percept: "Percept",
         snapshot: "WorldSnapshot",
-    ) -> None:
+    ) -> bool:
         """Schedule a SCHEDULED clause via TickSchedulerManager.
 
-        Reuses the existing TemporalResolver + compile + submit pipeline
-        originally in _handle_persistent_job, without duplicating it.
+        Reuses the existing TemporalResolver + compile + submit pipeline.
+
+        Handles both explicit actions ("mute in 10 min") and implicit
+        actions ("remind me every hour" → default notify/reminder).
 
         Never raises — scheduling failures are logged and silently dropped
         so that the rest of the mission still executes.
+
+        Returns True if the task was successfully submitted, False otherwise.
         """
         try:
             if not self.scheduler:
@@ -442,17 +446,32 @@ class Merlin:
                     "[SCHEDULED] No scheduler available for clause: %s",
                     sched_clause.get("action", "?"),
                 )
-                return
+                return False
 
             from runtime.temporal_resolver import TemporalResolver
             from runtime.task_store import Task, TaskSchedule, TaskStatus, TaskType
             from ir.mission import IR_VERSION
             from errors import FailureIR
             import uuid
+            import time as _time
 
             trigger_expr = sched_clause.get("trigger", "")
             action = sched_clause.get("action", "")
             parameters = sched_clause.get("parameters", {})
+
+            # ── Implicit action default ──
+            # Queries like "remind me every hour" have no explicit skill action.
+            # Default to a notification/reminder action so the scheduler has
+            # something to execute.
+            if not action or action.lower() in (
+                "remind", "reminder", "notify", "notification",
+                "alert", "ping",
+            ):
+                # Use the original query text as the notification message
+                original_text = percept.payload if percept else ""
+                notify_msg = parameters.get("message", original_text)
+                action = "notify"
+                parameters = {"message": notify_msg}
 
             # Build a natural-language deferred query from clause fields
             param_desc = " ".join(
@@ -460,7 +479,7 @@ class Merlin:
             )
             deferred_query = f"{action} {param_desc}".strip()
 
-            # Resolve the trigger time
+            # Resolve the trigger time (returns epoch float or None)
             resolver = TemporalResolver()
             next_run = resolver.resolve({"expression": trigger_expr, "kind": "delay"})
 
@@ -474,7 +493,23 @@ class Merlin:
                     f"'{trigger_expr}'. Could you rephrase?"
                 )
                 self.output_channel.send(response)
-                return
+                return False
+
+            # ── Determine task type from trigger expression ──
+            # Seam for future scheduler model expansion
+            #   (interval, cron, until, condition).
+            trigger_lower = trigger_expr.lower()
+            if any(kw in trigger_lower for kw in ("every", "recurring", "repeat")):
+                task_type = TaskType.RECURRING
+            elif any(kw in trigger_lower for kw in ("at ", "pm", "am", ":")):
+                task_type = TaskType.SCHEDULED
+            else:
+                task_type = TaskType.DELAYED
+
+            # Compute delay for TaskSchedule
+            # Both next_run and now are epoch floats (time.time())
+            now = _time.time()
+            delay_secs = max(0, int(next_run - now))
 
             # Compile the deferred action NOW (at schedule time, not dispatch time)
             compiled = self.orchestrator.cortex.compile(
@@ -488,34 +523,40 @@ class Merlin:
             if isinstance(compiled, FailureIR):
                 logger.warning(
                     "[SCHEDULED] Could not compile '%s': %s",
-                    deferred_query, compiled.reason,
+                    deferred_query, compiled.error_message,
                 )
-                return
+                return False
 
             task = Task(
                 id=str(uuid.uuid4()),
-                user_query=deferred_query,
-                trigger_spec={"expression": trigger_expr, "kind": "delay"},
+                type=task_type,
+                query=deferred_query,
                 next_run=next_run,
                 status=TaskStatus.PENDING,
-                task_type=TaskType.ONE_SHOT,
-                schedule=TaskSchedule(kind="delay", run_at=next_run),
+                schedule=TaskSchedule(
+                    delay_seconds=delay_secs if task_type == TaskType.DELAYED else None,
+                    schedule_at=next_run if task_type == TaskType.SCHEDULED else None,
+                    time_expression=trigger_expr,
+                    # Seam: repeat_interval, max_repeats for RECURRING
+                ),
                 mission_data={
-                    "compiled_plan": compiled.model_dump(),  # key matches _execute_scheduled_job
+                    "compiled_plan": compiled.model_dump(),
                     "deferred_query": deferred_query,
                     "ir_version": IR_VERSION,
                 },
             )
             self.scheduler.submit(task)
             logger.info(
-                "[SCHEDULED] Clause '%s' scheduled for %s",
-                action, next_run.isoformat(),
+                "[SCHEDULED] Clause '%s' scheduled for epoch=%.1f (type=%s)",
+                action, next_run, task_type.value,
             )
+            return True
         except Exception as e:
             logger.warning(
                 "[SCHEDULED] Failed to schedule clause '%s': %s",
                 sched_clause.get("action", "?"), e, exc_info=True,
             )
+            return False
 
     def _handle_refuse(self, percept: Percept) -> str:
         """Reject a dangerous or prohibited command."""
@@ -1057,37 +1098,6 @@ class Merlin:
                         )
                         return response
 
-                    # ── UNSUPPORTED: capability gap ──
-                    if result.mode == CoordinatorMode.UNSUPPORTED:
-                        if self.attention_manager:
-                            self.attention_manager.set_mission_state(
-                                MissionState.IDLE
-                            )
-                        missing = ", ".join(
-                            result.missing_capabilities
-                        ) or "some required operations"
-                        response = (
-                            f"I don't currently have the ability to: "
-                            f"{missing}."
-                        )
-                        if result.suggestion:
-                            response += f" {result.suggestion}"
-                        logger.info(
-                            "[COORDINATOR] UNSUPPORTED — missing: %s",
-                            missing,
-                        )
-                        self.output_channel.send(response)
-                        self.conversation.append_turn(
-                            "assistant", response
-                        )
-                        return response
-
-                    # ── PERSISTENT_JOB: scheduling required ──
-                    if result.mode == CoordinatorMode.PERSISTENT_JOB:
-                        return self._handle_persistent_job(
-                            percept, snapshot, result,
-                        )
-
                     # ── REASONED_PLAN: refine percept ──
                     if result.mode == CoordinatorMode.REASONED_PLAN:
                         logger.info(
@@ -1120,6 +1130,24 @@ class Merlin:
                 "[TIER] Query '%s' → %s",
                 percept.payload[:80], tier.value,
             )
+
+            # ── Deterministic tier upgrade for scheduling queries ──
+            # Single-clause scheduling queries ("remind me to X in Y")
+            # are classified as SIMPLE by the tier classifier (single verb,
+            # no conjunction). But they MUST reach the decomposer so the
+            # SCHEDULED clause type is recognized and routed to the scheduler.
+            # Without this upgrade, they'd go straight to the compiler which
+            # would fail (no "remind" skill exists).
+            scheduling_required = (
+                self.brain.last_features
+                and self.brain.last_features.requires_scheduling
+            )
+            if scheduling_required and tier == CognitiveTier.SIMPLE:
+                tier = CognitiveTier.MULTI_INTENT
+                logger.info(
+                    "[TIER] Upgraded SIMPLE → MULTI_INTENT "
+                    "(scheduling detected by StructuralAnalyzer)"
+                )
 
             # ── Conditional decomposition (Tier 2+ only) ──
             intent_units = None
@@ -1157,11 +1185,16 @@ class Merlin:
                         return response
 
                     # 2. SCHEDULED clauses → route to TickSchedulerManager
+                    sched_ok = []
+                    sched_fail = []
                     if decomp.scheduled_intents:
                         for sched_clause in decomp.scheduled_intents:
-                            self._schedule_decomposed_clause(
+                            if self._schedule_decomposed_clause(
                                 sched_clause, percept, snapshot,
-                            )
+                            ):
+                                sched_ok.append(sched_clause)
+                            else:
+                                sched_fail.append(sched_clause)
 
                     # 3. INFORMATIONAL clauses → collect for appending to response
                     info_acknowledgements = []
@@ -1173,10 +1206,68 @@ class Merlin:
                     # 4. Executable intents → compile + safety check + run
                     if decomp.executable_intents:
                         intent_units = decomp.valid_intents
-                        # Safety: check for destructive nodes pre-compile
-                        # (will be rechecked by supervisor after compile, but
-                        #  early check gives a cleaner error message)
-                    elif not decomp.scheduled_intents:
+                        # Log scheduling failures for mixed queries
+                        # (user will still see executable results, but
+                        #  should know if scheduling part failed)
+                        if sched_fail:
+                            fail_actions = [
+                                s.get("action", "?") for s in sched_fail
+                            ]
+                            logger.warning(
+                                "[SCHEDULED] %d scheduled clause(s) failed "
+                                "in mixed query: %s",
+                                len(sched_fail), fail_actions,
+                            )
+                    elif decomp.scheduled_intents:
+                        # SCHEDULED-only query (e.g., "remind me to X in Y").
+                        # Scheduling is already dispatched above. Return
+                        # honest acknowledgment based on actual success/failure.
+                        if self.attention_manager:
+                            self.attention_manager.set_mission_state(
+                                MissionState.IDLE
+                            )
+                        if sched_ok and not sched_fail:
+                            # All succeeded
+                            sched_descs = []
+                            for s in sched_ok:
+                                action = s.get("action", "your request")
+                                trigger = s.get("trigger", "")
+                                if trigger:
+                                    sched_descs.append(
+                                        f"{action} ({trigger})"
+                                    )
+                                else:
+                                    sched_descs.append(action)
+                            response = (
+                                "Got it — scheduled: "
+                                + "; ".join(sched_descs)
+                                + "."
+                            )
+                        elif sched_fail and not sched_ok:
+                            # All failed
+                            response = (
+                                "Scheduling failed. "
+                                "I couldn't create the reminder."
+                            )
+                        else:
+                            # Partial success
+                            ok_descs = [
+                                s.get("action", "?") for s in sched_ok
+                            ]
+                            fail_descs = [
+                                s.get("action", "?") for s in sched_fail
+                            ]
+                            response = (
+                                f"Partially scheduled: "
+                                f"{'; '.join(ok_descs)}. "
+                                f"Failed: {'; '.join(fail_descs)}."
+                            )
+                        self.output_channel.send(response)
+                        self.conversation.append_turn(
+                            "assistant", response
+                        )
+                        return response
+                    else:
                         # Nothing to execute — pure INFORMATIONAL/VAGUE
                         info_text = " ".join(
                             i.get("text", "") for i in decomp.informational_intents
@@ -1344,7 +1435,7 @@ class Merlin:
             if isinstance(compiled, FailureIR):
                 response = (
                     f"I understood the timing, but couldn't compile "
-                    f"the action '{deferred_query}': {compiled.reason}"
+                    f"the action '{deferred_query}': {compiled.error_message}"
                 )
                 self.output_channel.send(response)
                 self.conversation.append_turn("assistant", response)

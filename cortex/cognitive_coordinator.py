@@ -1,16 +1,20 @@
 # cortex/cognitive_coordinator.py
 
 """
-CognitiveCoordinator — Bounded reasoning engine.
+CognitiveCoordinator — Pure reasoning layer.
 
 Sits at the TOP of the MISSION pipeline, before tier classification.
 Every non-reflex query passes through here first.
 
 Responsibilities:
-- Classify query mode (DIRECT_ANSWER | SKILL_PLAN | REASONED_PLAN | UNSUPPORTED)
+- Classify query mode (DIRECT_ANSWER | SKILL_PLAN | REASONED_PLAN)
 - Produce direct answers for pure reasoning queries
 - Compute intermediate variables for mixed reasoning+action
-- Detect capability gaps before compilation is attempted
+
+The coordinator does NOT decide:
+- Capability existence → handled by decomposer + _handle_partial_capability()
+- Scheduling → handled per-clause by decomposer SCHEDULED type
+- Infrastructure availability → deterministic, not LLM-decided
 
 Phase 1: Single reasoning pass. No loops. No replanning.
 Phase 2 seam: evaluate() for post-execution bounded replan.
@@ -21,9 +25,8 @@ Architectural position: Cortex layer (§3.3a — Allowed: Reasoning).
 Safety invariants:
 - Cannot execute skills or mutate OS state.
 - Maximum 1 LLM call per invocation.
-- DIRECT_ANSWER is illegal if mutation intent detected.
+- DIRECT_ANSWER is illegal if mutation intent or scheduling intent detected.
 - Ephemeral telemetry (battery, time, CPU, etc.) must use skills, not snapshot.
-- UNSUPPORTED is capability-derived, not probabilistic.
 - Fallback on any error → SKILL_PLAN (existing safe behavior).
 """
 
@@ -51,20 +54,17 @@ class CoordinatorMode(str, Enum):
     """Output mode from the CognitiveCoordinator.
 
     DIRECT_ANSWER:  Pure reasoning — final answer, no skills needed.
-                    ILLEGAL if query contains mutation intent.
-    SKILL_PLAN:     Pass-through — existing MissionCortex handles it.
+                    ILLEGAL if query contains mutation or scheduling intent.
+    SKILL_PLAN:     Pass-through — tier classification → decomposition → execution.
     REASONED_PLAN:  Computed variables + refined query for compiler.
-    UNSUPPORTED:    Required capabilities do not exist in skill manifest.
-    PERSISTENT_JOB: Requires deferred/scheduled/recurring execution.
-                    Phase 2 seam — not wired into merlin.py yet.
-                    Coordinator does NOT create Task objects.
-                    Task creation is SchedulerManager's responsibility (Phase 3).
+
+    Modes NOT handled here (moved to downstream layers):
+    - Scheduling:   Decomposer classifies per-clause SCHEDULED type.
+    - Unsupported:  Decomposer + _handle_partial_capability() per-clause.
     """
     DIRECT_ANSWER = "DIRECT_ANSWER"
     SKILL_PLAN = "SKILL_PLAN"
     REASONED_PLAN = "REASONED_PLAN"
-    UNSUPPORTED = "UNSUPPORTED"
-    PERSISTENT_JOB = "PERSISTENT_JOB"
 
 
 @dataclass(frozen=True)
@@ -74,28 +74,17 @@ class CoordinatorResult:
     Immutable. Auditable. Every field is explicit.
 
     Fields:
-        mode:                 Which output path to take.
-        answer:               Final user-facing text (DIRECT_ANSWER only).
-        computed_vars:        Intermediate values for compiler (REASONED_PLAN).
-        refined_query:        Rewritten query with resolved values (REASONED_PLAN).
-        missing_capabilities: Skills/operations not found (UNSUPPORTED only).
-        suggestion:           Helpful alternative suggestion (UNSUPPORTED only).
-        reasoning_trace:      Human-readable trace of how the decision was made.
-        trigger_spec:         Temporal trigger for PERSISTENT_JOB.
-        immediate_actions:    Actions to execute immediately (PERSISTENT_JOB, mixed queries).
-        deferred_action_query: Query describing the deferred action (PERSISTENT_JOB).
+        mode:            Which output path to take.
+        answer:          Final user-facing text (DIRECT_ANSWER only).
+        computed_vars:   Intermediate values for compiler (REASONED_PLAN).
+        refined_query:   Rewritten query with resolved values (REASONED_PLAN).
+        reasoning_trace: Human-readable trace of how the decision was made.
     """
     mode: CoordinatorMode
     answer: str = ""
     computed_vars: Dict[str, Any] = field(default_factory=dict)
     refined_query: str = ""
-    missing_capabilities: List[str] = field(default_factory=list)
-    suggestion: str = ""
     reasoning_trace: str = ""
-    # PERSISTENT_JOB fields
-    trigger_spec: Dict[str, Any] = field(default_factory=dict)
-    immediate_actions: List[Dict[str, Any]] = field(default_factory=list)
-    deferred_action_query: str = ""
 
 
 # Deterministic fallback — used when coordinator fails or is unavailable
@@ -141,6 +130,19 @@ GENERATION_VERBS = frozenset({
 # content generation. They request understanding of existing knowledge,
 # not creation of new original content. The coordinator's DIRECT_ANSWER
 # is correct for these — it has the full skill manifest + world state.
+
+# ─────────────────────────────────────────────────────────────
+# Scheduling verbs — if present, DIRECT_ANSWER is illegal
+# Scheduling is infrastructure, not LLM reasoning.
+# These queries must flow to the decomposer for SCHEDULED clause
+# classification. The coordinator must NOT answer them directly.
+# ─────────────────────────────────────────────────────────────
+
+SCHEDULING_VERBS = frozenset({
+    "remind", "reminder", "schedule", "scheduled",
+    "timer", "alarm", "alert", "notify",
+    "delay", "delayed", "recurring", "repeat",
+})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -285,6 +287,26 @@ class LLMCognitiveCoordinator:
                             ),
                         )
 
+                # ── Scheduling guard: scheduling → SKILL_PLAN ──
+                # Scheduling is infrastructure, not LLM reasoning.
+                # "remind me to X" must flow to decomposer for SCHEDULED
+                # clause classification, not be answered directly.
+                if result.mode == CoordinatorMode.DIRECT_ANSWER:
+                    if tokens & SCHEDULING_VERBS and not is_interrogative:
+                        logger.info(
+                            "[COORDINATOR] DIRECT_ANSWER blocked — scheduling "
+                            "verb detected in '%s'. Upgrading to SKILL_PLAN.",
+                            query[:60],
+                        )
+                        return CoordinatorResult(
+                            mode=CoordinatorMode.SKILL_PLAN,
+                            reasoning_trace=(
+                                f"Scheduling intent detected "
+                                f"({tokens & SCHEDULING_VERBS}). "
+                                "DIRECT_ANSWER overridden to SKILL_PLAN."
+                            ),
+                        )
+
             return result
 
         except Exception as e:
@@ -346,22 +368,20 @@ DECISION PROCEDURE (follow these steps exactly):
 ═══════════════════════════════════════════════════
 
 Step 1: List every operation the user's query requires.
-Step 2: For each operation, check if there is a matching skill in the list above.
-Step 3: Determine if reasoning/computation is needed (date math, arithmetic, logic, knowledge).
-Step 4: Choose the correct mode based on this matrix:
+Step 2: Determine if reasoning/computation is needed (date math, arithmetic, logic, knowledge).
+Step 3: Choose the correct mode:
 
-  ┌─────────────────────────┬──────────────────┬───────────────────────┐
-  │                         │ Skills sufficient │ Skills missing        │
-  ├─────────────────────────┼──────────────────┼───────────────────────┤
-  │ No reasoning needed     │ SKILL_PLAN       │ UNSUPPORTED           │
-  │ Reasoning needed        │ REASONED_PLAN    │ UNSUPPORTED           │
-  │ No skills needed at all │ DIRECT_ANSWER    │ DIRECT_ANSWER         │
-  │ Scheduling/timing req'd │ PERSISTENT_JOB   │ UNSUPPORTED           │
-  └─────────────────────────┴──────────────────┴───────────────────────┘
+  ┌─────────────────────────┬──────────────────┐
+  │                         │ Mode             │
+  ├─────────────────────────┼──────────────────┤
+  │ No skills needed at all │ DIRECT_ANSWER    │
+  │ Reasoning needed first  │ REASONED_PLAN    │
+  │ Everything else         │ SKILL_PLAN       │
+  └─────────────────────────┴──────────────────┘
 
-  Scheduling/timing trigger words: "after", "in X minutes", "at 4 PM",
-  "every hour", "remind me", "later", "schedule", "delay", "timer".
-  If the query has a time trigger AND requires a skill action, choose PERSISTENT_JOB.
+  NOTE: Scheduling, capability validation, and per-clause intent
+  classification are handled by downstream layers. When uncertain,
+  always choose SKILL_PLAN — it is always safe.
 
 ═══════════════════════════════════════════════════
 HARD RULES (these override everything):
@@ -371,15 +391,16 @@ HARD RULES (these override everything):
    (create, delete, open, close, set, mute, play, etc.) — even conditionally —
    you MUST choose SKILL_PLAN or REASONED_PLAN. NEVER DIRECT_ANSWER.
 
-2. EPHEMERAL DATA: The following are ephemeral and snapshot values are NOT
+2. SCHEDULING GUARD: If the query involves timing, scheduling, reminders,
+   or deferred actions ("in 5 min", "at 3 PM", "every hour", "remind me"),
+   you MUST choose SKILL_PLAN. Scheduling is infrastructure, not reasoning.
+   NEVER DIRECT_ANSWER for scheduling queries.
+
+3. EPHEMERAL DATA: The following are ephemeral and snapshot values are NOT
    authoritative: {ephemeral_list}.
    If the user asks about these AND computation is needed, choose REASONED_PLAN
    and include a note that the skill must be called for fresh data.
    If the user just asks the current value (e.g. "what is the time"), choose SKILL_PLAN.
-
-3. UNSUPPORTED must be CAPABILITY-DERIVED: If any required operation has NO
-   corresponding skill in the list above, you MUST choose UNSUPPORTED.
-   Do not guess. Do not hallucinate skills.
 
 4. When UNCERTAIN, default to SKILL_PLAN. This is always safe.
 
@@ -392,27 +413,14 @@ HARD RULES (these override everything):
 OUTPUT FORMAT (strict JSON, no markdown fences):
 ═══════════════════════════════════════════════════
 
-For DIRECT_ANSWER (pure reasoning, knowledge, explanation — NO OS action):
+For DIRECT_ANSWER (pure reasoning, knowledge, explanation — NO OS action, NO scheduling):
 {{"mode": "DIRECT_ANSWER", "answer": "concise answer", "reasoning": "how you derived it"}}
 
-For SKILL_PLAN (skills exist, no reasoning needed):
-{{"mode": "SKILL_PLAN", "reasoning": "skills cover this, no computation needed"}}
+For SKILL_PLAN (skills exist, or query needs decomposition/scheduling):
+{{"mode": "SKILL_PLAN", "reasoning": "why this needs skill execution or downstream handling"}}
 
 For REASONED_PLAN (reasoning first, then skills):
 {{"mode": "REASONED_PLAN", "computed": {{"var_name": "value"}}, "refined_query": "rewritten query with literal values", "reasoning": "what you computed and why"}}
-
-For UNSUPPORTED (required capabilities do not exist):
-{{"mode": "UNSUPPORTED", "missing": ["capability1", "capability2"], "suggestion": "what the user could do instead", "reasoning": "which operations have no skill"}}
-
-For PERSISTENT_JOB (action + timing/scheduling required):
-{{"mode": "PERSISTENT_JOB", "trigger": {{"kind": "delay|absolute_time", "expression": "10 seconds|4 PM"}}, "deferred_action": "description of the action to perform later", "immediate_actions": ["optional: actions to execute NOW before scheduling"], "reasoning": "why this needs scheduling"}}
-
-PERSISTENT_JOB RULES:
-- trigger.expression must be a HUMAN-READABLE time string. NEVER compute Unix timestamps.
-- Use kind="delay" for relative times ("10 seconds", "2 minutes", "1 hour")
-- Use kind="absolute_time" for clock times ("4 PM", "3:30 PM", "23:30", "tomorrow at 9 AM")
-- immediate_actions: ONLY use for mixed queries like "mute now AND unmute in 10 seconds" — mute is immediate, unmute is deferred.
-- If the query is purely deferred ("pause after 10 seconds"), leave immediate_actions as empty list.
 
 ═══════════════════════════════════════════════════
 MERLIN SYSTEM CAPABILITIES (self-knowledge):
@@ -420,7 +428,12 @@ MERLIN SYSTEM CAPABILITIES (self-knowledge):
 
 MERLIN has the following internal capabilities beyond skills:
 - Episodic memory: stores outcomes and context from previous missions.
-- Persistent job scheduler: executes deferred and recurring tasks.
+- Persistent job scheduler:
+    - Reminders: "remind me to X in Y" → scheduled notification
+    - Timers: "set a timer for X" → scheduled notification
+    - Delayed actions: "do X in Y minutes" → deferred skill execution
+    - Absolute scheduling: "do X at 3 PM" → scheduled skill execution
+    - Recurring: "do X every Y" → recurring skill execution
 - File system access: creates, reads, deletes files and folders.
 - Application lifecycle: opens, closes, and focuses applications.
 - Hardware control: volume, brightness, night light, mute.
@@ -428,6 +441,7 @@ MERLIN has the following internal capabilities beyond skills:
 
 When asked about these capabilities, answer accurately.
 Do NOT claim lack of memory. MERLIN persists mission history.
+Do NOT claim inability to schedule or remind. MERLIN has a built-in scheduler.
 """
 
     @staticmethod
@@ -528,46 +542,35 @@ Do NOT claim lack of memory. MERLIN persists mission history.
             )
 
         if mode_str == "UNSUPPORTED":
-            missing = data.get("missing", [])
-            suggestion = data.get("suggestion", "")
+            # Backward compat: LLM may still return UNSUPPORTED from
+            # cached prompts. Map to SKILL_PLAN so the decomposer handles
+            # capability validation per-clause.
+            logger.info(
+                "[COORDINATOR] LLM returned UNSUPPORTED — mapping to "
+                "SKILL_PLAN (capability validation is downstream now)"
+            )
             return CoordinatorResult(
-                mode=CoordinatorMode.UNSUPPORTED,
-                missing_capabilities=missing if isinstance(missing, list) else [str(missing)],
-                suggestion=suggestion,
-                reasoning_trace=reasoning,
+                mode=CoordinatorMode.SKILL_PLAN,
+                reasoning_trace=(
+                    f"LLM returned UNSUPPORTED (backward compat). "
+                    f"Mapped to SKILL_PLAN. Original reasoning: {reasoning}"
+                ),
             )
 
         if mode_str == "PERSISTENT_JOB":
-            trigger = data.get("trigger", {})
-            deferred = data.get("deferred_action", "")
-            immediate = data.get("immediate_actions", [])
-
-            if not trigger or not isinstance(trigger, dict):
-                logger.warning(
-                    "[COORDINATOR] PERSISTENT_JOB without trigger spec"
-                )
-                return FALLBACK_RESULT
-            if not deferred:
-                logger.warning(
-                    "[COORDINATOR] PERSISTENT_JOB without deferred_action"
-                )
-                return FALLBACK_RESULT
-
-            # Normalize immediate_actions to list of dicts
-            if isinstance(immediate, list):
-                immediate_dicts = [
-                    {"action": a} if isinstance(a, str) else a
-                    for a in immediate
-                ]
-            else:
-                immediate_dicts = []
-
+            # Backward compat: LLM may still return PERSISTENT_JOB from
+            # cached prompts. Map to SKILL_PLAN so the decomposer classifies
+            # SCHEDULED clauses per-intent.
+            logger.info(
+                "[COORDINATOR] LLM returned PERSISTENT_JOB — mapping to "
+                "SKILL_PLAN (scheduling is per-clause via decomposer now)"
+            )
             return CoordinatorResult(
-                mode=CoordinatorMode.PERSISTENT_JOB,
-                trigger_spec=trigger,
-                deferred_action_query=deferred,
-                immediate_actions=immediate_dicts,
-                reasoning_trace=reasoning,
+                mode=CoordinatorMode.SKILL_PLAN,
+                reasoning_trace=(
+                    f"LLM returned PERSISTENT_JOB (backward compat). "
+                    f"Mapped to SKILL_PLAN. Original reasoning: {reasoning}"
+                ),
             )
 
         logger.warning("[COORDINATOR] Unknown mode '%s'", mode_str)

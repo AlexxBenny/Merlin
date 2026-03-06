@@ -43,7 +43,24 @@ CONDITION_SOURCE_PATTERN = re.compile(
 # INPUT VALUES
 # ---------------------------
 
-class OutputReference(BaseModel):
+
+class IRReference(BaseModel):
+    """Marker base class for all symbolic reference types in the IR.
+
+    Any value in MissionNode.inputs that is an IRReference represents
+    a runtime-resolved pipe — NOT a literal.  Pre-execution resolvers
+    (ParameterResolver, PreferenceResolver) must skip these; only the
+    Executor resolves them at runtime.
+
+    Additive extension — does not violate frozen IR v1 constraints.
+    Future reference types (StateReference, MemoryReference, etc.)
+    should inherit from IRReference so that a single isinstance check
+    covers all symbolic references.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+
+class OutputReference(IRReference):
     """
     Typed reference to another node's output.
 

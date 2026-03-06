@@ -847,3 +847,95 @@ class TestValidatorHeuristicGuard:
 
         # Should warn about index on non-list type
         assert "hallucination" in caplog.text.lower() or "does not contain" in caplog.text.lower()
+
+
+# ──────────────────────────────────────────────────────────────
+# G. ParameterResolver + OutputReference (regression)
+# ──────────────────────────────────────────────────────────────
+
+
+class TestParameterResolverSkipsOutputReference:
+    """Regression: ParameterResolver must skip OutputReference values.
+
+    Bug reproduced by: "pause music and set volume to my preferred volume"
+    The LLM correctly pipes memory.get_preference.value → system.set_volume.level
+    via OutputReference.  ParameterResolver tried to coerce OutputReference
+    through int() → crash: 'int() argument must be a string, not OutputReference'.
+    """
+
+    def test_parameter_resolver_skips_output_reference(self, registry):
+        """OutputReference on volume_percentage input must pass through unchanged."""
+        from cortex.parameter_resolver import ParameterResolver
+
+        plan = _make_plan([
+            MissionNode(
+                id="node_0",
+                skill="system.media_pause",
+                inputs={},
+                outputs={},
+                depends_on=[],
+                mode=ExecutionMode.foreground,
+            ),
+            MissionNode(
+                id="node_1",
+                skill="system.set_volume",
+                inputs={
+                    "level": OutputReference(node="node_0", output="value"),
+                },
+                outputs={},
+                depends_on=["node_0"],
+                mode=ExecutionMode.foreground,
+            ),
+        ])
+
+        resolver = ParameterResolver(registry)
+        resolved_plan = resolver.resolve_plan(plan)
+
+        # OutputReference must survive unchanged — NOT coerced to int
+        level_input = resolved_plan.nodes[1].inputs["level"]
+        assert isinstance(level_input, OutputReference)
+        assert level_input.node == "node_0"
+        assert level_input.output == "value"
+
+    def test_parameter_resolver_still_coerces_literals(self, registry):
+        """Literal string values must still be coerced (e.g., '50' → 50)."""
+        from cortex.parameter_resolver import ParameterResolver
+
+        plan = _make_plan([
+            MissionNode(
+                id="node_0",
+                skill="system.set_volume",
+                inputs={"level": "50"},
+                outputs={},
+                depends_on=[],
+                mode=ExecutionMode.foreground,
+            ),
+        ])
+
+        resolver = ParameterResolver(registry)
+        resolved_plan = resolver.resolve_plan(plan)
+
+        # String "50" should be coerced to int 50
+        assert resolved_plan.nodes[0].inputs["level"] == 50
+
+    def test_parameter_resolver_still_resolves_aliases(self, registry):
+        """Alias strings (e.g., 'half') must still resolve to numeric values."""
+        from cortex.parameter_resolver import ParameterResolver
+
+        plan = _make_plan([
+            MissionNode(
+                id="node_0",
+                skill="system.set_volume",
+                inputs={"level": "half"},
+                outputs={},
+                depends_on=[],
+                mode=ExecutionMode.foreground,
+            ),
+        ])
+
+        resolver = ParameterResolver(registry)
+        resolved_plan = resolver.resolve_plan(plan)
+
+        # "half" alias should resolve to 50
+        assert resolved_plan.nodes[0].inputs["level"] == 50
+
