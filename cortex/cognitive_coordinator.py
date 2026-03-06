@@ -37,6 +37,8 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from world.snapshot import WorldSnapshot
 from models.base import LLMClient
+from cortex.json_extraction import extract_json_block
+from errors import ParseError
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +135,12 @@ MUTATION_VERBS = frozenset({
 # ─────────────────────────────────────────────────────────────
 
 GENERATION_VERBS = frozenset({
-    "tell", "compose", "draft", "summarize", "describe",
-    "explain", "generate", "narrate", "outline",
+    "tell", "compose", "draft", "generate", "narrate", "outline",
 })
+# NOTE: "explain", "summarize", "describe" are REASONING verbs, not
+# content generation. They request understanding of existing knowledge,
+# not creation of new original content. The coordinator's DIRECT_ANSWER
+# is correct for these — it has the full skill manifest + world state.
 
 
 # ─────────────────────────────────────────────────────────────
@@ -196,11 +201,24 @@ class LLMCognitiveCoordinator:
         query: str,
         snapshot: WorldSnapshot,
         skill_manifest: Dict[str, Any],
+        user_knowledge=None,
+        speech_act=None,
     ) -> CoordinatorResult:
-        """Single-pass reasoning. Never raises. Never loops."""
+        """Single-pass reasoning. Never raises. Never loops.
+
+        Memory is injected into the LLM prompt as structured context.
+        The LLM sees stored facts, preferences, traits, and policies
+        and can answer directly from them.
+        """
         try:
-            prompt = self._build_prompt(query, snapshot, skill_manifest)
-            raw = self._llm.complete(prompt)
+            prompt = self._build_prompt(
+                query, snapshot, skill_manifest, user_knowledge,
+            )
+            logger.info(
+                "[COORDINATOR] Sending to LLM (%d char prompt)...",
+                len(prompt),
+            )
+            raw = self._llm.complete(prompt, timeout=30)
             result = self._parse_response(raw, query)
 
             # ── Imperative guard: block DIRECT_ANSWER for mutation queries ──
@@ -216,7 +234,11 @@ class LLMCognitiveCoordinator:
                     "is", "are", "was", "were", "will", "don't", "doesn't",
                     "isn't", "aren't", "won't", "wouldn't",
                 })
-                is_interrogative = first_word in _QUESTION_WORDS or "?" in query
+                is_interrogative = (
+                    first_word in _QUESTION_WORDS
+                    or "?" in query
+                    or bool(tokens & _QUESTION_WORDS)
+                )
                 if tokens & MUTATION_VERBS and not is_interrogative:
                     logger.warning(
                         "[COORDINATOR] DIRECT_ANSWER blocked — mutation verb "
@@ -236,7 +258,19 @@ class LLMCognitiveCoordinator:
                 # reasoning.generate_text skill, not DIRECT chat.
                 # Rule: if a registered skill can handle it → MISSION.
                 if result.mode == CoordinatorMode.DIRECT_ANSWER:
-                    if tokens & GENERATION_VERBS and not is_interrogative:
+                    # META speech acts (identity, capability queries) must
+                    # NEVER reach generate_text — they need system-grounded
+                    # answers from the coordinator, not creative generation.
+                    is_meta = (
+                        speech_act is not None
+                        and hasattr(speech_act, 'value')
+                        and speech_act.value == "meta"
+                    )
+                    if (
+                        tokens & GENERATION_VERBS
+                        and not is_interrogative
+                        and not is_meta
+                    ):
                         logger.info(
                             "[COORDINATOR] DIRECT_ANSWER blocked — generation "
                             "verb detected in '%s'. Upgrading to SKILL_PLAN.",
@@ -265,6 +299,7 @@ class LLMCognitiveCoordinator:
         query: str,
         snapshot: WorldSnapshot,
         skill_manifest: Dict[str, Any],
+        user_knowledge=None,
     ) -> str:
         """Build constrained reasoning prompt with structured capability derivation."""
 
@@ -277,7 +312,19 @@ class LLMCognitiveCoordinator:
 
         ephemeral_list = ", ".join(sorted(EPHEMERAL_DOMAINS))
 
+        # ── Memory context (retrieval seam) ──
+        if (
+            user_knowledge is not None
+            and hasattr(user_knowledge, 'retrieve_memory_context')
+        ):
+            memory_block = user_knowledge.retrieve_memory_context(query)
+        else:
+            memory_block = "  (no memory system)"
+
         return f"""You are MERLIN's cognitive coordinator.
+MERLIN is a deterministic desktop automation assistant that controls the user's
+system. When answering identity or capability questions, describe MERLIN's actual
+capabilities based ONLY on the skill list below — do not invent capabilities.
 
 Your task: analyze the user's query and decide how to handle it.
 
@@ -290,6 +337,9 @@ CURRENT WORLD STATE (snapshot — may be stale for ephemeral data):
 
 AVAILABLE SKILLS (these are the ONLY OS actions MERLIN can perform):
 {skill_lines}
+
+USER MEMORY (facts, preferences, traits the user has told MERLIN):
+{memory_block}
 
 ═══════════════════════════════════════════════════
 DECISION PROCEDURE (follow these steps exactly):
@@ -333,6 +383,11 @@ HARD RULES (these override everything):
 
 4. When UNCERTAIN, default to SKILL_PLAN. This is always safe.
 
+5. MEMORY AUTHORITY: If the user asks about stored information (name,
+   preferences, facts, traits) and the answer EXISTS in USER MEMORY above,
+   answer directly using that data as DIRECT_ANSWER. Do NOT claim you lack
+   this information. Do NOT suggest using a skill for data already in memory.
+
 ═══════════════════════════════════════════════════
 OUTPUT FORMAT (strict JSON, no markdown fences):
 ═══════════════════════════════════════════════════
@@ -358,6 +413,21 @@ PERSISTENT_JOB RULES:
 - Use kind="absolute_time" for clock times ("4 PM", "3:30 PM", "23:30", "tomorrow at 9 AM")
 - immediate_actions: ONLY use for mixed queries like "mute now AND unmute in 10 seconds" — mute is immediate, unmute is deferred.
 - If the query is purely deferred ("pause after 10 seconds"), leave immediate_actions as empty list.
+
+═══════════════════════════════════════════════════
+MERLIN SYSTEM CAPABILITIES (self-knowledge):
+═══════════════════════════════════════════════════
+
+MERLIN has the following internal capabilities beyond skills:
+- Episodic memory: stores outcomes and context from previous missions.
+- Persistent job scheduler: executes deferred and recurring tasks.
+- File system access: creates, reads, deletes files and folders.
+- Application lifecycle: opens, closes, and focuses applications.
+- Hardware control: volume, brightness, night light, mute.
+- Session management: tracks open application contexts.
+
+When asked about these capabilities, answer accurately.
+Do NOT claim lack of memory. MERLIN persists mission history.
 """
 
     @staticmethod
@@ -406,19 +476,19 @@ PERSISTENT_JOB RULES:
                 lines.append(f"  {full_key}: {value}")
 
     def _parse_response(self, raw: str, query: str) -> CoordinatorResult:
-        """Parse LLM JSON response into CoordinatorResult."""
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines).strip()
+        """Parse LLM JSON response into CoordinatorResult.
 
+        Uses extract_json_block() for resilient extraction — handles
+        markdown fences, preamble text, and trailing commentary.
+        Consistent with the compiler's parsing pipeline.
+        """
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
+            clean_json = extract_json_block(raw)
+            data = json.loads(clean_json)
+        except (ParseError, json.JSONDecodeError):
             logger.warning(
                 "[COORDINATOR] Invalid JSON for '%s': %s",
-                query[:50], text[:200],
+                query[:50], raw.strip()[:200],
             )
             return FALLBACK_RESULT
 

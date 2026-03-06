@@ -43,7 +43,7 @@ class OpenRouterClient(LLMClient):
         model: str,
         api_key: str,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: float = 120.0,
+        timeout: float = 60.0,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         _pool_provider: Optional[str] = None,
@@ -65,6 +65,7 @@ class OpenRouterClient(LLMClient):
         *,
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Send a prompt to OpenRouter and return the response text.
@@ -101,7 +102,7 @@ class OpenRouterClient(LLMClient):
                 )
 
             try:
-                return self._do_request(prompt, temperature, format)
+                return self._do_request(prompt, temperature, format, timeout)
             except RuntimeError as e:
                 if "429" in str(e) and attempt < max_attempts - 1:
                     last_error = e
@@ -115,6 +116,7 @@ class OpenRouterClient(LLMClient):
         prompt: str,
         temperature: Optional[float],
         format: Optional[Union[str, Dict[str, Any]]],
+        timeout: Optional[float] = None,
     ) -> str:
         """Execute a single HTTP request to OpenRouter."""
         url = f"{self.base_url}/chat/completions"
@@ -155,8 +157,9 @@ class OpenRouterClient(LLMClient):
             method="POST",
         )
 
+        effective_timeout = timeout if timeout is not None else self.timeout
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
+            with request.urlopen(req, timeout=effective_timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 choices = body.get("choices", [])
                 if not choices:

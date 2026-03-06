@@ -19,6 +19,7 @@ class CloseAppSkill(Skill):
         app_name: Name of the app to close
 
     Delegates to SystemController.close_app() (sends WM_CLOSE).
+    Closes the corresponding AppSession via SessionManager.
     Emits app_closed on success.
     """
 
@@ -45,8 +46,10 @@ class CloseAppSkill(Skill):
         output_style="terse",
     )
 
-    def __init__(self, system_controller: SystemController):
+    def __init__(self, system_controller: SystemController,
+                 session_manager=None):
         self._controller = system_controller
+        self._session_mgr = session_manager
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
         app_name = inputs["app_name"]
@@ -55,6 +58,10 @@ class CloseAppSkill(Skill):
 
         if not success:
             raise RuntimeError(f"Failed to close '{app_name}': no matching window found")
+
+        # ── Close session handle ──
+        if self._session_mgr is not None:
+            self._session_mgr.close_session_by_app(app_name)
 
         world.emit("skill.system", "app_closed", {
             "app": app_name,

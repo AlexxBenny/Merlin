@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 _SHUTDOWN = object()
 
 
+# Max queued speech items — prevents memory growth if worker dies.
+_MAX_QUEUE_SIZE = 50
+
+
 class Pyttsx3TTS(TTSEngine):
     """
     TTSEngine backed by pyttsx3, with dedicated worker thread.
@@ -43,31 +47,69 @@ class Pyttsx3TTS(TTSEngine):
     Engine is re-created per speak call to avoid SAPI5 state corruption.
     speak() is non-blocking — enqueues text, returns immediately.
     Worker thread dequeues and speaks in order.
+
+    Self-healing: if the worker thread dies (COM crash, unhandled
+    exception), speak() detects it and restarts the worker.
+    A generation counter prevents stale workers from consuming
+    items enqueued after their death.
     """
 
     def __init__(self, rate: int = 175, voice_id: Optional[str] = None):
         self._rate = rate
         self._voice_id = voice_id
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
         self._worker: Optional[threading.Thread] = None
         self._started = False
         self._ready = threading.Event()  # signaled when engine inits
+        self._generation = 0  # incremented on each worker restart
+        self._lock = threading.Lock()  # guards worker lifecycle
 
     def _ensure_worker(self) -> None:
-        """Start the TTS worker thread if not already running."""
-        if self._started:
-            return
-        self._started = True
-        self._worker = threading.Thread(
-            target=self._worker_loop,
-            name="tts-worker",
-            daemon=True,
-        )
-        self._worker.start()
-        logger.info(
-            "pyttsx3 TTS worker thread started: rate=%d voice=%s",
-            self._rate, self._voice_id or "default",
-        )
+        """Start or restart the TTS worker thread.
+
+        If a previous worker died, drains the stale queue, increments
+        the generation counter, and spawns a new worker.
+        """
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return  # healthy worker — nothing to do
+
+            if self._started and self._worker is not None:
+                # Worker was started but died — self-heal
+                logger.warning(
+                    "pyttsx3 worker thread died (gen=%d) — restarting",
+                    self._generation,
+                )
+                # Drain stale queue items
+                drained = 0
+                while not self._queue.empty():
+                    try:
+                        self._queue.get_nowait()
+                        self._queue.task_done()
+                        drained += 1
+                    except queue.Empty:
+                        break
+                if drained:
+                    logger.info(
+                        "pyttsx3: drained %d stale items from queue",
+                        drained,
+                    )
+                self._ready.clear()
+
+            self._generation += 1
+            gen = self._generation
+            self._started = True
+            self._worker = threading.Thread(
+                target=self._worker_loop,
+                args=(gen,),
+                name=f"tts-worker-gen{gen}",
+                daemon=True,
+            )
+            self._worker.start()
+            logger.info(
+                "pyttsx3 TTS worker thread started: gen=%d rate=%d voice=%s",
+                gen, self._rate, self._voice_id or "default",
+            )
 
     def start(self, timeout: float = 5.0) -> bool:
         """
@@ -99,13 +141,18 @@ class Pyttsx3TTS(TTSEngine):
         """
         import pyttsx3
 
+        logger.debug(
+            "pyttsx3: creating engine for %d chars", len(text),
+        )
         engine = pyttsx3.init()
         try:
             engine.setProperty('rate', self._rate)
             if self._voice_id:
                 engine.setProperty('voice', self._voice_id)
             engine.say(text)
+            logger.debug("pyttsx3: calling runAndWait (%d chars)", len(text))
             engine.runAndWait()
+            logger.debug("pyttsx3: runAndWait returned (%d chars)", len(text))
         finally:
             try:
                 engine.stop()
@@ -113,16 +160,20 @@ class Pyttsx3TTS(TTSEngine):
                 pass
             del engine
 
-    def _worker_loop(self) -> None:
+    def _worker_loop(self, generation: int) -> None:
         """
         Worker thread main loop.
 
         All pyttsx3 engine creation and usage happens here, on this
-        thread's COM apartment. Never exits until _SHUTDOWN sentinel.
+        thread's COM apartment. Never exits until _SHUTDOWN sentinel
+        or unrecoverable exception.
+
+        Args:
+            generation: Worker generation number for logging.
         """
         logger.info(
-            "pyttsx3 worker thread active (tid=%s)",
-            threading.current_thread().ident,
+            "pyttsx3 worker thread active (gen=%d, tid=%s)",
+            generation, threading.current_thread().ident,
         )
 
         # Validate engine can init — do one throwaway init to surface errors
@@ -131,44 +182,82 @@ class Pyttsx3TTS(TTSEngine):
             test_engine = pyttsx3.init()
             test_engine.stop()
             del test_engine
-            logger.info("pyttsx3 engine validated on worker thread")
+            logger.info(
+                "pyttsx3 engine validated on worker thread (gen=%d)",
+                generation,
+            )
             self._ready.set()  # signal: engine is usable
         except Exception:
-            logger.exception("pyttsx3 engine validation failed")
+            logger.exception(
+                "pyttsx3 engine validation failed (gen=%d)", generation,
+            )
             self._ready.set()  # unblock start() even on failure
             return
 
         while True:
-            text = self._queue.get()
+            try:
+                text = self._queue.get()
+            except Exception:
+                logger.exception(
+                    "pyttsx3 worker: queue.get failed (gen=%d)",
+                    generation,
+                )
+                break
 
             if text is _SHUTDOWN:
-                logger.info("pyttsx3 worker: shutdown received")
+                logger.info(
+                    "pyttsx3 worker: shutdown received (gen=%d)",
+                    generation,
+                )
                 self._queue.task_done()
                 break
 
             try:
                 logger.info(
-                    "pyttsx3: speaking %d chars on worker thread",
-                    len(text),
+                    "pyttsx3: speaking %d chars on worker thread (gen=%d)",
+                    len(text), generation,
                 )
                 self._speak_once(text)
-                logger.info("pyttsx3: speech delivered (%d chars)", len(text))
+                logger.info(
+                    "pyttsx3: speech delivered (%d chars, gen=%d)",
+                    len(text), generation,
+                )
             except Exception:
                 logger.exception(
-                    "pyttsx3 worker: speech failed for %d chars",
-                    len(text),
+                    "pyttsx3 worker: speech failed for %d chars (gen=%d)",
+                    len(text), generation,
                 )
             finally:
                 self._queue.task_done()
+
+        logger.warning(
+            "pyttsx3 worker loop exiting (gen=%d) — will self-heal on next speak()",
+            generation,
+        )
 
     def speak(self, text: str) -> None:
         """
         Enqueue text for speech. Non-blocking.
 
         Returns immediately. Worker thread speaks in order.
+        If the worker thread has died, restarts it automatically.
+        If the queue is full, drops the oldest item.
         """
         self._ensure_worker()
-        self._queue.put(text)
+        try:
+            self._queue.put_nowait(text)
+        except queue.Full:
+            # Drop oldest to make room — prevent memory growth
+            try:
+                dropped = self._queue.get_nowait()
+                self._queue.task_done()
+                logger.warning(
+                    "pyttsx3: queue full — dropped oldest item (%d chars)",
+                    len(dropped) if isinstance(dropped, str) else 0,
+                )
+            except queue.Empty:
+                pass
+            self._queue.put_nowait(text)
 
     def speak_sync(self, text: str) -> None:
         """

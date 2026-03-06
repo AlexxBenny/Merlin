@@ -66,6 +66,7 @@ class GeminiClient(LLMClient):
         *,
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Send a prompt to Gemini and return the response text.
@@ -102,7 +103,7 @@ class GeminiClient(LLMClient):
                 )
 
             try:
-                return self._do_request(prompt, temperature, format)
+                return self._do_request(prompt, temperature, format, timeout)
             except RuntimeError as e:
                 if "429" in str(e) and attempt < max_attempts - 1:
                     last_error = e
@@ -116,6 +117,7 @@ class GeminiClient(LLMClient):
         prompt: str,
         temperature: Optional[float],
         format: Optional[Union[str, Dict[str, Any]]],
+        timeout: Optional[float] = None,
     ) -> str:
         """Execute a single HTTP request to Gemini."""
         url = (
@@ -161,8 +163,9 @@ class GeminiClient(LLMClient):
             method="POST",
         )
 
+        effective_timeout = timeout if timeout is not None else self.timeout
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
+            with request.urlopen(req, timeout=effective_timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 candidates = body.get("candidates", [])
                 if not candidates:

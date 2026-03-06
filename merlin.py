@@ -45,6 +45,7 @@ from reporting.notification_policy import NotificationPolicy
 from cortex.cognitive_coordinator import (
     CognitiveCoordinator, CoordinatorMode, FALLBACK_RESULT,
 )
+from brain.structural_classifier import SpeechActType
 from models.base import LLMClient
 from cortex.world_state_provider import WorldStateProvider, SimpleWorldStateProvider
 from memory.store import MemoryStore
@@ -105,6 +106,7 @@ class Merlin:
         coordinator: Optional[CognitiveCoordinator] = None,
         scheduler: Optional["TickSchedulerManager"] = None,
         completion_queue: Optional["CompletionQueue"] = None,
+        supervisor=None,
     ):
         # ── Cognitive components (frozen) ──
         self.brain = brain
@@ -144,6 +146,7 @@ class Merlin:
             memory=memory,
             attention_manager=attention_manager,
             narration_policy=narration_policy,
+            supervisor=supervisor,
         )
 
         # ── Tier classification (Phase 5A: deterministic, init-time) ──
@@ -268,6 +271,23 @@ class Merlin:
         if route == CognitiveRoute.MULTI_REFLEX:
             return self._handle_multi_reflex(percept, snapshot)
 
+        # ── Speech-act interception: PREFERENCE / DECLARATION ──
+        # Catches knowledge declarations BEFORE escalation policy.
+        # Only for single-clause queries \u2014 multi-clause queries go through
+        # the full decomposition pipeline where memory skills (memory.set_preference,
+        # memory.add_policy) handle PREFERENCE/MEMORY_WRITE clauses as DAG nodes.
+        features = self.brain.last_features
+        is_single_clause = not (
+            features.is_multi_clause if features and hasattr(features, "is_multi_clause") else False
+        )
+        if features and is_single_clause and features.speech_act in (
+            SpeechActType.PREFERENCE,
+            SpeechActType.DECLARATION,
+        ):
+            return self._handle_knowledge_declaration(
+                percept, features.speech_act,
+            )
+
         # ── Gate 2: EscalationPolicy (only reached for MISSION) ──
         decision = self.escalation_policy.decide_for_user_input(
             user_text=percept.payload,
@@ -294,6 +314,208 @@ class Merlin:
     # ─────────────────────────────────────────────────────────
     # Route handlers
     # ─────────────────────────────────────────────────────────
+
+    def _handle_knowledge_declaration(
+        self, percept: Percept, speech_act: SpeechActType,
+    ) -> Optional[str]:
+        """Handle PREFERENCE or DECLARATION speech acts.
+
+        Extracts key-value from the user's statement and stores
+        it in UserKnowledgeStore. No LLM needed.
+        """
+        import re
+        text = percept.payload
+        user_knowledge = getattr(self, '_user_knowledge', None)
+
+        if user_knowledge is None:
+            logger.warning(
+                "[KNOWLEDGE] No UserKnowledgeStore — falling back to mission"
+            )
+            return self._handle_mission(percept, self._build_snapshot())
+
+        # Extract key-value from common patterns
+        # "my preferred volume is 80" → ("volume", "80")
+        # "my name is Alex" → ("name", "Alex")
+        m = re.search(
+            r"\bmy\s+(?:preferred|favorite|favourite|usual|default)?\s*"
+            r"(\w+)\s+is\s+(.+)",
+            text, re.IGNORECASE,
+        )
+        if not m:
+            # "i prefer volume at 80" → ("volume", "80")
+            m = re.search(
+                r"\bi\s+(?:prefer|like)\s+(?:my\s+)?(\w+)\s+(?:at|to\s+be)\s+(.+)",
+                text, re.IGNORECASE,
+            )
+
+        if not m:
+            logger.info(
+                "[KNOWLEDGE] Could not extract key-value from '%s' — "
+                "falling back to mission",
+                text[:50],
+            )
+            return self._handle_mission(percept, self._build_snapshot())
+
+        key = m.group(1).strip()
+        raw_value = m.group(2).strip().rstrip(".,!")
+
+        # Try numeric coercion
+        value: object = raw_value
+        try:
+            value = int(raw_value)
+        except ValueError:
+            try:
+                value = float(raw_value)
+            except ValueError:
+                pass
+
+        # Store based on speech act type
+        try:
+            if speech_act == SpeechActType.PREFERENCE:
+                user_knowledge.set_preference(key, value)
+                response = f"Got it. I'll remember your preferred {key} is {value}."
+            else:  # DECLARATION
+                user_knowledge.set_fact(key, value)
+                response = f"Got it. I'll remember your {key} is {value}."
+
+            logger.info(
+                "[KNOWLEDGE] Stored %s: %s = %r from '%s'",
+                speech_act.value, key, value, text[:50],
+            )
+        except ValueError as e:
+            response = f"I couldn't store that: {e}"
+            logger.warning("[KNOWLEDGE] Validation failed: %s", e)
+
+        self.conversation.append_turn("assistant", response)
+        self.output_channel.send(response)
+        return response
+
+    def _build_snapshot(self) -> "WorldSnapshot":
+        """Build a fresh WorldSnapshot. Helper for fallback paths."""
+        events = self.timeline.all_events()
+        state = WorldState.from_events(events)
+        return WorldSnapshot.build(
+            state, events[-10:] if events else []
+        )
+
+    def _check_destructive_nodes(self, plan: "MissionPlan") -> list:
+        """Scan a compiled MissionPlan for destructive nodes.
+
+        Returns list of MissionNode objects whose skill contract has
+        risk_level='destructive'. Used pre-execution to surface
+        confirmation prompts via PendingMission flow.
+
+        Never raises — returns empty list on error so mission proceeds.
+        """
+        try:
+            from ir.mission import MissionPlan  # noqa: F401 (avoids circular)
+            destructive = []
+            for node in plan.nodes:
+                skill = self.executor.registry.get(node.skill)
+                if skill is None:
+                    continue
+                risk = getattr(skill.contract, "risk_level", "safe")
+                if risk == "destructive":
+                    destructive.append(node)
+            return destructive
+        except Exception as e:
+            logger.debug("[SAFETY] _check_destructive_nodes failed: %s", e)
+            return []
+
+    def _schedule_decomposed_clause(
+        self,
+        sched_clause: dict,
+        percept: "Percept",
+        snapshot: "WorldSnapshot",
+    ) -> None:
+        """Schedule a SCHEDULED clause via TickSchedulerManager.
+
+        Reuses the existing TemporalResolver + compile + submit pipeline
+        originally in _handle_persistent_job, without duplicating it.
+
+        Never raises — scheduling failures are logged and silently dropped
+        so that the rest of the mission still executes.
+        """
+        try:
+            if not self.scheduler:
+                logger.warning(
+                    "[SCHEDULED] No scheduler available for clause: %s",
+                    sched_clause.get("action", "?"),
+                )
+                return
+
+            from runtime.temporal_resolver import TemporalResolver
+            from runtime.task_store import Task, TaskSchedule, TaskStatus, TaskType
+            from ir.mission import IR_VERSION
+            from errors import FailureIR
+            import uuid
+
+            trigger_expr = sched_clause.get("trigger", "")
+            action = sched_clause.get("action", "")
+            parameters = sched_clause.get("parameters", {})
+
+            # Build a natural-language deferred query from clause fields
+            param_desc = " ".join(
+                f"{k}={v}" for k, v in parameters.items()
+            )
+            deferred_query = f"{action} {param_desc}".strip()
+
+            # Resolve the trigger time
+            resolver = TemporalResolver()
+            next_run = resolver.resolve({"expression": trigger_expr, "kind": "delay"})
+
+            if next_run is None:
+                logger.warning(
+                    "[SCHEDULED] Could not resolve trigger '%s' for clause '%s'",
+                    trigger_expr, action,
+                )
+                response = (
+                    f"I understood '{action}' but couldn't parse the timing "
+                    f"'{trigger_expr}'. Could you rephrase?"
+                )
+                self.output_channel.send(response)
+                return
+
+            # Compile the deferred action NOW (at schedule time, not dispatch time)
+            compiled = self.orchestrator.cortex.compile(
+                user_query=deferred_query,
+                world_state_schema=self.world_state_provider.build_schema(
+                    snapshot, query=deferred_query,
+                ),
+                conversation=self.conversation,
+            )
+
+            if isinstance(compiled, FailureIR):
+                logger.warning(
+                    "[SCHEDULED] Could not compile '%s': %s",
+                    deferred_query, compiled.reason,
+                )
+                return
+
+            task = Task(
+                id=str(uuid.uuid4()),
+                user_query=deferred_query,
+                trigger_spec={"expression": trigger_expr, "kind": "delay"},
+                next_run=next_run,
+                status=TaskStatus.PENDING,
+                task_type=TaskType.ONE_SHOT,
+                schedule=TaskSchedule(kind="delay", run_at=next_run),
+                mission_data={
+                    "compiled_plan": compiled.model_dump(),  # key matches _execute_scheduled_job
+                    "deferred_query": deferred_query,
+                    "ir_version": IR_VERSION,
+                },
+            )
+            self.scheduler.submit(task)
+            logger.info(
+                "[SCHEDULED] Clause '%s' scheduled for %s",
+                action, next_run.isoformat(),
+            )
+        except Exception as e:
+            logger.warning(
+                "[SCHEDULED] Failed to schedule clause '%s': %s",
+                sched_clause.get("action", "?"), e, exc_info=True,
+            )
 
     def _handle_refuse(self, percept: Percept) -> str:
         """Reject a dangerous or prohibited command."""
@@ -702,6 +924,10 @@ class Merlin:
         if self.clarifier_llm:
             try:
                 prompt = self._build_clarify_prompt(percept)
+                logger.info(
+                    "[CLARIFY] Sending to LLM (%d char prompt)...",
+                    len(prompt),
+                )
                 response = self.clarifier_llm.complete(prompt)
                 # Sanitize — strip any LLM framing
                 response = response.strip()
@@ -804,6 +1030,11 @@ class Merlin:
                         query=percept.payload,
                         snapshot=snapshot,
                         skill_manifest=skill_manifest,
+                        user_knowledge=getattr(self, '_user_knowledge', None),
+                        speech_act=(
+                            self.brain.last_features.speech_act
+                            if self.brain.last_features else None
+                        ),
                     )
 
                     logger.info(
@@ -903,16 +1134,66 @@ class Merlin:
                         "[TIER] Decomposition failed, degrading to Tier 1"
                     )
                     tier = CognitiveTier.SIMPLE
-                elif decomp.unsupported_intents:
-                    # ── CAPABILITY GATE: do NOT compile if unsupported ──
+                elif decomp.unsupported_intents and not decomp.executable_intents:
+                    # ── CAPABILITY GATE: do NOT compile if ALL unsupported ──
                     return self._handle_partial_capability(
                         percept, decomp, snapshot, tier,
                     )
                 else:
-                    intent_units = decomp.valid_intents
+                    # ── Typed clause dispatch ──
+                    # 1. VAGUE clauses → ask for clarification, skip execution
+                    if decomp.vague_intents and not decomp.executable_intents:
+                        vague_descs = "; ".join(
+                            f"{v.get('text', v.get('action', '?'))} "
+                            f"(unclear: {v.get('missing', 'details')})"
+                            for v in decomp.vague_intents
+                        )
+                        response = (
+                            f"Could you clarify what you mean? "
+                            f"I wasn't sure about: {vague_descs}"
+                        )
+                        self.output_channel.send(response)
+                        self.conversation.append_turn("assistant", response)
+                        return response
+
+                    # 2. SCHEDULED clauses → route to TickSchedulerManager
+                    if decomp.scheduled_intents:
+                        for sched_clause in decomp.scheduled_intents:
+                            self._schedule_decomposed_clause(
+                                sched_clause, percept, snapshot,
+                            )
+
+                    # 3. INFORMATIONAL clauses → collect for appending to response
+                    info_acknowledgements = []
+                    for info in decomp.informational_intents:
+                        text = info.get("text", "")
+                        if text:
+                            info_acknowledgements.append(text)
+
+                    # 4. Executable intents → compile + safety check + run
+                    if decomp.executable_intents:
+                        intent_units = decomp.valid_intents
+                        # Safety: check for destructive nodes pre-compile
+                        # (will be rechecked by supervisor after compile, but
+                        #  early check gives a cleaner error message)
+                    elif not decomp.scheduled_intents:
+                        # Nothing to execute — pure INFORMATIONAL/VAGUE
+                        info_text = " ".join(
+                            i.get("text", "") for i in decomp.informational_intents
+                        ).strip()
+                        response = (
+                            f"Understood. {info_text}" if info_text
+                            else "Got it — nothing to execute."
+                        )
+                        self.output_channel.send(response)
+                        self.conversation.append_turn("assistant", response)
+                        return response
+
                     logger.info(
-                        "[TIER] Decomposed %d intent units",
-                        len(intent_units),
+                        "[TIER] Decomposed %d executable, %d scheduled, "
+                        "%d informational, %d vague intent units",
+                        len(decomp.executable_intents), len(decomp.scheduled_intents),
+                        len(decomp.informational_intents), len(decomp.vague_intents),
                     )
 
             result = self.orchestrator.handle_user_input(

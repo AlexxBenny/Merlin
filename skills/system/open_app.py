@@ -1,6 +1,6 @@
 # skills/system/open_app.py
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from skills.skill_result import SkillResult
 
@@ -20,6 +20,7 @@ class OpenAppSkill(Skill):
         args:     Optional list of CLI arguments
 
     Delegates to SystemController.open_app().
+    Creates an AppSession on success via SessionManager.
     Emits app_launched on success.
     """
 
@@ -54,8 +55,10 @@ class OpenAppSkill(Skill):
         output_style="terse",
     )
 
-    def __init__(self, system_controller: SystemController):
+    def __init__(self, system_controller: SystemController,
+                 session_manager=None):
         self._controller = system_controller
+        self._session_mgr = session_manager
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
         app_name = inputs["app_name"]
@@ -68,12 +71,25 @@ class OpenAppSkill(Skill):
                 f"Failed to open '{app_name}': {handle.error}"
             )
 
+        # ── Create session handle ──
+        session_id = None
+        if self._session_mgr is not None:
+            session = self._session_mgr.create_app_session(
+                app_name=handle.app_name,
+                pid=handle.pid,
+            )
+            session_id = session.id
+
         world.emit("skill.system", "app_launched", {
             "app": handle.app_name,
             "pid": handle.pid,
         })
 
+        metadata = {"entity": f"app '{handle.app_name}'", "domain": "system"}
+        if session_id:
+            metadata["session_id"] = session_id
+
         return SkillResult(
             outputs={"opened": handle.app_name, "pid": handle.pid},
-            metadata={"entity": f"app '{handle.app_name}'", "domain": "system"},
+            metadata=metadata,
         )

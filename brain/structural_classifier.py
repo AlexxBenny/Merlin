@@ -34,9 +34,41 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Set
+from enum import Enum
+from typing import List, Optional, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from models.base import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────
+# Speech-Act Type — classifies statement intent category
+# ─────────────────────────────────────────────────────────────
+
+class SpeechActType(str, Enum):
+    """Statement type classification.
+
+    Determines HOW the user's statement should be processed,
+    independent of WHAT it's about.
+
+    Used by BrainCore to route:
+    - COMMAND/QUESTION → normal pipeline (reflex or mission)
+    - PREFERENCE → store in UserKnowledgeStore
+    - POLICY → store conditional rule
+    - CORRECTION → update prior preference/fact
+    - DECLARATION → store fact
+    - META → system introspection
+    """
+    COMMAND = "command"
+    QUESTION = "question"
+    DECLARATION = "declaration"
+    PREFERENCE = "preference"
+    CORRECTION = "correction"
+    POLICY = "policy"
+    META = "meta"
+    UNKNOWN = "unknown"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -50,6 +82,9 @@ class QueryFeatures:
     Each boolean flag represents a semantic dimension that
     reflex skills CANNOT handle. If ANY flag is True, the
     query must be escalated to MISSION.
+
+    speech_act classifies the statement type (COMMAND, QUESTION,
+    PREFERENCE, etc.) for routing to the correct handler.
     """
     requires_temporal: bool = False
     requires_history: bool = False
@@ -58,6 +93,7 @@ class QueryFeatures:
     requires_context: bool = False
     requires_scheduling: bool = False
     is_multi_clause: bool = False
+    speech_act: SpeechActType = SpeechActType.UNKNOWN
 
     @property
     def reflex_eligible(self) -> bool:
@@ -69,6 +105,12 @@ class QueryFeatures:
             and not self.requires_condition
             and not self.requires_context
             and not self.requires_scheduling
+            and self.speech_act not in (
+                SpeechActType.PREFERENCE,
+                SpeechActType.POLICY,
+                SpeechActType.CORRECTION,
+                SpeechActType.DECLARATION,
+            )
         )
 
     @property
@@ -104,12 +146,18 @@ class QueryFeatures:
             flags.append("context")
         if self.requires_scheduling:
             flags.append("scheduling")
-        if not flags:
-            return "QueryFeatures(reflex_eligible)"
-        label = f"QueryFeatures(requires=[{', '.join(flags)}])"
+        parts = []
+        if not flags and self.speech_act in (
+            SpeechActType.COMMAND, SpeechActType.QUESTION, SpeechActType.UNKNOWN,
+        ):
+            parts.append("reflex_eligible")
+        if flags:
+            parts.append(f"requires=[{', '.join(flags)}]")
+        if self.speech_act != SpeechActType.UNKNOWN:
+            parts.append(f"speech_act={self.speech_act.value}")
         if self.intra_query_coreference:
-            label = label[:-1] + ", intra_query_coref)"
-        return label
+            parts.append("intra_query_coref")
+        return f"QueryFeatures({', '.join(parts)})"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -320,7 +368,7 @@ _QUESTION_WORDS: frozenset = frozenset({
 # ─────────────────────────────────────────────────────────────
 
 class StructuralAnalyzer:
-    """Deterministic structural feature analyzer.
+    """Structural feature analyzer with optional LLM speech-act classification.
 
     Detects whether a query contains structural elements that
     require reasoning beyond simple state reads.
@@ -329,10 +377,102 @@ class StructuralAnalyzer:
     - Each feature dimension has its own token/bigram sets.
     - Context detection uses bigram context to distinguish
       grammatical pronouns from coreferential pronouns.
-    - All detection is O(n) over tokens. ~5ms per query.
-    - No LLM. No model. No drift. Fully deterministic.
+    - All feature detection is O(n) over tokens. ~5ms per query.
+    - Speech-act classification: LLM (if available) or regex fallback.
     - CI-testable. Explainable. Auditable.
     """
+
+    # ── Regex patterns for speech-act fallback classification ──
+    # These are used when no LLM is configured.
+    _PREFERENCE_PATTERNS = [
+        # "my preferred X is Y", "my favourite X is Y"
+        re.compile(
+            r"\bmy\s+(?:preferred|favorite|favourite|usual|default)\s+"
+            r"(\w+)\s+is\s+(.+)",
+            re.IGNORECASE,
+        ),
+        # "my X preference is Y"
+        re.compile(
+            r"\bmy\s+(\w+)\s+preference\s+is\s+(.+)",
+            re.IGNORECASE,
+        ),
+        # "i prefer X at Y" / "i like X at Y"
+        re.compile(
+            r"\bi\s+(?:prefer|like)\s+(?:my\s+)?(.+?)\s+(?:at|to\s+be)\s+(.+)",
+            re.IGNORECASE,
+        ),
+    ]
+
+    _POLICY_PATTERNS = [
+        # "whenever I X, do Y" / "when I X, set Y"
+        re.compile(
+            r"\b(?:whenever|when|every\s+time|each\s+time)\s+.+[,]\s*.+",
+            re.IGNORECASE,
+        ),
+    ]
+
+    _CORRECTION_PATTERNS = [
+        # "no, I meant X" / "actually, X" / "I meant X"
+        re.compile(
+            r"^\s*(?:no|actually|wait|sorry)[,.]?\s+(?:i\s+meant|it\s*(?:'s|is)|make\s+(?:it|that))",
+            re.IGNORECASE,
+        ),
+    ]
+
+    _DECLARATION_PATTERNS = [
+        # "my name is X" / "my timezone is X" / "I am X"
+        re.compile(
+            r"\bmy\s+(?!preferred|favorite|favourite|usual|default)(\w+)\s+is\s+(.+)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bi\s+am\s+(.+)",
+            re.IGNORECASE,
+        ),
+    ]
+
+    _QUESTION_STARTERS = frozenset({
+        "what", "who", "where", "when", "why", "how",
+        "which", "whose", "whom", "can", "could",
+        "would", "should", "is", "are", "do", "does",
+        "did", "will", "was", "were", "has", "have",
+    })
+
+    _META_TOKENS = frozenset({
+        "help", "capabilities", "skills",
+    })
+
+    _META_PATTERNS = [
+        re.compile(
+            r"\b(?:what\s+can\s+you|what\s+do\s+you|how\s+do\s+you|tell\s+me\s+about\s+yourself)",
+            re.IGNORECASE,
+        ),
+    ]
+
+    _LLM_CLASSIFY_PROMPT = (
+        "Classify the following user statement into exactly ONE category.\n"
+        "Reply with ONLY the category name, nothing else.\n\n"
+        "Categories:\n"
+        "COMMAND — an instruction to do something (set volume, open app, create folder)\n"
+        "QUESTION — asking for information (what is, how to, when did)\n"
+        "PREFERENCE — declaring a personal preference (my preferred X is Y, I like X)\n"
+        "POLICY — a conditional rule (whenever I X, do Y; when X happens, do Y)\n"
+        "CORRECTION — correcting a previous statement (no I meant, actually, not that)\n"
+        "DECLARATION — stating a fact about themselves (my name is, I am, my timezone is)\n"
+        "META — asking about the system itself (what can you do, help)\n\n"
+        'Statement: "{text}"\n\n'
+        "Category:"
+    )
+
+    def __init__(self, llm: Optional["LLMClient"] = None):
+        """Initialize with optional LLM for speech-act classification.
+
+        Args:
+            llm: Optional LLM client for speech-act classification.
+                 If None, falls back to regex-based detection.
+                 Configurable via 'speech_act_classifier' in models.yaml.
+        """
+        self._llm = llm
 
     def analyze(self, text: str) -> QueryFeatures:
         """Analyze a query and return structural features.
@@ -347,6 +487,8 @@ class StructuralAnalyzer:
         token_set = frozenset(tokens)
         bigrams = self._extract_bigrams(tokens)
 
+        speech_act = self._classify_speech_act(text)
+
         features = QueryFeatures(
             requires_temporal=self._detect_temporal(token_set, bigrams),
             requires_history=self._detect_history(token_set, bigrams),
@@ -360,6 +502,7 @@ class StructuralAnalyzer:
                 or self._detect_scheduling_pattern(text)
             ),
             is_multi_clause=self._detect_multi_clause(text, token_set),
+            speech_act=speech_act,
         )
 
         logger.info(
@@ -368,6 +511,112 @@ class StructuralAnalyzer:
         )
 
         return features
+
+    def _classify_speech_act(self, text: str) -> SpeechActType:
+        """Pure speech-act classification. Regex first, LLM on catch-all.
+
+        This classifier answers ONE question:
+            What TYPE of statement is this?
+            (COMMAND / QUESTION / PREFERENCE / POLICY / etc.)
+
+        It does NOT assess semantic ambiguity or complexity.
+        Those are separate concerns handled by other layers.
+
+        Flow:
+        1. Regex runs ALWAYS (~1ms, deterministic)
+        2. If regex returns a specific type → done
+        3. If regex falls through to COMMAND (catch-all default)
+           AND LLM is available → consult LLM for disambiguation
+        4. Otherwise → trust regex result
+        """
+        regex_result = self._classify_speech_act_regex(text)
+
+        # Regex returned a confident classification — use it
+        if regex_result != SpeechActType.COMMAND:
+            return regex_result
+
+        # COMMAND is the catch-all default. If LLM available,
+        # let it decide whether this is truly a command or
+        # something the regex patterns didn't cover.
+        if self._llm:
+            return self._classify_speech_act_llm(text, fallback=regex_result)
+
+        return regex_result
+
+    def _classify_speech_act_llm(
+        self, text: str, fallback: SpeechActType = SpeechActType.COMMAND,
+    ) -> SpeechActType:
+        """LLM-based speech-act classification. Fallback-safe."""
+        try:
+            prompt = self._LLM_CLASSIFY_PROMPT.format(text=text[:200])
+            logger.info(
+                "[SPEECH_ACT] Regex ambiguous for '%s' — consulting LLM...",
+                text[:50],
+            )
+            raw = self._llm.complete(prompt, timeout=10).strip().upper()
+            # Parse the single-word response
+            mapping = {
+                "COMMAND": SpeechActType.COMMAND,
+                "QUESTION": SpeechActType.QUESTION,
+                "PREFERENCE": SpeechActType.PREFERENCE,
+                "POLICY": SpeechActType.POLICY,
+                "CORRECTION": SpeechActType.CORRECTION,
+                "DECLARATION": SpeechActType.DECLARATION,
+                "META": SpeechActType.META,
+            }
+            for key, act in mapping.items():
+                if key in raw:
+                    logger.info(
+                        "[SPEECH_ACT] LLM classified '%s' → %s",
+                        text[:50], act.value,
+                    )
+                    return act
+            # LLM returned unrecognized value — use regex result
+            logger.warning(
+                "[SPEECH_ACT] LLM returned unrecognized: '%s' — using regex result",
+                raw[:50],
+            )
+        except Exception as e:
+            logger.warning(
+                "[SPEECH_ACT] LLM failed: %s — using regex result", e,
+            )
+        return fallback
+
+    def _classify_speech_act_regex(self, text: str) -> SpeechActType:
+        """Deterministic regex-based speech-act classification.
+
+        Order matters: PREFERENCE before DECLARATION (more specific first).
+        """
+        # Preference: "my preferred X is Y"
+        for pat in self._PREFERENCE_PATTERNS:
+            if pat.search(text):
+                return SpeechActType.PREFERENCE
+        # Policy: "whenever I X, do Y"
+        for pat in self._POLICY_PATTERNS:
+            if pat.search(text):
+                return SpeechActType.POLICY
+        # Correction: "no, I meant X"
+        for pat in self._CORRECTION_PATTERNS:
+            if pat.search(text):
+                return SpeechActType.CORRECTION
+        # Meta: "what can you do"
+        for pat in self._META_PATTERNS:
+            if pat.search(text):
+                return SpeechActType.META
+        tokens = text.lower().split()
+        if frozenset(tokens) & self._META_TOKENS:
+            return SpeechActType.META
+        # Declaration: "my name is X" (after preference to avoid overlap)
+        for pat in self._DECLARATION_PATTERNS:
+            if pat.search(text):
+                return SpeechActType.DECLARATION
+        # Question: starts with question word or ends with ?
+        if text.rstrip().endswith("?"):
+            return SpeechActType.QUESTION
+        if tokens and tokens[0] in self._QUESTION_STARTERS:
+            return SpeechActType.QUESTION
+        # Default: COMMAND
+        return SpeechActType.COMMAND
 
     @staticmethod
     def has_disqualifier_tokens(text: str) -> bool:
@@ -407,6 +656,13 @@ class StructuralAnalyzer:
             return True
         # Check for pronouns that MIGHT be coreferential
         if tokens & {"it", "this", "that", "them", "those", "these"}:
+            return True
+        # Preference/declaration tokens — need speech-act classification
+        _PREFERENCE_DISQUALIFIERS = frozenset({
+            "preferred", "favorite", "favourite", "usual", "default",
+            "prefer", "preference",
+        })
+        if tokens & _PREFERENCE_DISQUALIFIERS:
             return True
         return False
 

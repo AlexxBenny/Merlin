@@ -62,6 +62,14 @@ def production_deps():
     content_llm = MagicMock()
     content_llm.complete.return_value = "mock"
 
+    # user_knowledge: mock — required by memory skills (GetPreference, etc.)
+    from unittest.mock import MagicMock
+    user_knowledge = MagicMock()
+    user_knowledge.get.return_value = None
+    user_knowledge.set_preference.return_value = None
+    user_knowledge.set_fact.return_value = None
+    user_knowledge.add_policy.return_value = "mock-policy-id"
+
     # location_config: None is fine — fs skills will be skipped
     # We test separately that skipped skills are accounted for
     deps = {
@@ -69,6 +77,8 @@ def production_deps():
         "system_controller": SystemController(),
         "content_llm": content_llm,
         "task_store": task_store,
+        "session_manager": MagicMock(),
+        "user_knowledge": user_knowledge,
     }
     yield deps
     os.unlink(tmp.name)

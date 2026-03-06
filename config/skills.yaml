@@ -139,6 +139,24 @@ skills:
     module: "skills.system.cancel_job"
     class: "CancelJobSkill"
 
+  # ── Memory domain (UserKnowledgeStore) ──
+
+  - name: "memory.get_preference"
+    module: "skills.memory.memory_skills"
+    class: "GetPreferenceSkill"
+
+  - name: "memory.set_preference"
+    module: "skills.memory.memory_skills"
+    class: "SetPreferenceSkill"
+
+  - name: "memory.set_fact"
+    module: "skills.memory.memory_skills"
+    class: "SetFactSkill"
+
+  - name: "memory.add_policy"
+    module: "skills.memory.memory_skills"
+    class: "AddPolicySkill"
+
   # - name: "browser.open"
   #   module: "skills.browser.open"
   #   class: "BrowserOpenSkill"

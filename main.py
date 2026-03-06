@@ -277,10 +277,24 @@ def main(args=None):
     except Exception as e:
         logger.warning("clarifier init failed: %s", e)
 
-    # ── Structural Analyzer (deterministic, no LLM) ──
+    # ── Structural Analyzer (with optional LLM speech-act classifier) ──
     from brain.structural_classifier import StructuralAnalyzer
-    structural_analyzer = StructuralAnalyzer()
-    logger.info("StructuralAnalyzer enabled (deterministic feature analysis)")
+    speech_act_llm = None
+    try:
+        speech_act_llm = router.get_client("speech_act_classifier")
+        if not speech_act_llm.is_available():
+            logger.warning("speech_act_classifier LLM not available — regex fallback")
+            speech_act_llm = None
+    except KeyError:
+        logger.info("speech_act_classifier not configured — regex fallback")
+    except Exception as e:
+        logger.warning("speech_act_classifier init failed: %s — regex fallback", e)
+
+    structural_analyzer = StructuralAnalyzer(llm=speech_act_llm)
+    logger.info(
+        "StructuralAnalyzer enabled (%s)",
+        "LLM speech-act classifier" if speech_act_llm else "regex fallback",
+    )
 
     # ── Core components ──
     timeline = WorldTimeline()
@@ -317,6 +331,21 @@ def main(args=None):
     from infrastructure.system_controller import SystemController
     system_controller = SystemController()
 
+    # ── Session Management (Phase 1: Interactive Execution Layer) ──
+    from infrastructure.app_capabilities import AppCapabilityRegistry
+    from infrastructure.session import SessionManager
+
+    app_capabilities_path = CONFIG_DIR / "app_capabilities.yaml"
+    capability_registry = AppCapabilityRegistry.from_yaml(str(app_capabilities_path))
+    session_manager = SessionManager(capability_registry=capability_registry)
+    logger.info("SessionManager initialized with %d known app types",
+                len(capability_registry.known_apps))
+
+    # ── Environment Observer (Phase 2: Interactive Execution Layer) ──
+    from infrastructure.observer import SystemEnvironmentObserver
+    environment_observer = SystemEnvironmentObserver(controller=system_controller)
+    logger.info("EnvironmentObserver initialized (SystemEnvironmentObserver)")
+
     # Content generation LLM (for reasoning.generate_text skill)
     content_llm = None
     try:
@@ -351,16 +380,16 @@ def main(args=None):
         "system_controller": system_controller,
         "content_llm": content_llm,
         "task_store": task_store,
+        "session_manager": session_manager,
+        # NOTE: user_knowledge is NOT included here.
+        # Memory skills require UserKnowledgeStore which hasn't been
+        # created yet. They are registered in a separate late-load pass
+        # after UKS initialization (see below).
     }
     load_skills(registry, skills_config, deps=skill_deps)
 
-    # ── Action namespace governance audit (fail-fast on violations) ──
-    violations = registry.audit_action_namespace()
-    if violations:
-        raise RuntimeError(
-            f"Action namespace audit failed with {len(violations)} violation(s). "
-            "Fix skill contracts before starting."
-        )
+    # Action namespace audit is deferred to AFTER late-registration
+    # so memory skills are included in the audit.
 
     # ── Phase 10: Build IntentIndex + IntentMatcher (after skills loaded) ──
     from cortex.intent_engine import IntentIndex, IntentMatcher
@@ -449,6 +478,7 @@ def main(args=None):
         location_config=location_config,
         context_provider=context_provider,
         skill_discovery=DomainScoredDiscovery(),
+        session_manager=session_manager,
     )
 
     # ── Attention Arbitration ──
@@ -521,6 +551,23 @@ def main(args=None):
     else:
         logger.info("Scheduler disabled in config")
 
+    # ── Execution Supervisor (Phase 3: Interactive Execution Layer) ──
+    from execution.supervisor import ExecutionSupervisor, ExecutionContext
+    execution_context = ExecutionContext(
+        observer=environment_observer,
+        session_manager=session_manager,
+        capability_registry=capability_registry,
+        timeline=timeline,
+    )
+    # Supervisor needs executor — but executor is constructed inside Merlin.
+    # We construct a temporary executor here for the supervisor, then
+    # Merlin will use its internal executor for everything else.
+    # NOTE: The supervisor is constructed with a placeholder executor;
+    # Merlin._init_ builds the real executor and passes the supervisor
+    # to the orchestrator. The supervisor's executor will be set after
+    # Merlin construction.
+    logger.info("ExecutionSupervisor initialized (Phase 3)")
+
     # ── Build Merlin ──
     merlin = Merlin(
         brain=brain,
@@ -544,6 +591,63 @@ def main(args=None):
         scheduler=scheduler,
         completion_queue=completion_queue,
     )
+
+    # ── Wire supervisor with the real executor (post-construction) ──
+    supervisor = ExecutionSupervisor(
+        executor=merlin.executor,
+        context=execution_context,
+    )
+    merlin.orchestrator._supervisor = supervisor
+    logger.info("ExecutionSupervisor wired to MissionOrchestrator")
+
+    # ── User Knowledge Store (semantic memory — preferences, facts, policies) ──
+    from memory.user_knowledge import UserKnowledgeStore
+    user_knowledge = UserKnowledgeStore(persist_path="state/user_knowledge.json")
+
+    # ── Preference Resolver (delegates to UserKnowledgeStore) ──
+    from cortex.preference_resolver import PreferenceResolver, PreferenceMemory
+    pref_memory = PreferenceMemory(
+        memory_store=memory_store,
+        user_knowledge=user_knowledge,
+    )
+    pref_resolver = PreferenceResolver(memory=pref_memory)
+    merlin.orchestrator._pref_resolver = pref_resolver
+    merlin._user_knowledge = user_knowledge
+    logger.info("PreferenceResolver + UserKnowledgeStore wired")
+
+    # ── Late-register memory skills (require UserKnowledgeStore) ──
+    # Memory skills (memory.get_preference, memory.set_preference, etc.) require
+    # a live UserKnowledgeStore instance. They were NOT registered in the first
+    # load_skills() pass because user_knowledge was not in the deps dict.
+    # load_skills skips any skill whose required dep is missing.
+    memory_skill_entries = {
+        "skills": [
+            e for e in skills_config.get("skills", [])
+            if e["module"].startswith("skills.memory")
+        ]
+    }
+    if memory_skill_entries["skills"]:
+        load_skills(registry, memory_skill_entries, deps={"user_knowledge": user_knowledge})
+        logger.info("Memory skills registered with UserKnowledgeStore")
+        # Rebuild IntentIndex so memory skills are available to reflex path too
+        intent_index.build(registry)
+        reflex._intent_matcher = IntentMatcher(intent_index, registry)
+        logger.info("IntentIndex rebuilt with memory skills")
+
+    # ── Action namespace governance audit (after ALL skills registered) ──
+    violations = registry.audit_action_namespace()
+    if violations:
+        raise RuntimeError(
+            f"Action namespace audit failed with {len(violations)} violation(s). "
+            "Fix skill contracts before starting."
+        )
+
+    # ── Wire UserKnowledgeStore into event loop for proactive policy eval ──
+    # Event loop is constructed without UKS (doesn't exist at that point).
+    # Late-inject it now so _maybe_apply_user_policy can match policies
+    # against world events (media_started, foreground_changed, etc.).
+    merlin.event_loop._user_knowledge = user_knowledge
+    logger.info("UserKnowledgeStore wired into RuntimeEventLoop for proactive policy eval")
 
 
     # ── Perception (voice-aware via PerceptionOrchestrator) ──

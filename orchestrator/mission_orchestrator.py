@@ -9,6 +9,7 @@ from ir.mission import MissionPlan, ExecutionMode
 from execution.executor import MissionExecutor, ExecutionResult, NodeStatus
 from errors import FailureIR
 from cortex.parameter_resolver import ParameterResolver, ParameterError
+from cortex.preference_resolver import PreferenceResolver
 from cortex.mission_cortex import MissionCortex
 from cortex.validators import verify_intent_coverage
 from brain.escalation_policy import CognitiveTier
@@ -52,6 +53,7 @@ class MissionOrchestrator:
         memory: Optional[MemoryStore] = None,
         attention_manager: Optional["AttentionManager"] = None,
         narration_policy: Optional["NarrationPolicy"] = None,
+        supervisor=None,
     ):
         self.cortex = cortex
         self.executor = executor
@@ -62,7 +64,9 @@ class MissionOrchestrator:
         self.memory = memory
         self._attention = attention_manager
         self._narration = narration_policy
+        self._supervisor = supervisor
         self._resolver = ParameterResolver(executor.registry)
+        self._pref_resolver: Optional[PreferenceResolver] = None
 
     # ─────────────────────────────────────────────────────────
     # PUBLIC API: Full mission lifecycle
@@ -200,6 +204,10 @@ class MissionOrchestrator:
             )
             # Structured error → clean user message (no stack trace)
             return pe.user_message()
+
+        # ── Phase 9B: Preference resolution (semantic memory) ──
+        if self._pref_resolver is not None:
+            plan = self._pref_resolver.resolve_plan(plan)
 
         # 2. Snapshot world at execution time
         events = self.timeline.all_events()
@@ -367,6 +375,10 @@ class MissionOrchestrator:
         except ParameterError as pe:
             logger.warning("Parameter resolution failed: %s", pe)
             return pe.user_message()
+
+        # ── Phase 9B: Preference resolution ──
+        if self._pref_resolver is not None:
+            plan = self._pref_resolver.resolve_plan(plan)
 
         # Snapshot world
         events = self.timeline.all_events()
@@ -662,14 +674,19 @@ class MissionOrchestrator:
         Used by handle_user_input() and available for testing.
         """
 
+        # Route through supervisor (guard enforcement) or executor (direct)
+        runner = (
+            self._supervisor.run if self._supervisor is not None
+            else self.executor.run
+        )
+
         # Submit full DAG execution (with narration callbacks)
         future: Future = self.pool.submit(
-            self.executor.run, mission, world_snapshot,
+            runner, mission, world_snapshot,
             on_layer_start, on_layer_complete,
         )
 
         # Wait for full DAG execution to finish
-        # (executor enforces dependencies)
         exec_result = future.result()
 
         return exec_result

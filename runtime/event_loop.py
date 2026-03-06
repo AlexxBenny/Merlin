@@ -46,6 +46,7 @@ class RuntimeEventLoop:
         scheduler: Optional["TickSchedulerManager"] = None,
         completion_queue: Optional["CompletionQueue"] = None,
         job_executor: Optional[Callable] = None,
+        user_knowledge=None,  # Optional[UserKnowledgeStore] — for proactive policy eval
     ):
         self.timeline = timeline
         self.reflex_engine = reflex_engine
@@ -56,6 +57,7 @@ class RuntimeEventLoop:
         self.get_conversation = get_conversation
         self.attention_manager = attention_manager
         self.tick_interval = tick_interval
+        self._user_knowledge = user_knowledge  # proactive policy eval
 
         # Job scheduling infrastructure (optional)
         self._scheduler = scheduler
@@ -172,6 +174,9 @@ class RuntimeEventLoop:
 
             # Policy gate: should the user hear about this?
             if not self.notification_policy.should_notify(event, snapshot):
+                # Even if notification is suppressed, check user policies
+                # for proactive action suggestions from UserKnowledgeStore.
+                self._maybe_apply_user_policy(event, snapshot)
                 return
 
             # Determine event priority for attention arbitration
@@ -212,6 +217,63 @@ class RuntimeEventLoop:
             logger.debug(
                 "Proactive reporting failed for event '%s', "
                 "continuing silently",
+                event.type,
+                exc_info=True,
+            )
+
+    def _maybe_apply_user_policy(self, event, snapshot) -> None:
+        """Evaluate UserKnowledgeStore policies against the triggering event.
+
+        Called when a world event fires, regardless of notification policy.
+        If policies match (e.g., 'when media_started → set_volume=90'),
+        the suggested action is surfaced as a proactive insight.
+
+        Design invariants:
+        - NEVER executes skills directly (read-only; merlin owns execution)
+        - NEVER raises (runtime must not crash)
+        - Insights are enqueued and merged with next user report by ReportBuilder
+        - No LLM call here — pure deterministic policy matching
+        """
+        if not self._user_knowledge:
+            return
+
+        try:
+            # Build context dict from event for policy matching
+            context: dict = {
+                "event_type": str(event.type),
+                **{k: v for k, v in (event.payload or {}).items()
+                   if isinstance(v, (str, int, float, bool))},
+            }
+
+            matching_policies = self._user_knowledge.get_matching_policies(context)
+            if not matching_policies:
+                return
+
+            for policy in matching_policies:
+                action = policy.action or {}
+                label = getattr(policy, "label", "") or str(action)
+
+                # Build insight text for proactive notification
+                action_desc = "; ".join(f"{k}={v}" for k, v in action.items())
+                insight = (
+                    f"Your preference suggests: {action_desc}"
+                    if action_desc else f"User policy triggered: {label}"
+                )
+
+                logger.info(
+                    "[PROACTIVE] Policy matched (event=%s): %s → %s",
+                    event.type, context, action,
+                )
+
+                if self.attention_manager:
+                    self.attention_manager.enqueue(insight, "info", "policy_trigger")
+                else:
+                    # Fallback: deliver directly
+                    self.output_channel.send(insight)
+
+        except Exception:
+            logger.debug(
+                "_maybe_apply_user_policy failed for event '%s', continuing silently",
                 event.type,
                 exc_info=True,
             )

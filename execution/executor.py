@@ -273,6 +273,23 @@ class MissionExecutor:
         # Check if any output matches
         return any(v == condition.equals for v in node_outputs.values())
 
+    # ── Public node execution API (for ExecutionSupervisor) ──
+
+    def execute_node(
+        self,
+        node: MissionNode,
+        exec_result: 'ExecutionResult',
+        world_snapshot: Optional[WorldSnapshot],
+    ) -> Tuple[str, str, Dict[str, Any], Dict[str, Any] | None]:
+        """Public API: execute a single node.
+
+        Delegates to _execute_node(). Used by ExecutionSupervisor
+        for node-by-node execution with guard enforcement.
+
+        Returns (node_id, status, outputs, metadata).
+        """
+        return self._execute_node(node, exec_result, world_snapshot)
+
     def _execute_node(
         self,
         node: MissionNode,

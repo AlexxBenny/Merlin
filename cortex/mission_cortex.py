@@ -46,14 +46,25 @@ class MissionCompilationError(Exception):
 class DecompositionResult:
     """Result of intent decomposition — deterministic capability boundary.
 
-    valid_intents: actions that map to registered skills.
-    unsupported_intents: actions the user requested but no skill exists for.
+    valid_intents: actions that map to registered skills (backward compat).
+    unsupported_intents: legacy — actions with no matching skill.
+
+    New typed fields (set by clause-aware decomposer):
+    executable_intents: ACTION/MEMORY_WRITE/POLICY clauses (produce DAG nodes).
+    scheduled_intents:  SCHEDULED clauses (route to TickSchedulerManager).
+    informational_intents: INFORMATIONAL clauses (acknowledge, don't execute).
+    vague_intents:      VAGUE clauses (trigger clarification).
 
     This is the single point where capability gaps become explicit.
     Downstream consumers never guess — they receive classified truth.
     """
     valid_intents: List[Dict[str, Any]] = field(default_factory=list)
     unsupported_intents: List[Dict[str, Any]] = field(default_factory=list)
+    # Typed clause buckets (new — populated by clause-aware decomposer)
+    executable_intents: List[Dict[str, Any]] = field(default_factory=list)
+    scheduled_intents: List[Dict[str, Any]] = field(default_factory=list)
+    informational_intents: List[Dict[str, Any]] = field(default_factory=list)
+    vague_intents: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class MissionCortex:
@@ -75,12 +86,14 @@ class MissionCortex:
         location_config: Optional[LocationConfig] = None,
         context_provider: Optional[ContextProvider] = None,
         skill_discovery: Optional[SkillDiscovery] = None,
+        session_manager=None,
     ):
         self.llm = llm_client
         self.registry = registry
         self._location_config = location_config
         self.context_provider = context_provider or SimpleContextProvider()
         self.skill_discovery = skill_discovery or AllSkillsDiscovery()
+        self._session_manager = session_manager
 
     # ── Maximum intent units injected into compile prompt ──
     MAX_INTENT_INJECTION: int = 8
@@ -209,35 +222,53 @@ class MissionCortex:
 
         vocab_block = "\n".join(action_vocab)
 
-        prompt = f"""Given the user query, decompose it into individual actions using ONLY the
-canonical action types listed below.
+        prompt = f"""Given the user query, decompose it into individual clauses and classify each one.
 
 Available actions:
 {vocab_block}
 
-Output a JSON array. Each element is one of:
-  Supported:   {{"action": "<action_from_list>", "parameters": {{<key: value pairs>}}}}
-  Unsupported: {{"action": "UNSUPPORTED", "description": "<what the user wanted>"}}
+═══════════════════════════════════════════════════
+CLAUSE TYPES — classify every clause into one of:
+═══════════════════════════════════════════════════
 
-Rules:
-- "action" MUST be one of the action names listed above, OR "UNSUPPORTED".
-- If a part of the request cannot be mapped to any listed action, emit UNSUPPORTED
-  with a description of what the user wanted. Do NOT silently ignore it.
-- Do NOT approximate: if the requested operation does not semantically match
-  a listed action, emit UNSUPPORTED. Do not force-fit to a similar action.
-  Each action has a specific target type — do not substitute one for another.
-- Every meaningful clause in the user request must produce exactly one entry:
-  either a valid action or an UNSUPPORTED entry. No clause may be omitted.
-- "parameters" should contain the input values for that action.
+ACTION:       Executable command mapped to an available action above.
+              Emit: {{"type": "ACTION", "action": "<action_from_list>", "parameters": {{<key: value>}}}}
+
+MEMORY_WRITE: User declaring a preference, fact, or rule to be remembered.
+              Emit: {{"type": "MEMORY_WRITE", "action": "set_preference" | "set_fact" | "add_policy", "parameters": {{<key, value or condition, action>}}}}
+
+POLICY:       Conditional rule: "whenever X, do Y".
+              Emit: {{"type": "POLICY", "action": "add_policy", "parameters": {{"condition": {{...}}, "action": {{...}}, "label": "<brief label>"}}}}
+
+SCHEDULED:    Action with a timing trigger: "in 5 minutes", "at 3pm", "every hour".
+              Emit: {{"type": "SCHEDULED", "action": "<action_from_list>", "trigger": "<time expression>", "parameters": {{<key: value>}}}}
+
+INFORMATIONAL: Commentary, opinion, or observation — not executable.
+              Example: "I think the volume was better yesterday", "great job", "maybe later".
+              Emit: {{"type": "INFORMATIONAL", "text": "<clause text>"}}
+
+VAGUE:        Intended action but parameters are missing or ambiguous (cannot execute without clarification).
+              Example: "set brightness to something comfortable", "make it a bit louder".
+              Emit: {{"type": "VAGUE", "action": "<best-guess action or empty>", "missing": "<what is unclear>", "text": "<clause text>"}}
+
+═══════════════════════════════════════════════════
+RULES (MANDATORY):
+═══════════════════════════════════════════════════
+
+- Every meaningful clause must produce exactly one entry. No clause may be omitted.
+- \"action\" for ACTION/MEMORY_WRITE/POLICY/SCHEDULED MUST be one of the action names listed above.
+- Do NOT approximate: if the requested operation doesn't semantically match a listed action, emit VAGUE or INFORMATIONAL instead.
+- Do NOT force-fit: one action per distinct intent. Never merge separate intents.
 - If a parameter depends on the OUTPUT of a previous action in the sequence,
   describe the dependency in natural language as the parameter value.
   A known action with a runtime-dependent parameter is NOT unsupported.
   Example: "list apps and open the second one" →
-  [{{"action": "list_apps"}}, {{"action": "open_app", "parameters": {{"app_name": "the second app from the list"}}}}]
+  [{{"type": "ACTION", "action": "list_apps", "parameters": {{}}}},
+   {{"type": "ACTION", "action": "open_app", "parameters": {{"app_name": "the second app from the list"}}}}]
 - Only numeric ordinals are valid references: first, second, third (or 1st, 2nd, 3rd).
-  Ambiguous ordinals like "last", "next", "previous" → emit UNSUPPORTED.
-  Selection by attribute ("the one with most memory") → emit UNSUPPORTED.
-- One entry per distinct action. Do NOT merge actions.
+  Ambiguous ordinals like "last", "next", "previous" → emit VAGUE.
+  Selection by attribute ("the one with most memory") → emit VAGUE.
+- "maybe X" or "perhaps X" — if the action is clear, emit ACTION. If parameter is unclear, emit VAGUE.
 - Output ONLY the JSON array. No explanation. No markdown.
 
 User query:
@@ -245,6 +276,10 @@ User query:
 """.strip()
 
         try:
+            logger.info(
+                "[DECOMPOSE] Sending to LLM (%d char prompt)...",
+                len(prompt),
+            )
             raw_response = self.llm.complete(prompt, temperature=0.1)
             logger.info(
                 "[DECOMPOSE] Raw decomposition for '%s': %s",
@@ -261,28 +296,68 @@ User query:
                 )
                 return None
 
-            # Partition into valid and unsupported intents
-            valid_intents: List[Dict[str, Any]] = []
-            unsupported_intents: List[Dict[str, Any]] = []
+            # Partition by clause type (new typed format) + legacy compat
+            executable_intents: List[Dict[str, Any]] = []   # ACTION/MEMORY_WRITE/POLICY
+            scheduled_intents: List[Dict[str, Any]] = []    # SCHEDULED
+            informational_intents: List[Dict[str, Any]] = [] # INFORMATIONAL
+            vague_intents: List[Dict[str, Any]] = []         # VAGUE
+            unsupported_intents: List[Dict[str, Any]] = []  # legacy UNSUPPORTED
 
             for intent in intents:
-                if not isinstance(intent, dict) or "action" not in intent:
+                if not isinstance(intent, dict):
                     continue
-                action = str(intent["action"])
-                if action == "UNSUPPORTED":
+                clause_type = str(intent.get("type", "")).upper()
+                action = str(intent.get("action", ""))
+
+                if clause_type in ("ACTION", "MEMORY_WRITE", "POLICY"):
+                    if action:
+                        executable_intents.append({
+                            "action": action,
+                            "parameters": intent.get("parameters", {}),
+                            "clause_type": clause_type,
+                        })
+                elif clause_type == "SCHEDULED":
+                    if action:
+                        scheduled_intents.append({
+                            "action": action,
+                            "trigger": str(intent.get("trigger", "")),
+                            "parameters": intent.get("parameters", {}),
+                        })
+                elif clause_type == "INFORMATIONAL":
+                    informational_intents.append({
+                        "text": str(intent.get("text", "")),
+                    })
+                elif clause_type == "VAGUE":
+                    vague_intents.append({
+                        "action": action,
+                        "missing": str(intent.get("missing", "")),
+                        "text": str(intent.get("text", "")),
+                    })
+                elif action == "UNSUPPORTED":
+                    # Legacy format backward compat
                     unsupported_intents.append({
                         "action": "UNSUPPORTED",
                         "description": str(intent.get("description", "")),
                     })
-                else:
-                    valid_intents.append({
+                elif action and clause_type == "":
+                    # Legacy format: no type field → assume ACTION
+                    executable_intents.append({
                         "action": action,
                         "parameters": intent.get("parameters", {}),
+                        "clause_type": "ACTION",
                     })
 
-            if not valid_intents and not unsupported_intents:
+            # Build valid_intents from executable (compiler checklist / backward compat)
+            valid_intents: List[Dict[str, Any]] = [
+                {"action": i["action"], "parameters": i["parameters"]}
+                for i in executable_intents
+            ]
+
+            if (not executable_intents and not scheduled_intents
+                    and not informational_intents and not vague_intents
+                    and not unsupported_intents):
                 logger.warning(
-                    "[DECOMPOSE] No intents extracted — degrading to Tier 1"
+                    "[DECOMPOSE] No clauses extracted — degrading to Tier 1"
                 )
                 return None
 
@@ -293,16 +368,22 @@ User query:
                     len(valid_intents), self.MAX_INTENT_INJECTION,
                 )
                 valid_intents = valid_intents[:self.MAX_INTENT_INJECTION]
+                executable_intents = executable_intents[:self.MAX_INTENT_INJECTION]
 
             logger.info(
-                "[DECOMPOSE] Extracted %d valid + %d unsupported intent units "
-                "for '%s'",
-                len(valid_intents), len(unsupported_intents),
-                user_query[:80],
+                "[DECOMPOSE] '%s' → %d executable, %d scheduled, "
+                "%d informational, %d vague, %d unsupported",
+                user_query[:80], len(executable_intents), len(scheduled_intents),
+                len(informational_intents), len(vague_intents),
+                len(unsupported_intents),
             )
             return DecompositionResult(
                 valid_intents=valid_intents,
                 unsupported_intents=unsupported_intents,
+                executable_intents=executable_intents,
+                scheduled_intents=scheduled_intents,
+                informational_intents=informational_intents,
+                vague_intents=vague_intents,
             )
 
         except (ConnectionError, RuntimeError) as e:
@@ -364,12 +445,16 @@ User query:
         # Build intent checklist section for Tier 2+ prompts
         intent_section = self._build_intent_checklist_section(intent_checklist)
 
+        # Build session context section (if SessionManager available)
+        session_section = self._build_session_context_section()
+
         prompt = self._build_prompt(
             user_query=user_query,
             skill_manifest=skill_manifest,
             world_state_schema=world_state_schema,
             context_section=context_section,
             intent_checklist_section=intent_section,
+            session_context_section=session_section,
         )
 
         if strict_json:
@@ -382,6 +467,10 @@ User query:
 
         # ── LLM call ──
         try:
+            logger.info(
+                "[COMPILE] Sending to LLM (%d char prompt)...",
+                len(prompt),
+            )
             raw_response = self.llm.complete(prompt, temperature=temperature)
             logger.info(
                 "[TRACE] LLM raw response (first 2000 chars) for '%s':\n%s",
@@ -581,6 +670,32 @@ User query:
         )
         return "\n".join(lines)
 
+    def _build_session_context_section(self) -> str:
+        """Build a session context section for the compiler prompt.
+
+        This is a SEPARATE prompt section — not WorldState.
+        Surfaces open apps, capabilities, and active tasks
+        to the LLM so it can plan interaction-aware missions.
+
+        Returns empty string if no session manager or no sessions.
+        """
+        if self._session_manager is None:
+            return ""
+
+        context = self._session_manager.build_session_context()
+        if not context:
+            return ""
+
+        lines = ["Active Interactive Sessions (MERLIN-managed):"]
+        lines.append(json.dumps(context, indent=2))
+        lines.append("")
+        lines.append(
+            "When planning actions on an open application, consider its "
+            "capabilities (supports_typing, supports_copy, supports_save). "
+            "Do NOT plan typing actions for apps that don't support typing."
+        )
+        return "\n".join(lines)
+
     def _build_prompt(
         self,
         user_query: str,
@@ -588,6 +703,7 @@ User query:
         world_state_schema: Dict[str, Any],
         context_section: str = "",
         intent_checklist_section: str = "",
+        session_context_section: str = "",
     ) -> str:
         """
         Construct a STRICT prompt.
@@ -660,6 +776,7 @@ Available Skills:
 {type_docs}
 {anchor_section}
 {context_section}
+{session_context_section}
 {intent_checklist_section}
 MissionPlan JSON Schema:
 {{

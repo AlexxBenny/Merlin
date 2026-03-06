@@ -19,6 +19,7 @@ class FocusAppSkill(Skill):
         app_name: Name of the app to focus
 
     Delegates to SystemController.focus_app().
+    Updates AppSession focus state and pushes SessionStack.
     Emits app_focused on success.
     """
 
@@ -45,8 +46,10 @@ class FocusAppSkill(Skill):
         output_style="terse",
     )
 
-    def __init__(self, system_controller: SystemController):
+    def __init__(self, system_controller: SystemController,
+                 session_manager=None):
         self._controller = system_controller
+        self._session_mgr = session_manager
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
         app_name = inputs["app_name"]
@@ -55,6 +58,25 @@ class FocusAppSkill(Skill):
 
         if not success:
             raise RuntimeError(f"Failed to focus '{app_name}': no matching window found")
+
+        # ── Update session state ──
+        if self._session_mgr is not None:
+            session = self._session_mgr.get_session_by_app(app_name)
+            if session:
+                # Clear focus on all other app sessions
+                for s in self._session_mgr.get_sessions_by_type(
+                    session.type
+                ):
+                    if s.id != session.id and getattr(s, "is_focused", False):
+                        self._session_mgr.update_session(
+                            s.id, is_focused=False,
+                        )
+                # Set focus on this session
+                self._session_mgr.update_session(
+                    session.id, is_focused=True,
+                )
+                # Push to session stack
+                self._session_mgr.session_stack.push(session.id)
 
         world.emit("skill.system", "app_focused", {
             "app": app_name,

@@ -101,7 +101,7 @@ class GenerateTextSkill(Skill):
 
         # Build system instruction
         system = (
-            "You are a helpful writing assistant. "
+            "You are MERLIN, an intelligent desktop automation assistant. "
             "Generate the requested content directly. "
             "Do not explain yourself or add meta-commentary. "
             "Just produce the content."

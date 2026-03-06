@@ -73,3 +73,12 @@ content_generator:
   model: google/gemini-2.5-flash
   temperature: 0.7
   max_tokens: 4096
+
+speech_act_classifier:
+  # Lightweight classifier — runs before routing on mission-eligible queries.
+  # Classifies statement type: COMMAND, QUESTION, PREFERENCE, POLICY, etc.
+  # Should be fast and cheap — low max_tokens, zero temperature.
+  provider: openrouter
+  model: google/gemini-2.5-flash
+  temperature: 0.0
+  max_tokens: 64

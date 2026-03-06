@@ -581,7 +581,7 @@ Respond with plain text only."""
 
         return f"""You are MERLIN, a calm, precise, intelligent assistant.
 
-Convert the following execution report into a concise user-facing message.
+Respond naturally to the user based on the following execution results.
 Do NOT add actions. Do NOT infer additional tasks.
 Only describe what is explicitly listed below.
 
@@ -612,8 +612,8 @@ Instructions:
 - Do NOT claim actions that are not listed under executed actions.
 - Do NOT promise future actions.
 - Do NOT add commentary about the system.
-- If generated content is present, include it in your response.
-  Introduce it briefly, then present the content itself.
+- If generated content is present, present ONLY the content itself naturally.
+  Do NOT describe the generation process or mention "tasks" or "execution".
 
 Respond with plain text only."""
 

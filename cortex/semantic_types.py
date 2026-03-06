@@ -330,6 +330,66 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         ),
         direction="input",
     ),
+
+    # ── Memory domain ──
+    # Types for UserKnowledgeStore skill wrappers.
+    # Values are user-defined: passthrough semantics, no coercion.
+    "preference_key": SemanticType(
+        description=(
+            "A canonical preference key (e.g., \"volume\", \"brightness\", "
+            "\"theme\"). Normalized to lowercase snake_case at storage time."
+        ),
+        direction="both",
+    ),
+    "any": SemanticType(
+        description=(
+            "An untyped passthrough value. Use only when the value schema "
+            "is user-defined and cannot statically be typed (e.g., "
+            "preference values, raw outputs)."
+        ),
+        direction="both",
+    ),
+    "boolean": SemanticType(
+        description="A true/false boolean value.",
+        direction="output",  # never a user input param
+        python_type=bool,
+        coerce_fn=lambda v: bool(v) if not isinstance(v, str)
+                   else v.lower() not in ("false", "0", "no", ""),
+    ),
+    "fact_key": SemanticType(
+        description=(
+            "A canonical fact key (e.g., \"name\", \"location\", \"age\"). "
+            "Used to label persistent user facts in memory."
+        ),
+        direction="both",
+    ),
+    "policy_condition": SemanticType(
+        description=(
+            "A dict describing when a policy applies "
+            "(e.g., {\"activity\": \"movie\"})."
+        ),
+        direction="input",
+        python_type=dict,
+    ),
+    "policy_action": SemanticType(
+        description=(
+            "A dict describing what to do when the policy matches "
+            "(e.g., {\"set_volume\": 90})."
+        ),
+        direction="input",
+        python_type=dict,
+    ),
+    "policy_label": SemanticType(
+        description=(
+            "A short human-readable label for a policy "
+            "(e.g., \"movie mode\", \"meeting mode\")."
+        ),
+        direction="input",
+    ),
+    "policy_id": SemanticType(
+        description="UUID string identifying a stored policy.",
+        direction="output",
+    ),
 }
 
 

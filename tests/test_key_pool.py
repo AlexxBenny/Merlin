@@ -204,7 +204,7 @@ class TestRetryOn429(unittest.TestCase):
 
         original_do_request = client._do_request
 
-        def mock_do_request(prompt, temp, fmt):
+        def mock_do_request(prompt, temp, fmt, timeout=None):
             nonlocal call_count
             call_count += 1
             keys_used.append(client.api_key)

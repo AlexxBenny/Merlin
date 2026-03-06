@@ -50,6 +50,7 @@ class OllamaClient(LLMClient):
         *,
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Send a prompt to Ollama and return the response text.
@@ -91,8 +92,9 @@ class OllamaClient(LLMClient):
             method="POST",
         )
 
+        effective_timeout = timeout if timeout is not None else self.timeout
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
+            with request.urlopen(req, timeout=effective_timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 return body.get("response", "")
 

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, Literal, Set, List
+from typing import Any, Dict, Literal, Set, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -67,6 +67,15 @@ class SkillContract(BaseModel):
     requires_focus: bool = False                    # Needs foreground window control
     resource_cost: str = "low"                      # "low" | "medium" | "high"
     conflicts_with: List[str] = Field(default_factory=list)  # Skill names that cannot run in parallel
+
+    # ── Safety level — pre-execution confirmation gate ──
+    # safe:        No confirmation required. Default for all skills.
+    # moderate:    Log a warning before execution. No user prompt.
+    # destructive: Suspend execution and ask user to confirm.
+    #              ExecutionSupervisor raises REQUIRES_CONFIRMATION guard.
+    #              Reuses PendingMission confirmation flow in merlin.py.
+    risk_level: Literal["safe", "moderate", "destructive"] = "safe"
+
 
     # ── Intent matching metadata (Phase 10) ──
     # Used by IntentIndex for scored clause matching — NOT regex.
@@ -136,4 +145,13 @@ class SkillContract(BaseModel):
     #               Handler: routed through ReportBuilder.build_from_skill_result()
     #               Examples: list_jobs, list_apps (output is list of dicts)
     output_style: Literal["terse", "templated", "rich"] = "terse"
+
+    # ── Guard extensions (Phase 3: Execution Supervisor) ──
+    # Declarative pre/postconditions evaluated by ExecutionSupervisor.
+    # Each entry is a dict matching StepGuard schema:
+    #   {"type": "app_running", "params": {"app": "notepad"},
+    #    "repair_actions": [...], "max_retries": 2}
+    # Default: empty (no guards — existing skills unchanged).
+    preconditions: List[Dict[str, Any]] = Field(default_factory=list)
+    postconditions: List[Dict[str, Any]] = Field(default_factory=list)
 

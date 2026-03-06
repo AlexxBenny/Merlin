@@ -1,0 +1,89 @@
+# config/app_capabilities.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Application Capability Metadata
+# ─────────────────────────────────────────────────────────────
+#
+# Static per-app-type flags. Loaded by AppCapabilityRegistry.
+# Used by the compiler to prevent nonsense plans (e.g., typing
+# into Spotify) and by the supervisor to validate guard
+# applicability.
+#
+# Unknown apps receive _default capabilities (conservative).
+#
+# To add a new app: add an entry here. No code changes needed.
+
+# ── Text editors ──
+
+notepad:
+  supports_typing: true
+  supports_copy: true
+  supports_save: true
+
+wordpad:
+  supports_typing: true
+  supports_copy: true
+  supports_save: true
+
+code:
+  supports_typing: true
+  supports_copy: true
+  supports_save: true
+
+# ── Browsers ──
+
+chrome:
+  supports_typing: true
+  supports_copy: true
+  supports_save: false
+
+firefox:
+  supports_typing: true
+  supports_copy: true
+  supports_save: false
+
+msedge:
+  supports_typing: true
+  supports_copy: true
+  supports_save: false
+
+# ── Media / Utility ──
+
+spotify:
+  supports_typing: false
+  supports_copy: false
+  supports_save: false
+
+calculator:
+  supports_typing: false
+  supports_copy: true
+  supports_save: false
+
+explorer:
+  supports_typing: false
+  supports_copy: true
+  supports_save: false
+
+# ── Terminals ──
+
+cmd:
+  supports_typing: true
+  supports_copy: true
+  supports_save: false
+
+powershell:
+  supports_typing: true
+  supports_copy: true
+  supports_save: false
+
+windowsterminal:
+  supports_typing: true
+  supports_copy: true
+  supports_save: false
+
+# ── Default (conservative — all False) ──
+
+_default:
+  supports_typing: false
+  supports_copy: false
+  supports_save: false

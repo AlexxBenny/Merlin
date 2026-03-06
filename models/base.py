@@ -29,6 +29,7 @@ class LLMClient(ABC):
         *,
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """Send a prompt and return the response text.
 
@@ -40,6 +41,8 @@ class LLMClient(ABC):
                     - "json": basic JSON mode
                     - dict: JSON schema for structured output (Ollama v0.5+)
                     - None: unconstrained text output
+            timeout: Optional per-call timeout in seconds.
+                     If None, use the client's default timeout.
 
         Returns:
             The LLM's response as a string.
