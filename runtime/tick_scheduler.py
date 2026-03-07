@@ -297,15 +297,16 @@ class TickSchedulerManager(SchedulerManager):
                 and task.schedule
                 and task.schedule.repeat_interval):
             schedule = task.schedule
-            repeats_done = task.attempts  # attempts = execution count
-            if schedule.max_repeats > 0 and repeats_done >= schedule.max_repeats:
+            # Track total repeats via metadata (attempts resets on each respawn)
+            total_repeats = task.metadata.get("total_repeats", 0) + 1
+            if schedule.max_repeats > 0 and total_repeats >= schedule.max_repeats:
                 logger.info(
-                    "[SCHEDULER] Recurring %s reached max_repeats=%d",
-                    task.short_id, schedule.max_repeats,
+                    "[SCHEDULER] Recurring %s reached max_repeats=%d (total=%d)",
+                    task.short_id, schedule.max_repeats, total_repeats,
                 )
                 return
 
-            self._respawn_recurring(task)
+            self._respawn_recurring(task, total_repeats)
 
     def _handle_failure(self, task: Task, error: Optional[str]) -> None:
         """Handle execution failure with retry backoff."""
@@ -329,11 +330,13 @@ class TickSchedulerManager(SchedulerManager):
                 task.short_id, task.attempts, error or "unknown error",
             )
 
-    def _respawn_recurring(self, task: Task) -> None:
+    def _respawn_recurring(self, task: Task, total_repeats: int) -> None:
         """Create a new PENDING task for the next recurring interval.
 
         next_run is aligned to wall-clock intervals, not last_run + interval.
         This prevents drift accumulation.
+
+        total_repeats: cumulative execution count across all respawns.
         """
         schedule = task.schedule
         now = _time.time()
@@ -345,9 +348,9 @@ class TickSchedulerManager(SchedulerManager):
             now,
         )
 
-        # Create new task (inherits from parent)
+        # Create new task (inherits from parent, carries total_repeats)
         new_task = Task(
-            id=f"{task.id}_r{task.attempts + 1}",
+            id=f"{task.id}_r{total_repeats + 1}",
             type=TaskType.RECURRING,
             query=task.query,
             mission_data=task.mission_data,
@@ -355,13 +358,13 @@ class TickSchedulerManager(SchedulerManager):
             next_run=next_run,
             max_retries=task.max_retries,
             priority=task.priority,
-            metadata=task.metadata,
+            metadata={**task.metadata, "total_repeats": total_repeats},
         )
 
         self._store.create(new_task)
         logger.info(
-            "[SCHEDULER] Respawned recurring %s → %s (next_run=%.1f)",
-            task.short_id, new_task.short_id, next_run,
+            "[SCHEDULER] Respawned recurring %s → %s (next_run=%.1f, repeats=%d)",
+            task.short_id, new_task.short_id, next_run, total_repeats,
         )
 
     @staticmethod

@@ -34,6 +34,7 @@ Safety:
 import logging
 import re
 import time as _time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
@@ -78,6 +79,42 @@ _TIME_24H_PATTERN = re.compile(
 # ─────────────────────────────────────────────────────────────
 
 _TOMORROW_PATTERN = re.compile(r'\btomorrow\b', re.IGNORECASE)
+
+# ─────────────────────────────────────────────────────────────
+# Recurring patterns: "every 10 seconds", "every 2 minutes for 1 hour"
+# ─────────────────────────────────────────────────────────────
+
+_RECURRING_PATTERN = re.compile(
+    r'every\s+(\d+)\s*'
+    r'(seconds?|secs?|minutes?|mins?|hours?|hrs?|[smh])\b',
+    re.IGNORECASE,
+)
+
+# Duration bound: "for 1 minute", "for 3 hours"
+_DURATION_PATTERN = re.compile(
+    r'for\s+(\d+)\s*'
+    r'(seconds?|secs?|minutes?|mins?|hours?|hrs?|[smh])\b',
+    re.IGNORECASE,
+)
+
+
+# ─────────────────────────────────────────────────────────────
+# RecurringSchedule — typed return for recurring expressions
+# ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class RecurringSchedule:
+    """Parsed recurring trigger expression.
+
+    Produced by TemporalResolver.resolve_recurring().
+    Consumed by _schedule_decomposed_clause() to populate TaskSchedule.
+
+    interval_seconds: seconds between repeats (e.g., 10)
+    max_repeats: total executions (0 = unbounded, e.g., 6 for
+                 'every 10 seconds for 1 minute')
+    """
+    interval_seconds: int
+    max_repeats: int  # 0 = unbounded
 
 
 # ─────────────────────────────────────────────────────────────
@@ -157,6 +194,32 @@ class TemporalResolver:
             Total seconds as int, or None if unparseable.
         """
         return _parse_delay_seconds(expression)
+
+    @staticmethod
+    def resolve_recurring(expression: str) -> Optional[RecurringSchedule]:
+        """Parse recurring expression → RecurringSchedule.
+
+        Supports:
+            "every 10 seconds"                → interval=10, max_repeats=0
+            "every 10 seconds for 1 minute"   → interval=10, max_repeats=6
+            "every 2 hours for 12 hours"      → interval=7200, max_repeats=6
+            "every 30 mins for 3 hours"       → interval=1800, max_repeats=6
+
+        max_repeats is floor(duration / interval).
+        First execution at t=interval, so 6 repeats covers [10,20,30,40,50,60].
+        max_repeats=0 means unbounded (repeats until cancelled).
+
+        Returns None if expression is not a recurring pattern.
+        Never raises.
+        """
+        try:
+            return _parse_recurring(expression)
+        except Exception as e:
+            logger.warning(
+                "[TEMPORAL] Failed to parse recurring '%s': %s",
+                expression, e,
+            )
+            return None
 
     @staticmethod
     def get_local_timezone() -> str:
@@ -306,3 +369,55 @@ def _parse_time_expression(text: str) -> Tuple[Optional[int], int]:
         return hour, minute
 
     return None, 0
+
+
+# ─────────────────────────────────────────────────────────────
+# Recurring expression parser
+# ─────────────────────────────────────────────────────────────
+
+def _parse_recurring(expression: str) -> Optional[RecurringSchedule]:
+    """Parse recurring expression → RecurringSchedule.
+
+    Handles:
+        "every 10 seconds"                → interval=10, max_repeats=0
+        "every 10 seconds for 1 minute"   → interval=10, max_repeats=6
+        "every 2 hours for 12 hours"      → interval=7200, max_repeats=6
+
+    max_repeats = floor(duration_seconds / interval_seconds).
+    First execution at t=interval (not t=0).
+    max_repeats=0 means unbounded.
+
+    Returns None if expression does not contain a recurring pattern.
+    """
+    match = _RECURRING_PATTERN.search(expression)
+    if not match:
+        return None
+
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+
+    multiplier = _UNIT_SECONDS.get(unit)
+    if multiplier is None:
+        return None
+
+    interval_seconds = amount * multiplier
+    if interval_seconds <= 0:
+        return None
+
+    # Check for duration bound ("for N units")
+    max_repeats = 0  # 0 = unbounded
+    dur_match = _DURATION_PATTERN.search(expression)
+    if dur_match:
+        dur_amount = int(dur_match.group(1))
+        dur_unit = dur_match.group(2).lower()
+        dur_multiplier = _UNIT_SECONDS.get(dur_unit)
+        if dur_multiplier is not None:
+            duration_seconds = dur_amount * dur_multiplier
+            max_repeats = duration_seconds // interval_seconds
+            if max_repeats <= 0:
+                max_repeats = 1  # At least one execution
+
+    return RecurringSchedule(
+        interval_seconds=interval_seconds,
+        max_repeats=max_repeats,
+    )

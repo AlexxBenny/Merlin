@@ -479,9 +479,42 @@ class Merlin:
             )
             deferred_query = f"{action} {param_desc}".strip()
 
-            # Resolve the trigger time (returns epoch float or None)
+            # Instantiate resolver for trigger time computation
             resolver = TemporalResolver()
-            next_run = resolver.resolve({"expression": trigger_expr, "kind": "delay"})
+
+            # ── Determine task type from trigger expression ──
+            trigger_lower = trigger_expr.lower()
+            if any(kw in trigger_lower for kw in ("every", "recurring", "repeat")):
+                task_type = TaskType.RECURRING
+            elif any(kw in trigger_lower for kw in ("at ", "pm", "am", ":")):
+                task_type = TaskType.SCHEDULED
+            else:
+                task_type = TaskType.DELAYED
+
+            # ── Resolve trigger time based on detected type ──
+            now = _time.time()
+            repeat_interval = None
+            max_repeats = 1  # default: single execution
+
+            if task_type == TaskType.RECURRING:
+                recurring = resolver.resolve_recurring(trigger_expr)
+                if recurring:
+                    repeat_interval = recurring.interval_seconds
+                    max_repeats = recurring.max_repeats
+                    next_run = now + recurring.interval_seconds
+                else:
+                    # Fallback: parse as delay if recurring parsing fails
+                    next_run = resolver.resolve(
+                        {"expression": trigger_expr, "kind": "delay"}
+                    )
+            elif task_type == TaskType.SCHEDULED:
+                next_run = resolver.resolve(
+                    {"expression": trigger_expr, "kind": "absolute_time"}
+                )
+            else:
+                next_run = resolver.resolve(
+                    {"expression": trigger_expr, "kind": "delay"}
+                )
 
             if next_run is None:
                 logger.warning(
@@ -495,21 +528,9 @@ class Merlin:
                 self.output_channel.send(response)
                 return False
 
-            # ── Determine task type from trigger expression ──
-            # Seam for future scheduler model expansion
-            #   (interval, cron, until, condition).
-            trigger_lower = trigger_expr.lower()
-            if any(kw in trigger_lower for kw in ("every", "recurring", "repeat")):
-                task_type = TaskType.RECURRING
-            elif any(kw in trigger_lower for kw in ("at ", "pm", "am", ":")):
-                task_type = TaskType.SCHEDULED
-            else:
-                task_type = TaskType.DELAYED
-
-            # Compute delay for TaskSchedule
-            # Both next_run and now are epoch floats (time.time())
-            now = _time.time()
+            # Compute delay for TaskSchedule (used by DELAYED type)
             delay_secs = max(0, int(next_run - now))
+
 
             # Compile the deferred action NOW (at schedule time, not dispatch time)
             compiled = self.orchestrator.cortex.compile(
@@ -536,8 +557,13 @@ class Merlin:
                 schedule=TaskSchedule(
                     delay_seconds=delay_secs if task_type == TaskType.DELAYED else None,
                     schedule_at=next_run if task_type == TaskType.SCHEDULED else None,
+                    repeat_interval=repeat_interval,
+                    max_repeats=max_repeats,
                     time_expression=trigger_expr,
-                    # Seam: repeat_interval, max_repeats for RECURRING
+                ),
+                metadata=(
+                    {"total_repeats": 0}
+                    if task_type == TaskType.RECURRING else {}
                 ),
                 mission_data={
                     "compiled_plan": compiled.model_dump(),
