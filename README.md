@@ -46,77 +46,79 @@ graph TD
     User((User)):::user
 
     subgraph Perception_Layer ["1. Perception Layer (The Senses)"]
-        PO[Perception Orchestrator]:::perception
-        CF[Conversation Frame]:::perception
+        PO["Perception Orchestrator"]:::perception
+        CF["Conversation Frame"]:::perception
     end
 
     subgraph Nervous_System ["2. The Nervous System (BrainCore & Reflexes)"]
         direction TB
-        BC{BrainCore <br> Circuit Breaker}:::nervous
-        SA[Structural Analyzer]:::nervous
-        RE[Reflex Engine]:::nervous
-        Loop[Runtime Event Loop]:::nervous
-        AM[Attention Manager]:::nervous
+        BC{"BrainCore <br> Circuit Breaker"}:::nervous
+        SA["Structural Analyzer"]:::nervous
+        RE["Reflex Engine"]:::nervous
+        Loop["Runtime Event Loop"]:::nervous
+        AM["Attention Manager"]:::nervous
     end
 
     subgraph Mission_Cortex ["3. Mission Cortex (The Planner)"]
         direction TB
-        EP{Escalation Policy}:::cortex
-        MC[Mission Cortex Compiler]:::cortex
-        LLM((LLM Router / Models)):::cortex
+        EP{"Escalation Policy"}:::cortex
+        MC["Mission Cortex Compiler"]:::cortex
+        LLM(("LLM Router / Models")):::cortex
     end
 
     subgraph Execution_Layer ["4. Skill & Execution Layer (The Physiology)"]
         direction TB
-        ME[Mission Executor]:::execution
-        SR[Skill Registry]:::execution
-        Skills[System / Browser Skills]:::execution
-        SCHED[Tick Scheduler]:::execution
+        ME["Mission Executor"]:::execution
+        SR["Skill Registry"]:::execution
+        Skills["System / Browser Skills"]:::execution
+        SCHED["Tick Scheduler"]:::execution
     end
 
     subgraph Memory_State ["Memory & State (World)"]
         direction TB
-        WT[(World Timeline)]:::memory
-        UK[(User Knowledge Store)]:::memory
-        WSP[World State Provider]:::memory
-        CP[Context Provider]:::memory
+        WT[("World Timeline")]:::memory
+        UK[("User Knowledge Store")]:::memory
+        WSP["World State Provider"]:::memory
+        CP["Context Provider"]:::memory
     end
 
     %% Flow
     User -.->|Command / Audio| PO
-    PO --> |Text & Speech| CF
+    PO -->|Text & Speech| CF
     PO --> BC
     
     %% Phase 1: Routing
-    BC <-->|Feature Extraction| SA
-    BC --->|Fast Path (Zero LLM)| RE
-    BC --->|Complex Intent| EP
+    BC -->|Feature Extraction| SA
+    SA -->|Features| BC
+    BC -->|Fast Path| RE
+    BC -->|Complex Intent| EP
     
     %% Phase 2: Escalation & Compilation
-    EP --->|Mission Proceed| MC
+    EP -->|Mission Proceed| MC
     EP -.->|Clarify Needed| User
-    MC <-->|DAG Generation| LLM
-    MC --->|Compiled DAG| SCHED
-    MC --->|Compiled DAG| ME
+    MC -->|DAG Generation| LLM
+    LLM -->|Plan| MC
+    MC -->|Compiled DAG| SCHED
+    MC -->|Compiled DAG| ME
     
     %% Phase 3: Execution
-    RE --->|Direct Execution| SR
-    ME --->|Topological Execution| SR
-    SCHED --->|Scheduled Execution| ME
-    SR ---> Skills
+    RE -->|Direct Execution| SR
+    ME -->|Topological Execution| SR
+    SCHED -->|Scheduled Execution| ME
+    SR --> Skills
     
     %% State Mutation
-    Skills --->|Emit Events| WT
+    Skills -->|Emit Events| WT
     
     %% Memory Integration
-    WT --->|State Projection| WSP
-    UK --->|User Constraints| CP
+    WT -->|State Projection| WSP
+    UK -->|User Constraints| CP
     WSP -.->|World Context| MC
     CP -.->|Memory Context| MC
     
     %% Proactive Systems
-    Loop <-->|Heartbeat| AM
-    Loop --->|Trigger Condition| RE
+    Loop <--> AM
+    Loop -->|Trigger Condition| RE
     AM -.->|Notify / Proactive| User
 ```
 
