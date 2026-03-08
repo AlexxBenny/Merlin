@@ -134,18 +134,157 @@ class SystemController:
 
     # ── App Launch ──
 
+    def launch(
+        self,
+        entity: "ApplicationEntity",
+        args: Optional[List[str]] = None,
+    ) -> AppHandle:
+        """Launch an application using its best available strategy.
+
+        Iterates strategies by priority (descending). Tries each
+        until one succeeds. Returns failure if all strategies exhausted.
+
+        Args:
+            entity: Resolved ApplicationEntity from registry.
+            args:   Optional command-line arguments.
+
+        Returns:
+            AppHandle with success status and PID if available.
+        """
+        if not entity.launch_strategies:
+            return AppHandle(
+                app_name=entity.app_id,
+                success=False,
+                error="No launch strategies available",
+            )
+
+        strategies = sorted(
+            entity.launch_strategies, key=lambda s: -s.priority,
+        )
+
+        last_error = ""
+        for strategy in strategies:
+            result = self._try_strategy(strategy, entity.app_id, args)
+            if result.success:
+                logger.info(
+                    "Launched '%s' via %s (priority=%d)",
+                    entity.app_id, strategy.method.value, strategy.priority,
+                )
+                return result
+            last_error = result.error or "Unknown failure"
+            logger.debug(
+                "Strategy %s failed for '%s': %s",
+                strategy.method.value, entity.app_id, last_error,
+            )
+
+        return AppHandle(
+            app_name=entity.app_id,
+            success=False,
+            error=f"All {len(strategies)} strategies exhausted. Last: {last_error}",
+        )
+
+    def _try_strategy(
+        self,
+        strategy: "LaunchStrategy",
+        app_name: str,
+        args: Optional[List[str]] = None,
+    ) -> AppHandle:
+        """Attempt a single launch strategy. Never raises."""
+        try:
+            if strategy.type == "executable":
+                return self._launch_executable(
+                    strategy.value, app_name, args,
+                )
+            elif strategy.type == "protocol":
+                return self._launch_protocol(
+                    strategy.value, app_name,
+                )
+            elif strategy.type == "appsfolder":
+                return self._launch_appsfolder(
+                    strategy.value, app_name,
+                )
+            elif strategy.type == "shell":
+                return self._launch_shell(
+                    strategy.value, app_name, args,
+                )
+            else:
+                return AppHandle(
+                    app_name=app_name, success=False,
+                    error=f"Unknown strategy type: {strategy.type}",
+                )
+        except Exception as e:
+            return AppHandle(
+                app_name=app_name, success=False,
+                error=f"{strategy.type} failed: {e}",
+            )
+
+    def _launch_executable(
+        self, exe_path: str, app_name: str,
+        args: Optional[List[str]] = None,
+    ) -> AppHandle:
+        """Launch via executable path. Returns PID."""
+        cmd = [exe_path] + (args or [])
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.3)
+        if proc.poll() is not None and proc.returncode != 0:
+            return AppHandle(
+                app_name=app_name, success=False,
+                error=f"Process exited with code {proc.returncode}",
+            )
+        return AppHandle(
+            app_name=app_name, pid=proc.pid, success=True,
+        )
+
+    def _launch_protocol(
+        self, protocol_uri: str, app_name: str,
+    ) -> AppHandle:
+        """Launch via protocol handler (e.g., spotify:)."""
+        os.startfile(protocol_uri)
+        time.sleep(0.5)
+        return AppHandle(
+            app_name=app_name, pid=None, success=True,
+        )
+
+    def _launch_appsfolder(
+        self, appsfolder_path: str, app_name: str,
+    ) -> AppHandle:
+        """Launch via shell:AppsFolder (UWP/Store apps)."""
+        os.startfile(appsfolder_path)
+        time.sleep(0.5)
+        return AppHandle(
+            app_name=app_name, pid=None, success=True,
+        )
+
+    def _launch_shell(
+        self, shell_name: str, app_name: str,
+        args: Optional[List[str]] = None,
+    ) -> AppHandle:
+        """Launch via shell (os.startfile or shutil.which fallback)."""
+        exe_path = shutil.which(shell_name)
+        if exe_path:
+            return self._launch_executable(exe_path, app_name, args)
+        os.startfile(shell_name)
+        time.sleep(0.5)
+        return AppHandle(
+            app_name=app_name, pid=None, success=True,
+        )
+
     def open_app(
         self,
         app_name: str,
         args: Optional[List[str]] = None,
     ) -> AppHandle:
         """
-        Open an application.
+        Open an application (backward-compatible fallback).
 
-        Strategy:
-        1. Try shutil.which() for CLI-resolvable apps
-        2. Fall back to os.startfile() for GUI-registered apps
-        3. Return failure handle if nothing works
+        Prefer launch(entity) when ApplicationEntity is available.
+        This method uses the legacy 2-tier resolution:
+        1. shutil.which() for CLI-resolvable apps
+        2. os.startfile() for GUI-registered apps
 
         Never raises. Returns AppHandle with success=False on failure.
         """

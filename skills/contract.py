@@ -76,6 +76,13 @@ class SkillContract(BaseModel):
     #              Reuses PendingMission confirmation flow in merlin.py.
     risk_level: Literal["safe", "moderate", "destructive"] = "safe"
 
+    # ── Entity resolution metadata ──
+    # Input params that reference application entities.
+    # EntityResolver uses this to know which params to resolve
+    # to canonical app_id via ApplicationRegistry.
+    # Example: entity_params=["app_name"]
+    entity_params: List[str] = Field(default_factory=list)
+
 
     # ── Intent matching metadata (Phase 10) ──
     # Used by IntentIndex for scored clause matching — NOT regex.

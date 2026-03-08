@@ -35,6 +35,7 @@ class FocusAppSkill(Skill):
         domain="system",
         requires_focus=True,
         inputs={"app_name": "application_name"},
+        entity_params=["app_name"],
         outputs={"focused": "application_name"},
         allowed_modes={ExecutionMode.foreground, ExecutionMode.side_effect},
         failure_policy={

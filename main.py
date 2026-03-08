@@ -337,6 +337,53 @@ def main(args=None):
 
     app_capabilities_path = CONFIG_DIR / "app_capabilities.yaml"
     capability_registry = AppCapabilityRegistry.from_yaml(str(app_capabilities_path))
+
+    # ── Application Registry (boot-time app discovery) ──
+    from infrastructure.app_discovery import ApplicationDiscoveryService
+    from infrastructure.application_registry import ApplicationRegistry
+
+    app_discovery = ApplicationDiscoveryService(capability_registry=capability_registry)
+    app_registry = ApplicationRegistry()
+    try:
+        discovered_entities = app_discovery.discover_all()
+        for entity in discovered_entities:
+            app_registry.register(entity)
+        summary = app_registry.summary()
+        logger.info(
+            "ApplicationRegistry: %d entities (%d desktop, %d UWP), "
+            "%d names indexed, %d process names indexed",
+            summary["total_entities"],
+            summary["by_type"].get("desktop", 0),
+            summary["by_type"].get("uwp", 0),
+            summary["total_names_indexed"],
+            summary["total_process_names_indexed"],
+        )
+    except Exception as e:
+        logger.warning("Application discovery failed — registry empty: %s", e)
+
+    # ── Entity Resolver (post-compilation transform — Phase 9C) ──
+    from cortex.entity_resolver import EntityResolver
+    import yaml as _yaml
+
+    _alias_path = CONFIG_DIR / "app_aliases.yaml"
+    _alias_map = {}
+    if _alias_path.exists():
+        try:
+            with open(_alias_path, "r", encoding="utf-8") as f:
+                _alias_map = _yaml.safe_load(f) or {}
+            logger.info("Loaded %d app aliases from %s", len(_alias_map), _alias_path)
+        except Exception as e:
+            logger.warning("Failed to load app aliases: %s", e)
+
+    # NOTE: EntityResolver needs skill_registry which isn't created yet.
+    # We create it here with registry=None and wire skill_registry post-hoc
+    # (same pattern as PreferenceResolver).
+    entity_resolver = EntityResolver(
+        registry=app_registry,
+        skill_registry=None,  # wired after Merlin construction
+        alias_map=_alias_map,
+    )
+
     session_manager = SessionManager(capability_registry=capability_registry)
     logger.info("SessionManager initialized with %d known app types",
                 len(capability_registry.known_apps))
@@ -381,6 +428,7 @@ def main(args=None):
         "content_llm": content_llm,
         "task_store": task_store,
         "session_manager": session_manager,
+        "app_registry": app_registry,
         # NOTE: user_knowledge is NOT included here.
         # Memory skills require UserKnowledgeStore which hasn't been
         # created yet. They are registered in a separate late-load pass
@@ -614,6 +662,11 @@ def main(args=None):
     merlin.orchestrator._pref_resolver = pref_resolver
     merlin._user_knowledge = user_knowledge
     logger.info("PreferenceResolver + UserKnowledgeStore wired")
+
+    # ── Entity Resolver post-wiring (needs SkillRegistry from the executor) ──
+    entity_resolver._skill_registry = merlin.executor.registry
+    merlin.orchestrator._entity_resolver = entity_resolver
+    logger.info("EntityResolver wired to MissionOrchestrator (Phase 9C)")
 
     # ── Late-register memory skills (require UserKnowledgeStore) ──
     # Memory skills (memory.get_preference, memory.set_preference, etc.) require

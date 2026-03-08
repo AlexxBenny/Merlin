@@ -38,6 +38,7 @@ class OpenAppSkill(Skill):
         inputs={
             "app_name": "application_name",
         },
+        entity_params=["app_name"],
         optional_inputs={
             "args": "cli_arguments",
         },
@@ -56,15 +57,27 @@ class OpenAppSkill(Skill):
     )
 
     def __init__(self, system_controller: SystemController,
-                 session_manager=None):
+                 session_manager=None, app_registry=None):
         self._controller = system_controller
         self._session_mgr = session_manager
+        self._app_registry = app_registry  # Optional: for entity-based launch
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
         app_name = inputs["app_name"]
+        app_id = inputs.get("app_id")  # Injected by EntityResolver (Phase 9C)
         args = inputs.get("args")
 
-        handle = self._controller.open_app(app_name, args=args)
+        # ── Entity-based launch (preferred) ──
+        if app_id and self._app_registry:
+            entity = self._app_registry.get(app_id)
+            if entity:
+                handle = self._controller.launch(entity, args=args)
+            else:
+                # app_id not in registry — fall back to legacy
+                handle = self._controller.open_app(app_name, args=args)
+        else:
+            # ── Legacy fallback (no entity resolver) ──
+            handle = self._controller.open_app(app_name, args=args)
 
         if not handle.success:
             raise RuntimeError(
@@ -93,3 +106,4 @@ class OpenAppSkill(Skill):
             outputs={"opened": handle.app_name, "pid": handle.pid},
             metadata=metadata,
         )
+

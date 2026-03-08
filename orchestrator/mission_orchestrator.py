@@ -10,6 +10,7 @@ from execution.executor import MissionExecutor, ExecutionResult, NodeStatus
 from errors import FailureIR
 from cortex.parameter_resolver import ParameterResolver, ParameterError
 from cortex.preference_resolver import PreferenceResolver
+from cortex.entity_resolver import EntityResolver, EntityResolutionError
 from cortex.mission_cortex import MissionCortex
 from cortex.validators import verify_intent_coverage
 from brain.escalation_policy import CognitiveTier
@@ -67,6 +68,7 @@ class MissionOrchestrator:
         self._supervisor = supervisor
         self._resolver = ParameterResolver(executor.registry)
         self._pref_resolver: Optional[PreferenceResolver] = None
+        self._entity_resolver: Optional[EntityResolver] = None
 
     # ─────────────────────────────────────────────────────────
     # PUBLIC API: Full mission lifecycle
@@ -208,6 +210,14 @@ class MissionOrchestrator:
         # ── Phase 9B: Preference resolution (semantic memory) ──
         if self._pref_resolver is not None:
             plan = self._pref_resolver.resolve_plan(plan)
+
+        # ── Phase 9C: Entity resolution (application entities) ──
+        if self._entity_resolver is not None:
+            try:
+                plan = self._entity_resolver.resolve_plan(plan)
+            except EntityResolutionError as ere:
+                logger.info("Entity resolution clarification: %s", ere)
+                return ere.user_message()
 
         # 2. Snapshot world at execution time
         events = self.timeline.all_events()
@@ -379,6 +389,14 @@ class MissionOrchestrator:
         # ── Phase 9B: Preference resolution ──
         if self._pref_resolver is not None:
             plan = self._pref_resolver.resolve_plan(plan)
+
+        # ── Phase 9C: Entity resolution ──
+        if self._entity_resolver is not None:
+            try:
+                plan = self._entity_resolver.resolve_plan(plan)
+            except EntityResolutionError as ere:
+                logger.info("Entity resolution clarification: %s", ere)
+                return ere.user_message()
 
         # Snapshot world
         events = self.timeline.all_events()
