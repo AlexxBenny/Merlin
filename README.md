@@ -3,8 +3,8 @@
   <p><strong>A multi-modal, determinism-first cognitive agent architecture.</strong></p>
 
   [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-  [![Architecture](https://img.shields.io/badge/Architecture-4--Layer%20Cognitive-purple.svg)]()
-  [![Determinism](https://img.shields.io/badge/Execution-Deterministic-success.svg)]()
+  ![Architecture](https://img.shields.io/badge/Architecture-4--Layer%20Cognitive-purple.svg)
+  ![Determinism](https://img.shields.io/badge/Execution-Deterministic-success.svg)
 </div>
 
 <br />
