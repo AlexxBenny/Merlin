@@ -33,6 +33,93 @@ MERLIN is equipped to operate as a JARVIS-level assistant, featuring robust OS i
 
 MERLIN is divided into distinct execution layers, preventing hallucinations and enforcing strict operational contracts.
 
+```mermaid
+graph TD
+    %% Styling
+    classDef user fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff,font-weight:bold
+    classDef perception fill:#2c5282,stroke:#4299e1,stroke-width:2px,color:#fff
+    classDef nervous fill:#742a2a,stroke:#fc8181,stroke-width:2px,color:#fff
+    classDef cortex fill:#44337a,stroke:#9f7aea,stroke-width:2px,color:#fff
+    classDef execution fill:#276749,stroke:#68d391,stroke-width:2px,color:#fff
+    classDef memory fill:#7b341e,stroke:#f6ad55,stroke-width:2px,color:#fff
+
+    User((User)):::user
+
+    subgraph Perception_Layer ["1. Perception Layer (The Senses)"]
+        PO[Perception Orchestrator]:::perception
+        CF[Conversation Frame]:::perception
+    end
+
+    subgraph Nervous_System ["2. The Nervous System (BrainCore & Reflexes)"]
+        direction TB
+        BC{BrainCore <br> Circuit Breaker}:::nervous
+        SA[Structural Analyzer]:::nervous
+        RE[Reflex Engine]:::nervous
+        Loop[Runtime Event Loop]:::nervous
+        AM[Attention Manager]:::nervous
+    end
+
+    subgraph Mission_Cortex ["3. Mission Cortex (The Planner)"]
+        direction TB
+        EP{Escalation Policy}:::cortex
+        MC[Mission Cortex Compiler]:::cortex
+        LLM((LLM Router / Models)):::cortex
+    end
+
+    subgraph Execution_Layer ["4. Skill & Execution Layer (The Physiology)"]
+        direction TB
+        ME[Mission Executor]:::execution
+        SR[Skill Registry]:::execution
+        Skills[System / Browser Skills]:::execution
+        SCHED[Tick Scheduler]:::execution
+    end
+
+    subgraph Memory_State ["Memory & State (World)"]
+        direction TB
+        WT[(World Timeline)]:::memory
+        UK[(User Knowledge Store)]:::memory
+        WSP[World State Provider]:::memory
+        CP[Context Provider]:::memory
+    end
+
+    %% Flow
+    User -.->|Command / Audio| PO
+    PO --> |Text & Speech| CF
+    PO --> BC
+    
+    %% Phase 1: Routing
+    BC <-->|Feature Extraction| SA
+    BC --->|Fast Path (Zero LLM)| RE
+    BC --->|Complex Intent| EP
+    
+    %% Phase 2: Escalation & Compilation
+    EP --->|Mission Proceed| MC
+    EP -.->|Clarify Needed| User
+    MC <-->|DAG Generation| LLM
+    MC --->|Compiled DAG| SCHED
+    MC --->|Compiled DAG| ME
+    
+    %% Phase 3: Execution
+    RE --->|Direct Execution| SR
+    ME --->|Topological Execution| SR
+    SCHED --->|Scheduled Execution| ME
+    SR ---> Skills
+    
+    %% State Mutation
+    Skills --->|Emit Events| WT
+    
+    %% Memory Integration
+    WT --->|State Projection| WSP
+    UK --->|User Constraints| CP
+    WSP -.->|World Context| MC
+    CP -.->|Memory Context| MC
+    
+    %% Proactive Systems
+    Loop <-->|Heartbeat| AM
+    Loop --->|Trigger Condition| RE
+    AM -.->|Notify / Proactive| User
+```
+
 ### 1. Perception Layer (The Senses)
 Manages concurrent, multi-modal inputs. It handles text inputs and voice recognition simultaneously with explicit cancellation semantics (e.g., typing text immediately aborts an ongoing voice recording).
 * Handles text through CLI prompts (`TextPerception`)
