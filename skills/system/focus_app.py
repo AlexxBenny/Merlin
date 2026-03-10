@@ -59,7 +59,10 @@ class FocusAppSkill(Skill):
         success = self._controller.focus_app(app_name)
 
         if not success:
-            raise RuntimeError(f"Failed to focus '{app_name}': no matching window found")
+            raise RuntimeError(
+                f"Failed to focus '{app_name}': OS denied focus change "
+                f"or no matching window found"
+            )
 
         # ── Update session state ──
         if self._session_mgr is not None:

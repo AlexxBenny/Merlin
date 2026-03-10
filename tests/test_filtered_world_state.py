@@ -324,7 +324,7 @@ class TestFallbackBehavior:
 # ─────────────────────────────────────────────────────────────
 
 class TestAlwaysInclude:
-    """Verify that time is always included when domains are detected."""
+    """Verify that time and system.session are always included."""
 
     def test_time_always_included(self):
         """Time section should always be in the view."""
@@ -333,6 +333,27 @@ class TestAlwaysInclude:
 
         assert "time" in view
         assert view["time"]["hour"] == 14
+
+    def test_session_always_included_for_media(self):
+        """system.session must be visible for media queries.
+
+        Without this, 'close spotify' planning fails because
+        the LLM can't see tracked_apps → guesses app names →
+        entity resolution fails.
+        """
+        provider = FilteredWorldStateProvider()
+        view = provider.build_schema(_snapshot(), query="play music")
+
+        assert "system" in view
+        assert "session" in view["system"]
+
+    def test_session_always_included_for_fs(self):
+        """system.session is in ALWAYS_INCLUDE — present for all domains."""
+        provider = FilteredWorldStateProvider()
+        view = provider.build_schema(_snapshot(), query="create folder test")
+
+        assert "system" in view
+        assert "session" in view["system"]
 
     def test_time_missing_in_state(self):
         """If time is None in state, view doesn't include it (no crash)."""

@@ -42,7 +42,10 @@ DEFAULT_DOMAIN_STATE_MAP: Dict[str, List[str]] = {
 
 # State sections always included regardless of domain match.
 # Time is universally useful (scheduling, greetings, context).
-ALWAYS_INCLUDE = ["time"]
+# Session (tracked_apps, foreground_app) is needed by nearly every
+# domain that interacts with applications — media, system, browser.
+# Without it, the LLM guesses app names → entity resolution fails.
+ALWAYS_INCLUDE = ["time", "system.session"]
 
 # ─────────────────────────────────────────────────────────────
 # Domain keyword detection (confidence-gated)

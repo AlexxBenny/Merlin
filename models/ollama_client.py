@@ -51,6 +51,7 @@ class OllamaClient(LLMClient):
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """
         Send a prompt to Ollama and return the response text.

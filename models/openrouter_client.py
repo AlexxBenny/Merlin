@@ -12,10 +12,13 @@ Design rules:
 - API key resolved at construction time.
 - format="json" → response_format={"type": "json_object"}
 - If pool metadata provided, 429 errors trigger key rotation + retry.
+- Credit-aware: tracks last known credit budget from 402 errors and
+  auto-caps max_tokens to avoid future rejections.
 """
 
 import json
 import logging
+import re
 from typing import Any, Dict, Optional, Union
 from urllib import request, error
 
@@ -24,6 +27,9 @@ from models.base import LLMClient
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Safety margin subtracted from credit budget to avoid edge-case rejections
+_CREDIT_SAFETY_MARGIN = 50
 
 
 class OpenRouterClient(LLMClient):
@@ -58,6 +64,8 @@ class OpenRouterClient(LLMClient):
         # Pool metadata for 429 retry with key rotation
         self._pool_provider = _pool_provider
         self._pool_role = _pool_role
+        # Credit-aware budget tracking
+        self._credit_budget: Optional[int] = None
 
     def complete(
         self,
@@ -66,6 +74,7 @@ class OpenRouterClient(LLMClient):
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """
         Send a prompt to OpenRouter and return the response text.
@@ -77,6 +86,8 @@ class OpenRouterClient(LLMClient):
                     - "json": enables JSON mode via response_format
                     - dict: JSON schema (mapped to response_format)
                     - None: unconstrained text output
+            max_tokens: Optional per-call max output tokens override.
+                        If None, use the constructor default.
 
         Raises:
             ConnectionError: if OpenRouter is unreachable
@@ -102,7 +113,9 @@ class OpenRouterClient(LLMClient):
                 )
 
             try:
-                return self._do_request(prompt, temperature, format, timeout)
+                return self._do_request(
+                    prompt, temperature, format, timeout, max_tokens,
+                )
             except RuntimeError as e:
                 if "429" in str(e) and attempt < max_attempts - 1:
                     last_error = e
@@ -111,12 +124,59 @@ class OpenRouterClient(LLMClient):
 
         raise last_error or RuntimeError("All keys rate limited.")
 
+    def _resolve_max_tokens(
+        self, per_call: Optional[int],
+    ) -> Optional[int]:
+        """Resolve effective max_tokens with credit-aware capping.
+
+        Priority:
+          1. per_call override (if not None)
+          2. constructor default (self.max_tokens)
+
+        Then capped against last known credit budget (if available).
+        """
+        requested = (
+            per_call if per_call is not None
+            else self.max_tokens
+        )
+        if requested is None:
+            return None
+
+        # Cap against credit budget if known
+        if self._credit_budget is not None:
+            cap = max(self._credit_budget - _CREDIT_SAFETY_MARGIN, 1)
+            if requested > cap:
+                logger.info(
+                    "[TOKEN_BUDGET] Capping max_tokens %d → %d "
+                    "(credit budget=%d, margin=%d)",
+                    requested, cap,
+                    self._credit_budget, _CREDIT_SAFETY_MARGIN,
+                )
+                return cap
+
+        return requested
+
+    def _parse_credit_budget(self, error_body: str) -> None:
+        """Extract credit budget from 402 error body.
+
+        Looks for: "can only afford N" in the error message.
+        Stores the value for future request capping.
+        """
+        match = re.search(r"can only afford (\d+)", error_body)
+        if match:
+            budget = int(match.group(1))
+            self._credit_budget = budget
+            logger.info(
+                "[TOKEN_BUDGET] Learned credit budget: %d tokens", budget,
+            )
+
     def _do_request(
         self,
         prompt: str,
         temperature: Optional[float],
         format: Optional[Union[str, Dict[str, Any]]],
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Execute a single HTTP request to OpenRouter."""
         url = f"{self.base_url}/chat/completions"
@@ -132,8 +192,10 @@ class OpenRouterClient(LLMClient):
         }
         if effective_temp is not None:
             payload_dict["temperature"] = effective_temp
-        if self.max_tokens is not None:
-            payload_dict["max_tokens"] = self.max_tokens
+
+        effective_max = self._resolve_max_tokens(max_tokens)
+        if effective_max is not None:
+            payload_dict["max_tokens"] = effective_max
 
         # Normalize format parameter to OpenAI response_format
         if format is not None:
@@ -172,6 +234,11 @@ class OpenRouterClient(LLMClient):
                 body_text = e.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
+
+            # Extract credit budget from 402 errors
+            if e.code == 402:
+                self._parse_credit_budget(body_text)
+
             logger.error(
                 "OpenRouter API error %d: %s", e.code, body_text[:500]
             )

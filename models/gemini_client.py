@@ -67,6 +67,7 @@ class GeminiClient(LLMClient):
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """
         Send a prompt to Gemini and return the response text.
@@ -103,7 +104,9 @@ class GeminiClient(LLMClient):
                 )
 
             try:
-                return self._do_request(prompt, temperature, format, timeout)
+                return self._do_request(
+                    prompt, temperature, format, timeout, max_tokens,
+                )
             except RuntimeError as e:
                 if "429" in str(e) and attempt < max_attempts - 1:
                     last_error = e
@@ -118,6 +121,7 @@ class GeminiClient(LLMClient):
         temperature: Optional[float],
         format: Optional[Union[str, Dict[str, Any]]],
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Execute a single HTTP request to Gemini."""
         url = (
@@ -138,8 +142,12 @@ class GeminiClient(LLMClient):
 
         # Build generationConfig
         gen_config: Dict[str, Any] = {}
-        if self.max_tokens is not None:
-            gen_config["maxOutputTokens"] = self.max_tokens
+        effective_max = (
+            max_tokens if max_tokens is not None
+            else self.max_tokens
+        )
+        if effective_max is not None:
+            gen_config["maxOutputTokens"] = effective_max
         if effective_temp is not None:
             gen_config["temperature"] = effective_temp
 

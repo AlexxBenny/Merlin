@@ -59,6 +59,7 @@ class HuggingFaceClient(LLMClient):
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """
         Send a prompt to Hugging Face and return the response text.

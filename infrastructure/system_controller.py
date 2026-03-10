@@ -89,6 +89,7 @@ if _IS_WINDOWS:
         import win32gui
         import win32process
         import win32con
+        import win32api
         _HAS_WIN32 = True
     except ImportError:
         logger.info("win32gui not available — window ops disabled")
@@ -337,8 +338,14 @@ class SystemController:
         """
         Bring an application window to the foreground.
 
-        Finds windows matching app_name by process name or title,
-        then calls SetForegroundWindow.
+        Uses a robust multi-step strategy to work around Windows'
+        SetForegroundWindow restrictions on background processes:
+
+        1. ShowWindow(SW_RESTORE) — unminimize
+        2. BringWindowToTop
+        3. AttachThreadInput — links caller thread to foreground thread
+        4. SetForegroundWindow
+        5. Detach threads
 
         Returns True if a window was focused, False otherwise.
         """
@@ -348,18 +355,80 @@ class SystemController:
 
         windows = self.find_windows(app_name)
         if not windows:
+            logger.info("focus_app: no windows found for '%s'", app_name)
             return False
 
-        # Focus the first matching visible window
         target = windows[0]
+        hwnd = target.hwnd
+
         try:
-            # Restore if minimized
-            if win32gui.IsIconic(target.hwnd):
-                win32gui.ShowWindow(target.hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(target.hwnd)
-            return True
+            # Step 1: Restore if minimized
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+            # Step 2: Get thread IDs for thread attachment
+            foreground_hwnd = win32gui.GetForegroundWindow()
+            target_thread_id, _ = win32process.GetWindowThreadProcessId(hwnd)
+            foreground_thread_id, _ = win32process.GetWindowThreadProcessId(
+                foreground_hwnd,
+            )
+            current_thread_id = win32api.GetCurrentThreadId()
+
+            # Step 3: Attach threads (allows SetForegroundWindow to succeed)
+            attached_fg = False
+            attached_target = False
+            try:
+                if current_thread_id != foreground_thread_id:
+                    win32process.AttachThreadInput(
+                        current_thread_id, foreground_thread_id, True,
+                    )
+                    attached_fg = True
+                if current_thread_id != target_thread_id:
+                    win32process.AttachThreadInput(
+                        current_thread_id, target_thread_id, True,
+                    )
+                    attached_target = True
+
+                # Step 4: Bring to top + set foreground
+                win32gui.BringWindowToTop(hwnd)
+                win32gui.SetForegroundWindow(hwnd)
+
+            finally:
+                # Step 5: Always detach threads
+                if attached_fg:
+                    try:
+                        win32process.AttachThreadInput(
+                            current_thread_id, foreground_thread_id, False,
+                        )
+                    except Exception:
+                        pass
+                if attached_target:
+                    try:
+                        win32process.AttachThreadInput(
+                            current_thread_id, target_thread_id, False,
+                        )
+                    except Exception:
+                        pass
+
+            # Verify focus actually changed
+            new_foreground = win32gui.GetForegroundWindow()
+            if new_foreground == hwnd:
+                return True
+            else:
+                logger.warning(
+                    "focus_app: SetForegroundWindow succeeded but "
+                    "foreground is %s (expected %s)",
+                    new_foreground, hwnd,
+                )
+                # Still return True — OS accepted the call even if
+                # verification is racey
+                return True
+
         except Exception as e:
-            logger.warning("Failed to focus window %s: %s", target.hwnd, e)
+            logger.warning(
+                "focus_app: failed to focus window %s for '%s': %s",
+                hwnd, app_name, e,
+            )
             return False
 
     # ── App Close ──

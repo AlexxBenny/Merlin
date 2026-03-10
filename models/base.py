@@ -30,6 +30,7 @@ class LLMClient(ABC):
         temperature: Optional[float] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
         timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Send a prompt and return the response text.
 
@@ -43,6 +44,8 @@ class LLMClient(ABC):
                     - None: unconstrained text output
             timeout: Optional per-call timeout in seconds.
                      If None, use the client's default timeout.
+            max_tokens: Optional per-call max output tokens override.
+                        If None, use the client's default max_tokens.
 
         Returns:
             The LLM's response as a string.
