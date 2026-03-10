@@ -268,6 +268,65 @@ class MissionOrchestrator:
             on_layer_start=_on_layer_start,
         )
 
+        # ── Recovery replanning (max 1 attempt, SOFT_FAILURE only) ──
+        soft_failures = [
+            v for v in exec_result.outcome_verdicts
+            if v.get("severity") == "soft_failure"
+        ]
+        if soft_failures:
+            logger.info(
+                "[RECOVERY] %d soft failure(s) detected — attempting replan",
+                len(soft_failures),
+            )
+            try:
+                # Fresh world snapshot (state may have changed from initial plan)
+                recovery_events = self.timeline.all_events()
+                recovery_state = WorldState.from_events(recovery_events)
+                recovery_snapshot = WorldSnapshot.build(
+                    recovery_state,
+                    recovery_events[-10:] if recovery_events else [],
+                )
+                # Full (unfiltered) world state for recovery reasoning —
+                # cross-domain failures need all context
+                recovery_ws = recovery_state.model_dump()
+
+                recovery_plan = self.cortex.compile(
+                    user_query=user_text,
+                    world_state_schema=recovery_ws,
+                    conversation=conversation,
+                    execution_failures=soft_failures,
+                )
+
+                if isinstance(recovery_plan, MissionPlan):
+                    # Plan deduplication: reject if identical to original
+                    if self._plans_equivalent(plan, recovery_plan):
+                        logger.info(
+                            "[RECOVERY] Recovery plan identical to original — skipping"
+                        )
+                    else:
+                        logger.info(
+                            "[RECOVERY] Executing recovery plan: %d nodes",
+                            len(recovery_plan.nodes),
+                        )
+                        recovery_result = self.run(recovery_plan, recovery_snapshot)
+                        # Merge: recovery results augment the original
+                        for nid in recovery_result.completed:
+                            exec_result.completed.add(nid)
+                            if nid in recovery_result.results:
+                                exec_result.results[nid] = recovery_result.results[nid]
+                        for nid in recovery_result.failed:
+                            exec_result.failed.add(nid)
+                        exec_result.recovery_explanation = (
+                            f"Recovery attempted: {len(recovery_plan.nodes)} node(s)"
+                        )
+                        plan = recovery_plan  # Use recovery plan for outcome building
+                else:
+                    logger.warning(
+                        "[RECOVERY] Recovery compile failed: %s", recovery_plan
+                    )
+            except Exception as e:
+                logger.warning("[RECOVERY] Recovery replan failed: %s", e)
+
         # ── Transition: EXECUTING → REPORTING ──
         if self._attention:
             from runtime.attention import MissionState
@@ -790,7 +849,24 @@ class MissionOrchestrator:
             visible_lists=visible_lists,
             active_domain=active_domain,
             active_entity=active_entity,
+            recovery_attempted=exec_result.recovery_explanation is not None,
         )
+
+    @staticmethod
+    def _plans_equivalent(plan_a: MissionPlan, plan_b: MissionPlan) -> bool:
+        """Check if two plans are structurally equivalent.
+
+        Compares skill names, input keys, and order.
+        NOT graph isomorphism — just a practical dedup check.
+        """
+        if len(plan_a.nodes) != len(plan_b.nodes):
+            return False
+        for na, nb in zip(plan_a.nodes, plan_b.nodes):
+            if na.skill != nb.skill:
+                return False
+            if set(na.inputs.keys()) != set(nb.inputs.keys()):
+                return False
+        return True
 
     # ─────────────────────────────────────────────────────────
     # Failure reporting

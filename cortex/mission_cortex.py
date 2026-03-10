@@ -104,6 +104,7 @@ class MissionCortex:
         world_state_schema: Dict[str, Any],
         conversation: Optional[ConversationFrame] = None,
         intent_checklist: Optional[List[Dict[str, str]]] = None,
+        execution_failures: Optional[List[Dict[str, str]]] = None,
     ) -> Union[MissionPlan, FailureIR]:
         """
         Compile user query into a MissionPlan.
@@ -128,6 +129,7 @@ class MissionCortex:
             conversation=conversation,
             temperature=None,  # default
             intent_checklist=intent_checklist,
+            execution_failures=execution_failures,
         )
 
         # Only retry on parse_error
@@ -141,6 +143,7 @@ class MissionCortex:
                 strict_json=True,
                 _retry_attempted=True,
                 intent_checklist=intent_checklist,
+                execution_failures=execution_failures,
             )
 
         # Fallback path: LLM unavailable → try deterministic compiler
@@ -411,6 +414,7 @@ User query:
         strict_json: bool = False,
         _retry_attempted: bool = False,
         intent_checklist: Optional[List[Dict[str, str]]] = None,
+        execution_failures: Optional[List[Dict[str, str]]] = None,
     ) -> Union[MissionPlan, FailureIR]:
         """
         Single compilation attempt. Never raises. Never returns None.
@@ -446,7 +450,12 @@ User query:
         intent_section = self._build_intent_checklist_section(intent_checklist)
 
         # Build session context section (if SessionManager available)
-        session_section = self._build_session_context_section()
+        session_section = self._build_session_context_section(
+            world_state_schema=world_state_schema,
+        )
+
+        # Build execution failures section for recovery replanning
+        failure_section = self._build_failure_context_section(execution_failures)
 
         prompt = self._build_prompt(
             user_query=user_query,
@@ -455,6 +464,7 @@ User query:
             context_section=context_section,
             intent_checklist_section=intent_section,
             session_context_section=session_section,
+            failure_context_section=failure_section,
         )
 
         if strict_json:
@@ -670,19 +680,36 @@ User query:
         )
         return "\n".join(lines)
 
-    def _build_session_context_section(self) -> str:
+    def _build_session_context_section(
+        self,
+        world_state_schema: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Build a session context section for the compiler prompt.
 
         This is a SEPARATE prompt section — not WorldState.
         Surfaces open apps, capabilities, and active tasks
         to the LLM so it can plan interaction-aware missions.
 
+        When world_state_schema is provided (as a WorldState object),
+        SessionManager defers to it for running/focused status.
+
         Returns empty string if no session manager or no sessions.
         """
         if self._session_manager is None:
             return ""
 
-        context = self._session_manager.build_session_context()
+        # Reconstruct WorldState from schema for snapshot-based deferral
+        world_snapshot = None
+        if world_state_schema is not None:
+            try:
+                from world.state import WorldState
+                world_snapshot = WorldState(**world_state_schema)
+            except Exception:
+                pass  # Fallback: no snapshot deferral
+
+        context = self._session_manager.build_session_context(
+            world_snapshot=world_snapshot,
+        )
         if not context:
             return ""
 
@@ -696,6 +723,46 @@ User query:
         )
         return "\n".join(lines)
 
+    def _build_failure_context_section(
+        self,
+        execution_failures: Optional[List[Dict[str, str]]],
+    ) -> str:
+        """Build structured failure context for recovery replanning.
+
+        Renders execution failures as a SEPARATE prompt section.
+        This preserves semantic separation between:
+          - user intent (the query)
+          - system state (world state)
+          - execution results (failures)
+
+        Returns empty string if no failures.
+        """
+        if not execution_failures:
+            return ""
+
+        lines = [
+            "PREVIOUS EXECUTION FAILURES (recovery context):",
+            "The following actions were attempted but did NOT achieve "
+            "the user's goal:",
+        ]
+        for f in execution_failures:
+            skill = f.get("skill", "unknown")
+            status = f.get("status", "unknown")
+            reason = f.get("reason", "")
+            entry = f"- {skill} → {status}"
+            if reason:
+                entry += f" (reason: {reason})"
+            lines.append(entry)
+
+        lines.append("")
+        lines.append(
+            "Generate a RECOVERY plan that achieves the user's original goal. "
+            "Do NOT repeat actions that already succeeded. "
+            "Consider prerequisite steps (e.g. focusing an app before "
+            "interacting with it)."
+        )
+        return "\n".join(lines)
+
     def _build_prompt(
         self,
         user_query: str,
@@ -704,6 +771,7 @@ User query:
         context_section: str = "",
         intent_checklist_section: str = "",
         session_context_section: str = "",
+        failure_context_section: str = "",
     ) -> str:
         """
         Construct a STRICT prompt.
@@ -777,6 +845,7 @@ Available Skills:
 {anchor_section}
 {context_section}
 {session_context_section}
+{failure_context_section}
 {intent_checklist_section}
 MissionPlan JSON Schema:
 {{

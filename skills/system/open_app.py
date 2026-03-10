@@ -41,6 +41,7 @@ class OpenAppSkill(Skill):
         entity_params=["app_name"],
         optional_inputs={
             "args": "cli_arguments",
+            "app_id": "canonical_entity_id",  # Injected by EntityResolver (Phase 9C)
         },
         outputs={
             "opened": "application_name",

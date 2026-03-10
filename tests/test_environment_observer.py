@@ -144,11 +144,16 @@ class TestObserverSessionIntegration:
 
     def test_cleanup_uses_observer(self):
         """SessionManager.cleanup_stale_sessions uses observer.is_app_running."""
-        from infrastructure.session import SessionManager
+        from infrastructure.session import SessionManager, LAUNCH_GRACE_SECONDS
+        import time
 
         mgr = SessionManager()
         mgr.create_app_session(app_name="notepad", pid=1000)
         mgr.create_app_session(app_name="chrome", pid=2000)
+
+        # Backdate sessions so they are past the grace period
+        for session in mgr._sessions.values():
+            session.created_at = time.time() - LAUNCH_GRACE_SECONDS - 1
 
         # Mock observer: notepad is running, chrome is not
         ctrl = MagicMock()

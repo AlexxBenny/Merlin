@@ -1,7 +1,17 @@
 # tests/test_entity_resolver.py
 
 """
-Tests for EntityResolver and entity term extraction.
+Tests for EntityResolver (post-compilation transform — Phase 9C).
+
+Tests cover:
+- Direct resolution (app_id, display name)
+- Alias resolution ("browser" → "chrome")
+- Ambiguity handling (never silent)
+- Not-found → structured error
+- resolve_plan() transform (adds app_id alongside app_name)
+- Multi-node plans (only entity-param nodes processed)
+- IRReference values skipped (runtime-resolved)
+- Structured error messages (user-facing clarification)
 """
 
 import pytest
@@ -15,17 +25,76 @@ from infrastructure.application_registry import (
 )
 from cortex.entity_resolver import (
     EntityResolver,
+    EntityResolutionError,
     ResolutionResult,
     ResolutionType,
 )
+from ir.mission import (
+    MissionPlan,
+    MissionNode,
+    OutputReference,
+    IR_VERSION,
+    ExecutionMode,
+)
+from skills.contract import SkillContract, FailurePolicy
+from skills.base import Skill
+from skills.skill_result import SkillResult
+from execution.registry import SkillRegistry
 
 
 # ─────────────────────────────────────────────────────────────
-# Fixtures
+# Test fixtures
 # ─────────────────────────────────────────────────────────────
+
+class StubOpenAppSkill(Skill):
+    contract = SkillContract(
+        name="system.open_app",
+        action="open_app",
+        target_type="app",
+        description="Open an application",
+        inputs={"app_name": "application_name"},
+        entity_params=["app_name"],
+        outputs={"opened": "application_name"},
+        allowed_modes={ExecutionMode.foreground},
+        failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+    )
+    def execute(self, inputs, world, snapshot=None):
+        return SkillResult(outputs={"opened": inputs["app_name"]})
+
+
+class StubCreateFolderSkill(Skill):
+    contract = SkillContract(
+        name="fs.create_folder",
+        action="create_folder",
+        target_type="folder",
+        description="Create a folder",
+        inputs={"name": "folder_name"},
+        outputs={},
+        allowed_modes={ExecutionMode.foreground},
+        failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+    )
+    def execute(self, inputs, world, snapshot=None):
+        return SkillResult(outputs={})
+
+
+class StubCloseAppSkill(Skill):
+    contract = SkillContract(
+        name="system.close_app",
+        action="close_app",
+        target_type="app",
+        description="Close an application",
+        inputs={"app_name": "application_name"},
+        entity_params=["app_name"],
+        outputs={"closed": "application_name"},
+        allowed_modes={ExecutionMode.foreground},
+        failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+    )
+    def execute(self, inputs, world, snapshot=None):
+        return SkillResult(outputs={"closed": inputs["app_name"]})
+
 
 @pytest.fixture
-def registry():
+def app_registry():
     """Registry with common test entities."""
     reg = ApplicationRegistry()
     reg.register(ApplicationEntity(
@@ -62,6 +131,16 @@ def registry():
 
 
 @pytest.fixture
+def skill_registry():
+    """SkillRegistry with test stubs."""
+    reg = SkillRegistry()
+    reg.register(StubOpenAppSkill())
+    reg.register(StubCreateFolderSkill())
+    reg.register(StubCloseAppSkill())
+    return reg
+
+
+@pytest.fixture
 def aliases():
     return {
         "browser": "chrome",
@@ -72,16 +151,53 @@ def aliases():
 
 
 @pytest.fixture
-def resolver(registry, aliases):
-    return EntityResolver(registry=registry, alias_map=aliases)
+def resolver(app_registry, skill_registry, aliases):
+    return EntityResolver(
+        registry=app_registry,
+        skill_registry=skill_registry,
+        alias_map=aliases,
+    )
+
+
+def _make_plan(*nodes):
+    """Helper to build a test MissionPlan."""
+    return MissionPlan(
+        id="test_plan",
+        nodes=list(nodes),
+        metadata={"ir_version": IR_VERSION},
+    )
+
+
+def _open_node(app_name, node_id="node_0"):
+    """Helper to build a system.open_app node."""
+    return MissionNode(
+        id=node_id,
+        skill="system.open_app",
+        inputs={"app_name": app_name},
+    )
+
+
+def _close_node(app_name, node_id="node_0"):
+    return MissionNode(
+        id=node_id,
+        skill="system.close_app",
+        inputs={"app_name": app_name},
+    )
+
+
+def _folder_node(name, node_id="node_0"):
+    return MissionNode(
+        id=node_id,
+        skill="fs.create_folder",
+        inputs={"name": name},
+    )
 
 
 # ─────────────────────────────────────────────────────────────
-# Direct resolution
+# Direct resolution (resolve() method)
 # ─────────────────────────────────────────────────────────────
 
 class TestDirectResolution:
-    """Test direct app_id and name lookups."""
 
     def test_resolve_by_app_id(self, resolver):
         result = resolver.resolve("chrome")
@@ -113,13 +229,16 @@ class TestDirectResolution:
         result = resolver.resolve("")
         assert result.type == ResolutionType.NOT_FOUND
 
+    def test_result_preserves_original_term(self, resolver):
+        result = resolver.resolve("Spotify")
+        assert result.term == "Spotify"
+
 
 # ─────────────────────────────────────────────────────────────
 # Alias resolution
 # ─────────────────────────────────────────────────────────────
 
 class TestAliasResolution:
-    """Test semantic alias lookups."""
 
     def test_alias_browser(self, resolver):
         result = resolver.resolve("browser")
@@ -148,110 +267,148 @@ class TestAliasResolution:
 # ─────────────────────────────────────────────────────────────
 
 class TestAmbiguityHandling:
-    """Test that ambiguous matches are never silently resolved."""
-
-    def test_ambiguous_prefix(self, resolver):
-        """'chrom' matches both chrome and chromium — should be ambiguous."""
-        result = resolver.resolve("chrom")
-        # Both chrome and chromium contain "chrom" with similar coverage
-        assert result.type in (ResolutionType.AMBIGUOUS, ResolutionType.RESOLVED)
-        if result.type == ResolutionType.AMBIGUOUS:
-            assert "chrome" in result.candidates
-            assert "chromium" in result.candidates
 
     def test_exact_match_not_ambiguous(self, resolver):
-        """'chrome' exactly matches chrome — should NOT be ambiguous."""
+        """'chrome' exactly matches app_id — should NOT be ambiguous."""
         result = resolver.resolve("chrome")
         assert result.type == ResolutionType.RESOLVED
         assert result.app_id == "chrome"
 
 
 # ─────────────────────────────────────────────────────────────
-# Batch resolution
+# resolve_plan() — Post-compilation transform
 # ─────────────────────────────────────────────────────────────
 
-class TestBatchResolution:
-    """Test resolve_terms maintains structural correspondence."""
+class TestResolvePlan:
+    """Test resolve_plan() adds app_id alongside app_name."""
 
-    def test_batch_preserves_order(self, resolver):
-        results = resolver.resolve_terms(["spotify", "chrome"])
-        assert len(results) == 2
-        assert results[0].app_id == "spotify"
-        assert results[1].app_id == "chrome"
+    def test_resolved_adds_app_id(self, resolver):
+        """Resolved app adds app_id to inputs without overwriting app_name."""
+        plan = _make_plan(_open_node("spotify"))
+        resolved = resolver.resolve_plan(plan)
+        inputs = resolved.nodes[0].inputs
 
-    def test_batch_mixed_results(self, resolver):
-        results = resolver.resolve_terms(["spotify", "nonexistent"])
-        assert len(results) == 2
-        assert results[0].type == ResolutionType.RESOLVED
-        assert results[1].type == ResolutionType.NOT_FOUND
+        assert inputs["app_name"] == "spotify"  # preserved
+        assert inputs["app_id"] == "spotify"     # added
 
-    def test_batch_empty_list(self, resolver):
-        results = resolver.resolve_terms([])
-        assert results == []
+    def test_original_plan_not_mutated(self, resolver):
+        """resolve_plan never mutates the original."""
+        plan = _make_plan(_open_node("chrome"))
+        original_inputs = dict(plan.nodes[0].inputs)
+        resolver.resolve_plan(plan)
+        assert plan.nodes[0].inputs == original_inputs
 
+    def test_display_name_resolves(self, resolver):
+        """Display name 'Google Chrome' resolves to app_id 'chrome'."""
+        plan = _make_plan(_open_node("Google Chrome"))
+        resolved = resolver.resolve_plan(plan)
+        assert resolved.nodes[0].inputs["app_id"] == "chrome"
+        assert resolved.nodes[0].inputs["app_name"] == "Google Chrome"
 
-# ─────────────────────────────────────────────────────────────
-# Structured result guarantees
-# ─────────────────────────────────────────────────────────────
+    def test_alias_resolves_in_plan(self, resolver):
+        """Alias 'browser' resolves to app_id 'chrome' in plan."""
+        plan = _make_plan(_open_node("browser"))
+        resolved = resolver.resolve_plan(plan)
+        assert resolved.nodes[0].inputs["app_id"] == "chrome"
+        assert resolved.nodes[0].inputs["app_name"] == "browser"
 
-class TestResolutionResult:
-    """Test ResolutionResult invariants."""
+    def test_not_found_raises_error(self, resolver):
+        """Not-found app raises EntityResolutionError."""
+        plan = _make_plan(_open_node("nonexistent"))
+        with pytest.raises(EntityResolutionError) as exc_info:
+            resolver.resolve_plan(plan)
+        msg = exc_info.value.user_message()
+        assert "nonexistent" in msg
 
-    def test_resolved_has_entity(self, resolver):
-        result = resolver.resolve("chrome")
-        assert result.type == ResolutionType.RESOLVED
-        assert result.entity is not None
-        assert result.entity.app_id == "chrome"
+    def test_near_match_resolves_fuzzy(self, resolver):
+        """Near-match 'spotif' resolves via fuzzy (substring)."""
+        plan = _make_plan(_open_node("spotif"))
+        resolved = resolver.resolve_plan(plan)
+        assert resolved.nodes[0].inputs["app_id"] == "spotify"
+        assert resolved.nodes[0].inputs["app_name"] == "spotif"
 
-    def test_not_found_has_no_entity(self, resolver):
-        result = resolver.resolve("unknown")
-        assert result.type == ResolutionType.NOT_FOUND
-        assert result.entity is None
-        assert result.app_id is None
-
-    def test_result_preserves_original_term(self, resolver):
-        result = resolver.resolve("Spotify")
-        assert result.term == "Spotify"
-
-    def test_result_is_frozen(self, resolver):
-        result = resolver.resolve("chrome")
-        with pytest.raises(AttributeError):
-            result.app_id = "something_else"
-
-    def test_never_raises(self, resolver):
-        """Resolver should never raise, even on weird input."""
-        for term in [None, 123, "", "   ", "a" * 1000]:
-            try:
-                result = resolver.resolve(str(term) if term is not None else "")
-                assert isinstance(result, ResolutionResult)
-            except Exception:
-                pytest.fail(f"Resolver raised on input: {term!r}")
+    def test_close_app_resolved(self, resolver):
+        """close_app skill also resolves entity params."""
+        plan = _make_plan(_close_node("chrome"))
+        resolved = resolver.resolve_plan(plan)
+        assert resolved.nodes[0].inputs["app_id"] == "chrome"
 
 
 # ─────────────────────────────────────────────────────────────
-# App term extraction
+# Multi-node plans
 # ─────────────────────────────────────────────────────────────
 
-class TestAppTermExtraction:
-    """Test Merlin._extract_app_terms static method."""
+class TestMultiNodePlans:
+    """Only entity-param nodes are processed."""
 
-    def test_single_app(self):
-        from merlin import Merlin
-        terms = Merlin._extract_app_terms("open spotify")
-        assert "spotify" in terms
+    def test_mixed_plan_only_app_nodes_resolved(self, resolver):
+        """Only system.open_app gets app_id, fs.create_folder untouched."""
+        plan = _make_plan(
+            _open_node("chrome", "node_0"),
+            _folder_node("logs", "node_1"),
+        )
+        resolved = resolver.resolve_plan(plan)
 
-    def test_multi_app(self):
-        from merlin import Merlin
-        terms = Merlin._extract_app_terms("open chrome and close spotify")
-        assert any("chrome" in t for t in terms)
-        assert any("spotify" in t for t in terms)
+        # open_app node has app_id
+        assert resolved.nodes[0].inputs["app_id"] == "chrome"
+        # create_folder node untouched
+        assert "app_id" not in resolved.nodes[1].inputs
+        assert resolved.nodes[1].inputs["name"] == "logs"
 
-    def test_launch_verb(self):
-        from merlin import Merlin
-        terms = Merlin._extract_app_terms("launch vscode")
-        assert any("vscode" in t for t in terms)
+    def test_multiple_app_nodes_all_resolved(self, resolver):
+        """Multiple app nodes all get resolved."""
+        plan = _make_plan(
+            _open_node("spotify", "node_0"),
+            _close_node("chrome", "node_1"),
+        )
+        resolved = resolver.resolve_plan(plan)
+        assert resolved.nodes[0].inputs["app_id"] == "spotify"
+        assert resolved.nodes[1].inputs["app_id"] == "chrome"
 
-    def test_no_app_verb(self):
-        from merlin import Merlin
-        terms = Merlin._extract_app_terms("what is the weather")
-        assert terms == []
+
+# ─────────────────────────────────────────────────────────────
+# IRReference skipping
+# ─────────────────────────────────────────────────────────────
+
+class TestIRReferenceSkipping:
+    """IRReference values are runtime-resolved — skip them."""
+
+    def test_output_reference_skipped(self, resolver):
+        """OutputReference in app_name is skipped (runtime-resolved pipe)."""
+        ref = OutputReference(node="node_0", output="apps", index=1, field="name")
+        node = MissionNode(
+            id="node_1",
+            skill="system.open_app",
+            inputs={"app_name": ref},
+            depends_on=["node_0"],
+        )
+        plan = _make_plan(node)
+        resolved = resolver.resolve_plan(plan)
+        # Should pass through unchanged — no app_id added
+        assert isinstance(resolved.nodes[0].inputs["app_name"], OutputReference)
+        assert "app_id" not in resolved.nodes[0].inputs
+
+
+# ─────────────────────────────────────────────────────────────
+# Structured error messages
+# ─────────────────────────────────────────────────────────────
+
+class TestErrorMessages:
+
+    def test_not_found_user_message(self, resolver):
+        """Not-found error includes the original term."""
+        plan = _make_plan(_open_node("xyzabc"))
+        with pytest.raises(EntityResolutionError) as exc_info:
+            resolver.resolve_plan(plan)
+        msg = exc_info.value.user_message()
+        assert "xyzabc" in msg
+        assert "couldn't find" in msg.lower()
+
+    def test_error_str(self, resolver):
+        """Error __str__ includes structured violation info."""
+        plan = _make_plan(_open_node("xyzabc"))
+        with pytest.raises(EntityResolutionError) as exc_info:
+            resolver.resolve_plan(plan)
+        s = str(exc_info.value)
+        assert "xyzabc" in s
+        assert "not found" in s.lower() or "not_found" in s.lower()

@@ -50,3 +50,6 @@ class MissionOutcome(BaseModel):
     # What's now "active" in conversation context
     active_entity: Optional[str] = None
     active_domain: Optional[str] = None
+
+    # Recovery replanning metadata
+    recovery_attempted: bool = False

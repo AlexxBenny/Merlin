@@ -313,6 +313,12 @@ class TestSessionCleanup:
         mgr.create_app_session(app_name="notepad", pid=1234)
         mgr.create_app_session(app_name="chrome", pid=5678)
 
+        # Backdate sessions past the grace period
+        import time
+        from infrastructure.session import LAUNCH_GRACE_SECONDS
+        for session in mgr._sessions.values():
+            session.created_at = time.time() - LAUNCH_GRACE_SECONDS - 1
+
         # Mock observer: notepad is running, chrome is not
         observer = MagicMock()
         observer.is_app_running.side_effect = lambda name: name.lower() == "notepad"

@@ -96,7 +96,12 @@ class ExecutionResult:
     MissionOutcome builders use .node_statuses for typed failure states.
     """
 
-    __slots__ = ("results", "metadata", "node_statuses", "completed", "skipped", "failed")
+    __slots__ = (
+        "results", "metadata", "node_statuses",
+        "completed", "skipped", "failed",
+        "meta_verdicts", "outcome_verdicts",
+        "recovery_explanation",
+    )
 
     def __init__(self):
         self.results: Dict[str, Dict[str, Any]] = {}
@@ -105,6 +110,9 @@ class ExecutionResult:
         self.completed: Set[str] = set()
         self.skipped: Set[str] = set()
         self.failed: Set[str] = set()  # includes TIMED_OUT
+        self.meta_verdicts: list = []   # FailureVerdict objects from MetaCognitionEngine
+        self.outcome_verdicts: list = [] # OutcomeAnalyzer verdicts (soft/hard failures)
+        self.recovery_explanation: str | None = None  # Explanation from recovery replan
 
     def record(
         self,

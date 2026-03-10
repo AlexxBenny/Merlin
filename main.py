@@ -182,7 +182,12 @@ def load_skills(
 # Event source construction from config
 # ─────────────────────────────────────────────────────────────
 
-def build_event_sources(execution_config: dict, system_controller=None) -> list:
+def build_event_sources(
+    execution_config: dict,
+    system_controller=None,
+    timeline=None,
+    app_registry=None,
+) -> list:
     """
     Construct enabled event sources from execution.yaml.
     Sources that fail to construct are silently skipped.
@@ -201,9 +206,12 @@ def build_event_sources(execution_config: dict, system_controller=None) -> list:
                     "resource_poll_interval": sys_cfg.get("resource_poll_interval", 2.0),
                     "window_poll_interval": sys_cfg.get("window_poll_interval", 0.5),
                     "idle_poll_interval": sys_cfg.get("idle_poll_interval", 5.0),
+                    "process_poll_interval": sys_cfg.get("process_poll_interval", 5.0),
                     "refresh_interval": sys_cfg.get("refresh_interval", 30.0),
                 },
                 system_controller=system_controller,
+                timeline=timeline,
+                app_registry=app_registry,
             ))
             logger.info("SystemSource enabled")
         except Exception as e:
@@ -384,7 +392,10 @@ def main(args=None):
         alias_map=_alias_map,
     )
 
-    session_manager = SessionManager(capability_registry=capability_registry)
+    session_manager = SessionManager(
+        capability_registry=capability_registry,
+        timeline=timeline,
+    )
     logger.info("SessionManager initialized with %d known app types",
                 len(capability_registry.known_apps))
 
@@ -488,7 +499,12 @@ def main(args=None):
         notification_policy = NotificationPolicy.default()
 
     # ── Event sources (from config) ──
-    event_sources = build_event_sources(execution_config, system_controller=system_controller)
+    event_sources = build_event_sources(
+        execution_config,
+        system_controller=system_controller,
+        timeline=timeline,
+        app_registry=app_registry,
+    )
 
     # ── Memory ──
     memory_store = ListMemoryStore()

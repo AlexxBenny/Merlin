@@ -233,6 +233,16 @@ class TaskStack:
 
 
 # ─────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────
+
+# Grace period after session creation — skip cleanup during this window.
+# Many apps (Spotify, Steam, Electron apps) take 1-5s to spawn a visible
+# window. Cleaning up before that window kills sessions immediately.
+LAUNCH_GRACE_SECONDS = 5.0
+
+
+# ─────────────────────────────────────────────────────────────
 # SessionManager — central session registry
 # ─────────────────────────────────────────────────────────────
 
@@ -247,20 +257,27 @@ class SessionManager:
     - Provide session context summary for the compiler
     - TTL cleanup (validate against observer when available)
 
+    Sessions track MERLIN's INTENT-level state (task stack, unsaved
+    changes, automation handles). Observable facts (running, focused)
+    are authoritative in WorldState.tracked_apps, not here.
+
     Thread-safe. Called from executor threads and main thread.
     """
 
-    def __init__(self, capability_registry=None):
+    def __init__(self, capability_registry=None, timeline=None):
         """
         Args:
             capability_registry: Optional AppCapabilityRegistry for
                                  enriching session context with capabilities.
+            timeline: Optional WorldTimeline — if provided, cleanup
+                      emits app_closed events so WorldState stays synced.
         """
         self._sessions: Dict[str, Session] = {}
         self._lock = threading.Lock()
         self._session_stack = SessionStack()
         self._task_stack = TaskStack()
         self._capability_registry = capability_registry
+        self._timeline = timeline
         logger.info("SessionManager initialized")
 
     # ── Session CRUD ──────────────────────────────────────────
@@ -382,8 +399,14 @@ class SessionManager:
     def cleanup_stale_sessions(self, observer=None) -> List[str]:
         """Remove sessions for apps that are no longer running.
 
+        Respects LAUNCH_GRACE_SECONDS — newly-created sessions are
+        immune from cleanup to allow apps time to spawn windows.
+
+        If a timeline is available, emits app_closed events so
+        WorldState.tracked_apps stays synchronized.
+
         Args:
-            observer: EnvironmentObserver instance (Phase 2).
+            observer: EnvironmentObserver instance.
                       If None, cleanup is skipped.
 
         Returns:
@@ -392,11 +415,20 @@ class SessionManager:
         if observer is None:
             return []
 
+        now = time.time()
         closed_ids: List[str] = []
         with self._lock:
             stale = []
             for sid, session in self._sessions.items():
                 if isinstance(session, AppSession):
+                    # Grace period: skip if session is younger than threshold
+                    age = now - session.created_at
+                    if age < LAUNCH_GRACE_SECONDS:
+                        logger.debug(
+                            "Session %s (app=%s) in grace period (%.1fs old), skipping cleanup",
+                            sid, session.app_name, age,
+                        )
+                        continue
                     if not observer.is_app_running(session.app_name):
                         stale.append(sid)
 
@@ -404,30 +436,73 @@ class SessionManager:
                 session = self._sessions.pop(sid)
                 self._session_stack.remove(sid)
                 closed_ids.append(sid)
+
+                app_name = getattr(session, "app_name", "?")
+                pid = getattr(session, "pid", None)
+
+                # Emit app_closed to timeline so WorldState stays synced
+                if self._timeline is not None:
+                    self._timeline.emit(
+                        "session_cleanup", "app_closed",
+                        {"app": app_name, "pid": pid},
+                    )
+
                 logger.info(
                     "Stale session cleaned up: %s (app=%s)",
-                    sid, getattr(session, "app_name", "?"),
+                    sid, app_name,
                 )
 
         return closed_ids
 
     # ── Context for compiler ──────────────────────────────────
 
-    def build_session_context(self) -> Dict[str, Any]:
+    def build_session_context(self, world_snapshot=None) -> Dict[str, Any]:
         """Build a session summary for the LLM compiler prompt.
 
         This is a separate prompt section — NOT WorldState.
         Returns a clean dict suitable for JSON serialization
         into the compiler prompt.
+
+        Args:
+            world_snapshot: Optional WorldState. When provided,
+                            running/focused status is read from
+                            WorldState.tracked_apps (authoritative)
+                            instead of SessionManager's internal state.
+                            Intent-level data (capabilities, unsaved
+                            changes, task stack) still comes from here.
         """
+        # Build app-key lookup from WorldState snapshot if available
+        ws_apps = {}
+        if world_snapshot is not None:
+            try:
+                ws_apps = world_snapshot.system.session.tracked_apps
+            except AttributeError:
+                pass
+
         with self._lock:
             app_sessions = []
             for s in self._sessions.values():
                 if isinstance(s, AppSession):
+                    app_key = s.app_name.lower()
+                    ws_entry = ws_apps.get(app_key)
+
+                    # Observable facts: defer to WorldState if available
+                    if ws_entry is not None:
+                        is_focused = ws_entry.focused
+                        is_running = ws_entry.running
+                    else:
+                        is_focused = s.is_focused
+                        is_running = True  # session exists → assumed running
+
+                    # Skip sessions WorldState knows are not running
+                    if not is_running:
+                        continue
+
                     entry: Dict[str, Any] = {
                         "session_id": s.id,
                         "app_name": s.app_name,
-                        "is_focused": s.is_focused,
+                        "is_focused": is_focused,
+                        # Intent-level (only SessionManager knows these)
                         "has_unsaved_changes": s.has_unsaved_changes,
                     }
                     if s.window_title:

@@ -1,7 +1,8 @@
 # world/state.py
 
+import time as _time
 from typing import Dict, Any, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from world.timeline import WorldEvent
 
@@ -48,13 +49,43 @@ class HardwareState(BaseModel):
     nightlight_enabled: Optional[bool] = None
 
 
+class AppState(BaseModel):
+    """Runtime state for a tracked application.
+
+    Authoritative per-app state, updated by perception and skill events.
+    Apps are keyed by canonical app_id (lowercase, e.g. "spotify").
+
+    Lifecycle:  app_launched → running=True
+                app_heartbeat → last_seen updated
+                process_stopped / app_closed → running=False
+    """
+    app_id: str
+    pid: Optional[int] = None
+    process_name: Optional[str] = None
+    running: bool = True
+    visible: bool = False
+    focused: bool = False
+    launched_by_merlin: bool = True
+    launch_time: float = Field(default_factory=_time.time)
+    last_seen: float = Field(default_factory=_time.time)
+
+
 class SessionState(BaseModel):
-    """User session — foreground app, idle, open apps."""
+    """User session — foreground app, idle, tracked apps.
+
+    tracked_apps is the authoritative app registry.
+    open_apps is a computed view: [app_id for app in tracked_apps if running].
+    """
     foreground_app: Optional[str] = None
     foreground_window: Optional[str] = None
     idle_seconds: Optional[float] = None
-    open_apps: List[str] = Field(default_factory=list)
-    # Future: open_windows: List[WindowInfo]
+    tracked_apps: Dict[str, AppState] = Field(default_factory=dict)
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def open_apps(self) -> List[str]:
+        """Derived view: app_ids of currently running tracked apps."""
+        return [a.app_id for a in self.tracked_apps.values() if a.running]
 
 
 class SystemState(BaseModel):
@@ -212,10 +243,20 @@ class WorldState(BaseModel):
 
             # ── System: Session ──
             elif t == "foreground_window_changed":
-                state.active_app = p.get("app")
+                new_app = p.get("app")
+                state.active_app = new_app
                 state.active_window = p.get("window")
-                state.system.session.foreground_app = p.get("app")
+                state.system.session.foreground_app = new_app
                 state.system.session.foreground_window = p.get("window")
+                # Update focus and visibility flags on tracked apps
+                for a in state.system.session.tracked_apps.values():
+                    is_fg = (
+                        new_app is not None
+                        and new_app.lower() in (a.app_id, a.process_name or "")
+                    )
+                    a.focused = is_fg
+                    if is_fg:
+                        a.visible = True
 
             elif t == "idle_detected":
                 state.system.session.idle_seconds = p.get("seconds")
@@ -223,16 +264,66 @@ class WorldState(BaseModel):
             elif t == "idle_ended":
                 state.system.session.idle_seconds = 0.0
 
-            # ── System: App lifecycle (actuation tracking) ──
+            # ── System: App lifecycle (idempotent) ──
             elif t == "app_launched":
                 app = p.get("app")
-                if app and app not in state.system.session.open_apps:
-                    state.system.session.open_apps.append(app)
+                pid = p.get("pid")
+                if app:
+                    key = app.lower()
+                    existing = state.system.session.tracked_apps.get(key)
+                    if existing and existing.pid == pid:
+                        # Idempotent: same PID already tracked → heartbeat
+                        existing.last_seen = event.timestamp
+                        existing.running = True
+                    else:
+                        state.system.session.tracked_apps[key] = AppState(
+                            app_id=key,
+                            pid=pid,
+                            process_name=p.get("process_name"),
+                            running=True,
+                            visible=True,
+                            focused=False,
+                            launched_by_merlin=True,
+                            launch_time=event.timestamp,
+                            last_seen=event.timestamp,
+                        )
 
             elif t == "app_closed":
                 app = p.get("app")
-                if app and app in state.system.session.open_apps:
-                    state.system.session.open_apps.remove(app)
+                if app:
+                    key = app.lower()
+                    tracked = state.system.session.tracked_apps.get(key)
+                    if tracked:
+                        tracked.running = False
+                        tracked.focused = False
+
+            elif t == "process_stopped":
+                # Perception-driven: process disappeared.
+                # ONLY close if the stopped PID matches the current PID.
+                # Prevents ghost closures when launcher PID exits
+                # after child has already taken over via heartbeat.
+                pid = p.get("pid")
+                app = p.get("app")
+                if app:
+                    key = app.lower()
+                    tracked = state.system.session.tracked_apps.get(key)
+                    if tracked and tracked.pid == pid:
+                        tracked.running = False
+                        tracked.focused = False
+                    # If pid != current pid, ignore (child took over)
+
+            elif t == "app_heartbeat":
+                app = p.get("app")
+                pid = p.get("pid")
+                if app:
+                    key = app.lower()
+                    tracked = state.system.session.tracked_apps.get(key)
+                    if tracked:
+                        tracked.last_seen = event.timestamp
+                        tracked.running = True
+                        if pid and tracked.pid != pid:
+                            # Process replacement (child took over)
+                            tracked.pid = pid
 
             # ── Time ──
             elif t == "time_tick":

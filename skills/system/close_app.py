@@ -36,6 +36,7 @@ class CloseAppSkill(Skill):
         requires_focus=True,
         inputs={"app_name": "application_name"},
         entity_params=["app_name"],
+        optional_inputs={"app_id": "canonical_entity_id"},  # Injected by EntityResolver
         outputs={"closed": "application_name"},
         allowed_modes={ExecutionMode.foreground, ExecutionMode.side_effect},
         failure_policy={

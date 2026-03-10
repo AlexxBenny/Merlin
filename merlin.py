@@ -640,6 +640,23 @@ class Merlin:
             try:
                 resolver = ParameterResolver(self.reflex_engine.registry)
                 resolved_plan = resolver.resolve_plan(temp_plan)
+
+                # ── Phase 9C: Entity resolution (reflex path) ──
+                entity_resolver = getattr(
+                    self.orchestrator, '_entity_resolver', None,
+                )
+                if entity_resolver is not None:
+                    from cortex.entity_resolver import EntityResolutionError
+                    try:
+                        resolved_plan = entity_resolver.resolve_plan(
+                            resolved_plan,
+                        )
+                    except EntityResolutionError as ere:
+                        response = ere.user_message()
+                        self.output_channel.send(response)
+                        self.conversation.append_turn("assistant", response)
+                        return response
+
                 # Update match params with resolved values
                 resolved_inputs = resolved_plan.nodes[0].inputs
                 from runtime.reflex_engine import ReflexMatch

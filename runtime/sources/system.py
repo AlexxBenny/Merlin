@@ -22,11 +22,12 @@ Design rules:
 """
 
 import time
+import random
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from runtime.sources.base import EventSource
-from world.timeline import WorldEvent
+from world.timeline import WorldEvent, WorldTimeline
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,13 @@ except ImportError:
     _HAS_PYGETWINDOW = False
     logger.warning("pygetwindow not installed — window tracking disabled")
 
+try:
+    import win32gui
+    import win32process
+    _HAS_WIN32 = True
+except ImportError:
+    _HAS_WIN32 = False
+    logger.info("win32gui/win32process not installed — process-based window ID disabled")
 
 # ─────────────────────────────────────────────────────────────
 # Default thresholds (overridden by config/execution.yaml)
@@ -65,8 +73,12 @@ DEFAULT_INTERVALS = {
     "resource_poll_interval": 2.0,
     "window_poll_interval": 0.5,
     "idle_poll_interval": 5.0,
+    "process_poll_interval": 5.0,    # App lifecycle validation
     "refresh_interval": 30.0,       # Full state refresh (absolute values)
 }
+
+# Grace period: don't declare a process dead within this window after launch
+PROCESS_LAUNCH_GRACE_SECONDS = 5.0
 
 
 class SystemSource(EventSource):
@@ -82,6 +94,8 @@ class SystemSource(EventSource):
         thresholds: Optional[Dict[str, float]] = None,
         intervals: Optional[Dict[str, float]] = None,
         system_controller: Optional[Any] = None,
+        timeline: Optional[WorldTimeline] = None,
+        app_registry: Optional[Any] = None,
     ):
         t = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
         i = {**DEFAULT_INTERVALS, **(intervals or {})}
@@ -100,12 +114,14 @@ class SystemSource(EventSource):
         self._resource_interval = i["resource_poll_interval"]
         self._window_interval = i["window_poll_interval"]
         self._idle_interval = i["idle_poll_interval"]
+        self._process_interval = i["process_poll_interval"]
         self._refresh_interval = i["refresh_interval"]
 
         # Last poll timestamps
         self._last_resource_poll = 0.0
         self._last_window_poll = 0.0
         self._last_idle_poll = 0.0
+        self._last_process_poll = 0.0
         self._last_refresh_poll = 0.0
 
         # Previous state (for diffing)
@@ -117,8 +133,20 @@ class SystemSource(EventSource):
         self._fg_app: Optional[str] = None
         self._is_idle: bool = False
 
-        # Infrastructure: hardware reads for bootstrap
+        # Process tracking state
+        # Populated from WorldState snapshot (O(active_apps), not O(events)).
+        # Dict: app_key -> {pid, launch_time}
+        self._tracked_pids: Dict[str, Dict[str, Any]] = {}
+
+        # Canonical process name cache: app_id -> [name1, name2, ...]
+        # Built once, avoids O(entities) lookup on every poll tick
+        self._canonical_names_cache: Dict[str, List[str]] = {}
+        self._canonical_cache_built = False
+
+        # Infrastructure references
         self._system_controller = system_controller
+        self._timeline = timeline
+        self._app_registry = app_registry
 
     # ─────────────────────────────────────────────────────────────
     # Bootstrap — snapshot-style authoritative initialization
@@ -192,20 +220,13 @@ class SystemSource(EventSource):
             except Exception as e:
                 logger.warning("SystemSource bootstrap: battery read failed: %s", e)
 
-        # Foreground window
-        if _HAS_PYGETWINDOW:
-            try:
-                active = gw.getActiveWindow()
-                if active and active.title:
-                    title = active.title
-                    parts = title.rsplit(" - ", 1)
-                    app = parts[-1].strip() if len(parts) > 1 else title.strip()
-                    payload["foreground_app"] = app
-                    payload["foreground_window"] = title
-                    self._fg_window = title
-                    self._fg_app = app
-            except Exception as e:
-                logger.warning("SystemSource bootstrap: window read failed: %s", e)
+        # Foreground window — process-based detection
+        fg_info = self._read_foreground_process()
+        if fg_info:
+            payload["foreground_app"] = fg_info["app"]
+            payload["foreground_window"] = fg_info["window"]
+            self._fg_window = fg_info["window"]
+            self._fg_app = fg_info["app"]
 
         return [self._make_event(now, "system_state_snapshot", **payload)]
 
@@ -235,6 +256,13 @@ class SystemSource(EventSource):
         if now - self._last_idle_poll >= self._idle_interval:
             self._last_idle_poll = now
             events.extend(self._poll_idle(now))
+
+        # Process lifecycle validation (app liveness)
+        # Jitter ±0.5s prevents CPU spike synchronization across subsystems
+        jittered_interval = self._process_interval + random.uniform(-0.5, 0.5)
+        if now - self._last_process_poll >= jittered_interval:
+            self._last_process_poll = now
+            events.extend(self._poll_processes(now))
 
         # Periodic full state refresh (absolute values, not thresholds)
         if now - self._last_refresh_poll >= self._refresh_interval:
@@ -379,20 +407,15 @@ class SystemSource(EventSource):
     # ─────────────────────────────────────────────────────────
 
     def _poll_window(self, now: float) -> List[WorldEvent]:
-        if not _HAS_PYGETWINDOW:
-            return []
-
         events: List[WorldEvent] = []
 
         try:
-            active = gw.getActiveWindow()
-            if active is None:
+            fg_info = self._read_foreground_process()
+            if fg_info is None:
                 return []
 
-            title = active.title or ""
-            # Extract app name from window title (last segment after " - ")
-            parts = title.rsplit(" - ", 1)
-            app = parts[-1].strip() if len(parts) > 1 else title.strip()
+            app = fg_info["app"]
+            title = fg_info["window"]
 
             if title != self._fg_window:
                 self._fg_window = title
@@ -402,10 +425,208 @@ class SystemSource(EventSource):
                     app=app, window=title, severity="background",
                 ))
         except Exception as e:
-            # Window detection must never crash — but don't swallow silently
+            # Window detection must never crash
             logger.warning("SystemSource: window poll failed: %s", e)
 
         return events
+
+    def _read_foreground_process(self) -> Optional[Dict[str, str]]:
+        """Read foreground window info using process-based detection.
+
+        Returns {app: process_name, window: title} or None.
+        Uses win32gui + psutil for deterministic process identification.
+        Falls back to title parsing only if win32 is unavailable.
+
+        Handles NoSuchProcess, AccessDenied, ZombieProcess gracefully
+        (window may close between GetForegroundWindow and Process()).
+        """
+        # Primary: process-based detection (deterministic)
+        if _HAS_WIN32 and _HAS_PSUTIL:
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                if not hwnd:
+                    return None
+                title = win32gui.GetWindowText(hwnd)
+                if not title:
+                    return None
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                proc = psutil.Process(pid)
+                return {"app": proc.name(), "window": title}
+            except (psutil.NoSuchProcess, psutil.AccessDenied,
+                    psutil.ZombieProcess):
+                # Window closed between API calls — not an error
+                return None
+            except Exception:
+                return None
+
+        # Fallback: pygetwindow + title parsing (legacy, less reliable)
+        if _HAS_PYGETWINDOW:
+            try:
+                active = gw.getActiveWindow()
+                if active and active.title:
+                    title = active.title
+                    parts = title.rsplit(" - ", 1)
+                    app = parts[-1].strip() if len(parts) > 1 else title.strip()
+                    return {"app": app, "window": title}
+            except Exception:
+                pass
+
+        return None
+
+    # ─────────────────────────────────────────────────────────
+    # Process lifecycle polling
+    # ─────────────────────────────────────────────────────────
+
+    def _poll_processes(self, now: float) -> List[WorldEvent]:
+        """Validate liveness of tracked application processes.
+
+        Scans timeline for app_launched events to discover tracked PIDs.
+        For each tracked PID:
+        - If alive → emit app_heartbeat
+        - If dead AND past grace period → emit process_stopped
+        - If dead AND in grace → skip (allow time for process replacement)
+
+        Uses canonical_process_names from ApplicationRegistry to detect
+        process replacement (child PID inherits parent's app identity).
+        """
+        if not _HAS_PSUTIL:
+            return []
+
+        events: List[WorldEvent] = []
+
+        # Discover new tracked PIDs from timeline events
+        self._refresh_tracked_pids()
+
+        # Get canonical process names for ancestry matching
+        canonical_names = self._get_canonical_names()
+
+        dead_keys: List[str] = []
+        for app_key, info in self._tracked_pids.items():
+            pid = info["pid"]
+            launch_time = info["launch_time"]
+
+            if pid is None:
+                continue
+
+            alive = psutil.pid_exists(pid)
+
+            if alive:
+                events.append(self._make_event(
+                    now, "app_heartbeat",
+                    app=app_key, pid=pid, severity="background",
+                ))
+            else:
+                # Process gone — check for replacement via ancestry
+                replacement_pid = self._find_replacement_process(
+                    app_key, canonical_names,
+                )
+                if replacement_pid:
+                    # Process replaced (launcher exited, child took over)
+                    info["pid"] = replacement_pid
+                    events.append(self._make_event(
+                        now, "app_heartbeat",
+                        app=app_key, pid=replacement_pid,
+                        severity="background",
+                    ))
+                elif (now - launch_time) < PROCESS_LAUNCH_GRACE_SECONDS:
+                    # Still in grace period — skip
+                    logger.debug(
+                        "Process %d (%s) gone but in grace period, skipping",
+                        pid, app_key,
+                    )
+                else:
+                    # Process truly dead
+                    events.append(self._make_event(
+                        now, "process_stopped",
+                        app=app_key, pid=pid, severity="info",
+                    ))
+                    dead_keys.append(app_key)
+
+        # Remove dead entries from tracking
+        for key in dead_keys:
+            self._tracked_pids.pop(key, None)
+
+        return events
+
+    def _refresh_tracked_pids(self) -> None:
+        """Sync tracked PIDs from WorldState snapshot.
+
+        Uses O(active_apps) WorldState.tracked_apps instead of
+        scanning the full O(total_events) timeline.
+        """
+        if not self._timeline:
+            return
+
+        from world.state import WorldState
+        ws = WorldState.from_events(self._timeline.all_events())
+        snapshot_apps = ws.system.session.tracked_apps
+
+        # Add newly tracked apps
+        for key, app_state in snapshot_apps.items():
+            if app_state.running and key not in self._tracked_pids:
+                self._tracked_pids[key] = {
+                    "pid": app_state.pid,
+                    "launch_time": app_state.launch_time,
+                }
+
+        # Remove apps no longer tracked or no longer running
+        dead_keys = [
+            k for k in self._tracked_pids
+            if k not in snapshot_apps or not snapshot_apps[k].running
+        ]
+        for k in dead_keys:
+            self._tracked_pids.pop(k, None)
+
+    def _get_canonical_names(self) -> Dict[str, List[str]]:
+        """Get canonical process names from ApplicationRegistry (cached)."""
+        if self._canonical_cache_built:
+            return self._canonical_names_cache
+
+        if not self._app_registry:
+            return {}
+
+        try:
+            for entity in self._app_registry.all_entities():
+                names = getattr(entity, 'canonical_process_names', [])
+                if names:
+                    self._canonical_names_cache[entity.app_id.lower()] = [
+                        n.lower() for n in names
+                    ]
+            self._canonical_cache_built = True
+        except Exception:
+            pass
+
+        return self._canonical_names_cache
+
+    def _find_replacement_process(
+        self,
+        app_key: str,
+        canonical_names: Dict[str, List[str]],
+    ) -> Optional[int]:
+        """Find a replacement process matching the app's canonical names.
+
+        Handles process replacement (launcher exits, child inherits).
+        Only matches processes whose name matches canonical_process_names.
+        """
+        if not _HAS_PSUTIL:
+            return None
+
+        names = canonical_names.get(app_key)
+        if not names:
+            # Fallback: use app_key as process name heuristic
+            names = [app_key]
+
+        try:
+            for proc in psutil.process_iter(['name', 'pid']):
+                pname = (proc.info.get('name') or '').lower()
+                # Match against any canonical name
+                for cname in names:
+                    if cname in pname:
+                        return proc.info['pid']
+        except Exception:
+            pass
+
+        return None
 
     # ─────────────────────────────────────────────────────────
     # Idle polling

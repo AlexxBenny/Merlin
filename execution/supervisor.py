@@ -45,6 +45,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from ir.mission import MissionPlan, MissionNode
 from execution.executor import MissionExecutor, ExecutionResult, NodeStatus
 from execution.scheduler import DAGScheduler
+from execution.metacognition import (
+    MetaCognitionEngine, FailureVerdict, RecoveryAction,
+    OutcomeAnalyzer, OutcomeSeverity,
+)
 from world.snapshot import WorldSnapshot
 
 logger = logging.getLogger(__name__)
@@ -159,6 +163,14 @@ class ExecutionSupervisor:
     ):
         self._executor = executor
         self._ctx = context
+        self._metacognition = MetaCognitionEngine()
+        self._outcome_analyzer = OutcomeAnalyzer()
+        self._verdicts: List[FailureVerdict] = []
+
+    @property
+    def verdicts(self) -> List[FailureVerdict]:
+        """Accumulated failure verdicts from this execution run."""
+        return list(self._verdicts)
 
     @property
     def registry(self):
@@ -200,6 +212,7 @@ class ExecutionSupervisor:
         node_index = DAGScheduler.get_node_index(plan)
 
         exec_result = ExecutionResult()
+        self._verdicts = []  # Reset for new run
 
         for layer_idx, layer in enumerate(layers):
             # Layer-start callback (narration hook — fire-and-forget)
@@ -220,6 +233,18 @@ class ExecutionSupervisor:
                     on_layer_complete(layer, layer_idx)
                 except Exception:
                     pass
+
+            # ── Meta-cognition: check if plan is fundamentally broken ──
+            if self._metacognition.should_abort(self._verdicts):
+                logger.warning(
+                    "[META] Aborting execution after layer %d/%d — "
+                    "plan is fundamentally broken (%d verdicts)",
+                    layer_idx + 1, len(layers), len(self._verdicts),
+                )
+                break
+
+        # Store verdicts on exec_result for upstream consumption
+        exec_result.meta_verdicts = list(self._verdicts)
 
         # ── Session cleanup after execution ──
         if self._ctx.session_manager and self._ctx.observer:
@@ -263,6 +288,25 @@ class ExecutionSupervisor:
             self._executor._execute_parallel(
                 parallel_nodes, node_index, exec_result, world_snapshot,
             )
+            # Classify outcomes for parallel nodes (executor skips guards)
+            for nid in parallel_nodes:
+                status = exec_result.node_statuses.get(nid)
+                meta = exec_result.metadata.get(nid, {})
+                if status is not None:
+                    severity = self._outcome_analyzer.classify(status, meta)
+                    if severity != OutcomeSeverity.BENIGN:
+                        node = node_index[nid]
+                        exec_result.outcome_verdicts.append({
+                            "node_id": nid,
+                            "skill": node.skill,
+                            "status": str(status),
+                            "reason": meta.get("reason", ""),
+                            "severity": severity.value,
+                        })
+                        logger.info(
+                            "[OUTCOME] Node '%s' (%s): %s → %s",
+                            nid, node.skill, status, severity.value,
+                        )
 
         # Phase 2: Execute focus/conflicting nodes with guard enforcement
         for nid in focus_nodes:
@@ -298,6 +342,18 @@ class ExecutionSupervisor:
                         node.id, guard.type.value,
                     )
                     exec_result.record(node.id, NodeStatus.FAILED, {})
+                    # Meta-cognition: classify precondition failure
+                    verdict = self._metacognition.classify(
+                        node_id=node.id,
+                        skill_name=node.skill,
+                        failed_guards=[guard.type.value],
+                        retries_exhausted=True,
+                    )
+                    self._verdicts.append(verdict)
+                    logger.info(
+                        "[META] Node '%s' classified: %s → %s",
+                        node.id, verdict.category.value, verdict.action.value,
+                    )
                     return
 
         # ── Execute node (with retry on failure) ──
@@ -311,6 +367,7 @@ class ExecutionSupervisor:
         )
 
         last_error = None
+        failed_post_guards: List[str] = []
         for attempt in range(max_retries + 1):
             try:
                 node_id, status, outputs, meta = self._executor.execute_node(
@@ -318,12 +375,31 @@ class ExecutionSupervisor:
                 )
                 exec_result.record(node_id, status, outputs, meta)
 
+                # ── Outcome classification (every node) ──
+                severity = self._outcome_analyzer.classify(
+                    status, meta,
+                )
+                if severity != OutcomeSeverity.BENIGN:
+                    exec_result.outcome_verdicts.append({
+                        "node_id": node_id,
+                        "skill": node.skill,
+                        "status": str(status),
+                        "reason": (meta or {}).get("reason", ""),
+                        "severity": severity.value,
+                    })
+                    logger.info(
+                        "[OUTCOME] Node '%s' (%s): %s → %s",
+                        node_id, node.skill, status, severity.value,
+                    )
+
                 # ── Evaluate postconditions ──
                 if status in (NodeStatus.COMPLETED, NodeStatus.NO_OP):
                     all_post_ok = True
+                    failed_post_guards = []
                     for guard in postconditions:
                         if not self._evaluate_guard(guard):
                             all_post_ok = False
+                            failed_post_guards.append(guard.type.value)
                             logger.warning(
                                 "Node '%s' postcondition failed: %s",
                                 node.id, guard.type.value,
@@ -353,6 +429,21 @@ class ExecutionSupervisor:
                         node.id, max_retries + 1, e,
                     )
                     exec_result.record(node.id, NodeStatus.FAILED, {})
+
+        # ── Meta-cognition: classify exhausted failure ──
+        verdict = self._metacognition.classify(
+            node_id=node.id,
+            skill_name=node.skill,
+            failed_guards=failed_post_guards,
+            error_message=str(last_error) if last_error else None,
+            retries_exhausted=True,
+        )
+        self._verdicts.append(verdict)
+        logger.info(
+            "[META] Node '%s' exhausted retries — classified: %s → %s (%s)",
+            node.id, verdict.category.value, verdict.action.value,
+            verdict.reason,
+        )
 
     def _get_guards(
         self, node: MissionNode, guard_type: str,
@@ -426,6 +517,14 @@ class ExecutionSupervisor:
     def _evaluate_guard(self, guard: StepGuard) -> bool:
         """Evaluate a single guard against current environment.
 
+        Guard evaluation follows a tiered model:
+        - APP_RUNNING: WorldState primary → observer fallback
+          (authoritative check — WorldState tracks all MERLIN-launched apps)
+        - APP_FOCUSED: Observer primary (safety-critical — must be real-time
+          before typing/clicking, 500ms stale snapshot is dangerous)
+        - WINDOW_VISIBLE: WorldState `visible` flag → observer confirmation
+        - Others: observer-based
+
         Returns True if the guard passes, False otherwise.
         Never raises — returns False on error.
         """
@@ -439,32 +538,68 @@ class ExecutionSupervisor:
             return False
 
         observer = self._ctx.observer
-        if observer is None:
-            # No observer available — cannot evaluate, assume OK
-            return True
+        timeline = self._ctx.timeline
 
         try:
-            if guard.type == GuardType.ACTIVE_WINDOW:
+            if guard.type == GuardType.APP_RUNNING:
+                app_name = guard.params.get("app", "")
+                # WorldState primary: check tracked_apps
+                if timeline is not None:
+                    from world.state import WorldState
+                    ws = WorldState.from_events(timeline.all_events())
+                    key = app_name.lower()
+                    tracked = ws.system.session.tracked_apps.get(key)
+                    if tracked is not None:
+                        return tracked.running
+                # Fallback: observer for apps not tracked in WorldState
+                if observer is not None:
+                    return observer.is_app_running(app_name)
+                return True  # No source → assume OK
+
+            elif guard.type == GuardType.APP_FOCUSED:
+                # Safety-critical: observer-primary (real-time)
+                # Must never use stale snapshot before typing/clicking
+                app_name = guard.params.get("app", "")
+                if observer is not None:
+                    return observer.is_app_focused(app_name)
+                # No observer: fall back to WorldState (better than nothing)
+                if timeline is not None:
+                    from world.state import WorldState
+                    ws = WorldState.from_events(timeline.all_events())
+                    key = app_name.lower()
+                    tracked = ws.system.session.tracked_apps.get(key)
+                    if tracked is not None:
+                        return tracked.focused
+                return True
+
+            elif guard.type == GuardType.WINDOW_VISIBLE:
+                app_name = guard.params.get("app", "")
+                # WorldState check first (visible flag)
+                if timeline is not None:
+                    from world.state import WorldState
+                    ws = WorldState.from_events(timeline.all_events())
+                    key = app_name.lower()
+                    tracked = ws.system.session.tracked_apps.get(key)
+                    if tracked is not None and not tracked.visible:
+                        return False  # Definitely not visible
+                # Observer confirmation for positive case
+                if observer is not None:
+                    return observer.is_app_running(app_name)
+                return True
+
+            elif guard.type == GuardType.ACTIVE_WINDOW:
                 expected_app = guard.params.get("app", "")
+                if observer is None:
+                    return True
                 active = observer.get_active_window()
                 if active is None:
                     return False
                 return expected_app.lower() in (active.app_name or "").lower()
 
-            elif guard.type == GuardType.APP_RUNNING:
-                app_name = guard.params.get("app", "")
-                return observer.is_app_running(app_name)
-
-            elif guard.type == GuardType.APP_FOCUSED:
-                app_name = guard.params.get("app", "")
-                return observer.is_app_focused(app_name)
-
-            elif guard.type == GuardType.WINDOW_VISIBLE:
-                app_name = guard.params.get("app", "")
-                return observer.is_app_running(app_name)
-
             elif guard.type == GuardType.FILE_EXISTS:
                 path = guard.params.get("path", "")
+                if observer is None:
+                    return True
                 return observer.file_exists(path)
 
             elif guard.type == GuardType.ELEMENT_VISIBLE:
