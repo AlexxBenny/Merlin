@@ -1,0 +1,87 @@
+# Configuration Files
+
+**Location**: `config/`
+
+All YAML configuration files.
+
+## `models.yaml`
+
+LLM model assignments by cognitive role.
+
+```yaml
+roles:
+  cognitive_coordinator:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    temperature: 0.3
+  mission_compiler:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    temperature: 0.2
+  report_builder:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    temperature: 0.4
+```
+
+## `skills.yaml`
+
+Skill registry metadata and configuration.
+
+## `routing.yaml`
+
+Cognitive routing rules for BrainCore and EscalationPolicy:
+- Pattern-based routing rules
+- Tier classification thresholds
+- Domain routing priorities
+
+## `execution.yaml`
+
+Execution engine configuration:
+- `max_workers` — parallel execution threads
+- `node_timeout` — per-node timeout
+- `max_retries` — retry limits
+- Failure policy defaults
+- Supervisor settings
+
+## `paths.yaml`
+
+OS path aliases:
+```yaml
+downloads: "C:/Users/{user}/Downloads"
+desktop: "C:/Users/{user}/Desktop"
+documents: "C:/Users/{user}/Documents"
+```
+
+## `browser.yaml`
+
+Browser configuration:
+- Headless mode
+- Viewport dimensions
+- Navigation timeout
+- CDP connection settings
+- Security settings
+
+## `app_aliases.yaml`
+
+Application name aliases:
+```yaml
+chrome: google chrome
+firefox: mozilla firefox
+vscode: visual studio code
+notepad: notepad
+```
+
+## `app_capabilities.yaml`
+
+Per-app media capabilities:
+```yaml
+spotify:
+  can_play: true
+  can_pause: true
+  can_next: true
+  can_previous: true
+vlc:
+  can_play: true
+  can_pause: true
+```

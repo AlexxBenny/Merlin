@@ -1,543 +1,439 @@
-Purpose
+# MERLIN — Architecture
 
-This document defines the immutable architectural laws of the system.
+> **Status**: Living document. Updated March 2026.
+>
+> This document defines the architectural laws of the system. If a future change violates any rule here, the change is invalid.
 
-The goal is to build a scalable, deterministic cognitive operating system capable of handling:
+---
 
-very long, complex, multi-domain user queries
+## 1. Core Design Philosophy
 
-thousands of skills
+### 1.1 Intelligence Is Narrow, Execution Is Broad
 
-parallel, background, and dependent tasks
+Intelligence exists only to transform user intent into structure. Execution carries out that structure deterministically. Intelligence is frozen early; execution is infinitely extensible.
 
-without cognitive drift, rewrites, or entropy
+### 1.2 Structure Replaces Interpretation
 
-If a future change violates any rule here, the change is invalid, regardless of functionality.
+Long queries are not "understood continuously". They are **compiled once** into a static structure (Mission DAG). After compilation, no interpretation occurs.
 
-1. Core Design Philosophy
-1.1 Intelligence is narrow, execution is broad
+### 1.3 Infrastructure Is Not Intelligence
 
-Intelligence exists only to transform user intent into structure.
+Any component required for all tasks is infrastructure, not cognition. Placing infrastructure inside cognition is a critical architectural error.
 
-Execution exists to carry out that structure deterministically.
+---
 
-Intelligence must be frozen early; execution must be infinitely extensible.
+## 2. Cognitive Layers
 
-1.2 Structure replaces interpretation
+The system has exactly **four cognitive layers**. Adding more or merging layers is forbidden.
 
-Long queries are not “understood continuously”.
+| Layer | Name | Module |
+|-------|------|--------|
+| 1 | Perception | `perception/` |
+| 2 | Nervous System Core | `brain/` |
+| 3 | Mission Cortex | `cortex/` |
+| 4 | Skill Layer | `skills/` |
 
-They are compiled once into a static structure (Mission DAG).
+Execution, infrastructure, world state, and runtime exist **outside cognition**.
 
-After compilation, no interpretation occurs.
+---
 
-1.3 Infrastructure is not intelligence
+## 3. Layer Responsibilities
 
-Any component required for all tasks is infrastructure, not cognition.
+### 3.1 Perception Layer (`perception/`)
 
-Examples:
+Converts external signals into `Percept` objects.
 
-filesystem paths
+- **No** reasoning, state, routing, or execution
+- Components: `PerceptionOrchestrator`, `TextPerception`, `SpeechPerception`
+- STT engines: Whisper, Mock
+- Audio: `AudioRecorder` with voice activity detection
 
-browser sessions
+### 3.2 Nervous System Core (`brain/`)
 
-downloads
+Decides what kind of cognition is required. Constant-time routing.
 
-retries
+| Component | Purpose |
+|-----------|---------|
+| `BrainCore` | Route percepts → cognitive path (`REFLEX`, `DIRECT`, `MISSION`) |
+| `EscalationPolicy` | Tier classification (`HeuristicTierClassifier`) |
+| `StructuralClassifier` | Speech act detection, intent classification |
+| `OrdinalResolver` | Resolve "first", "second", "the other one" |
 
-OS interaction
+**Forbidden**: Reasoning, planning, skill awareness, environment access.
 
-Placing infrastructure inside cognition is a critical architectural error.
+### 3.3 Mission Cortex (`cortex/`)
 
-2. Cognitive Layers (Immutable)
+Transforms user intent into a static Mission DAG.
 
-The system has exactly four cognitive layers.
+| Component | Purpose |
+|-----------|---------|
+| `MissionCortex` | LLM-based plan compilation with action templates |
+| `CognitiveCoordinator` | Intermediate reasoning, direct answers, computed variables |
+| `IntentEngine` | Verb/keyword-based skill discovery |
+| `ScoredDiscovery` | TF-IDF scored skill matching for Phase 1 filtering |
+| `EntityResolver` | App + browser entity resolution (cosine similarity) |
+| `ParameterResolver` | Semantic type resolution for skill inputs |
+| `PreferenceResolver` | User preference injection into skill parameters |
+| `Normalizer` | Query normalization and canonicalization |
+| `Validators` | Plan validation, cycle detection, contract enforcement |
+| `ContextProvider` | Conversation context injection for LLM prompts |
+| `SemanticTypes` | Type system for skill inputs (`entity_index`, `entity_ref`, etc.) |
+| `FallbackHandler` | Graceful degradation when compilation fails |
 
-Adding more or merging layers is forbidden.
+**Cognitive Coordinator modes**:
+- `DIRECT_ANSWER` — Final user-facing text (no skills needed)
+- `SKILL_PLAN` — Pass-through to Mission Cortex
+- `REASONED_PLAN` — Computed variables + rewritten query for compilation
 
-1. Perception Layer
-2. Nervous System Core
-3. Mission Cortex
-4. Skill Layer
+**Forbidden**: Execution, path resolution, session management, skill logic.
 
+### 3.4 Skill Layer (`skills/`)
 
-Execution and infrastructure exist outside cognition.
+Deterministic, testable capabilities. 34 registered skills across 7 domains:
 
-3. Layer Responsibilities (Strict)
-3.1 Perception Layer
+| Domain | Count | Examples |
+|--------|-------|---------|
+| `system.*` | 20 | media control, volume, brightness, apps, jobs, time, battery |
+| `browser.*` | 7 | click, fill, scroll, navigate, go_back, go_forward, autonomous_task |
+| `fs.*` | 3 | read_file, write_file, create_folder |
+| `memory.*` | 4 | get_preference, set_preference, set_fact, add_policy |
+| `reasoning.*` | 1 | generate_text |
 
-Responsibility
+Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types, execution mode, failure policy, domain, and narration template.
 
-Convert external signals into Percept objects
+**Forbidden**: Calling other skills, modifying the DAG, reasoning about intent.
 
-Properties
+---
 
-No reasoning
+## 4. Execution & Infrastructure (Non-Cognitive)
 
-No state
+### 4.1 Executor (`execution/`)
 
-No routing
+| Component | Purpose |
+|-----------|---------|
+| `MissionExecutor` | DAG walker — enforces order, runs skills, manages parallelism |
+| `ExecutionSupervisor` | Step-level guard: pre/post validation, repair actions |
+| `MetaCognitionEngine` | Outcome analysis — success/failure/partial classification |
+| `SkillRegistry` | O(1) skill lookup, action namespace audit |
+| `SchedulerBridge` | Persistent job submission after mission success |
 
-No execution
+**Forbidden**: Replanning, semantic interpretation, implicit context passing.
 
-Examples
+### 4.2 Orchestrator (`orchestrator/`)
 
-text input
+`MissionOrchestrator` — The control loop between cortex and executor:
 
-speech transcription
+- Receives compiled plan from cortex
+- Runs entity resolution (app + browser entities)
+- Executes via `MissionExecutor`
+- Handles recovery recompile on entity NOT_FOUND
+- Manages the replanning pipeline for execution failures
 
-vision input
+### 4.3 Infrastructure Services (`infrastructure/`)
 
-3.2 Nervous System Core (Brainstem)
+| Component | Purpose |
+|-----------|---------|
+| `BrowserUseAdapter` | Playwright/CDP browser lifecycle management |
+| `BrowserUseController` | DOM interaction: snapshot, click, fill, scroll, navigate |
+| `BrowserController` | Abstract interface — `DOMEntity`, `PageSnapshot` |
+| `BrowserSafety` | URL allowlist, download blocking |
+| `SystemController` | OS interaction: volume, brightness, media, apps, nightlight |
+| `ApplicationRegistry` | App discovery, name resolution, alias mapping |
+| `AppDiscovery` | Windows app enumeration (Start Menu, PATH, UWP) |
+| `AppCapabilities` | Per-app media capability detection |
+| `Session` | Browser session management with popup watchdog |
+| `LocationConfig` | User-configurable paths and download locations |
+| `Observer` | File system observer for download detection |
+| `VoiceFactory` | TTS voice selection and configuration |
 
-Responsibility
+**Rules**: Skills may request infrastructure. Infrastructure never calls cognition. Cortex is blind to infrastructure.
 
-Decide what kind of cognition is required
+---
 
-Allowed
+## 5. World State System (`world/`)
 
-Constant-time routing
+The single source of truth for all environmental state.
 
-Minimal pattern checks
+| Component | Purpose |
+|-----------|---------|
+| `WorldTimeline` | Append-only event log — the ONLY mutable world structure |
+| `WorldEvent` | Timestamped event: `{timestamp, source, type, payload}` |
+| `WorldState` | Pure reducer: `events → state`. Derived, never mutated directly |
+| `WorldSnapshot` | Frozen state snapshot passed to skills and coordinator |
+| `WorldResolver` | Schema generation for LLM prompt injection |
 
-Forbidden
+**Event sources** (`runtime/sources/`):
+| Source | Events |
+|--------|--------|
+| `SystemSource` | CPU, memory, battery, brightness, volume, idle, app lifecycle |
+| `MediaSource` | Now-playing, track change, ad detection |
+| `TimeSource` | Time ticks, hour changes, date changes |
+| `BrowserSource` | Page changes, entity refresh, connect/disconnect |
 
-Reasoning
+**State domains**: `BrowserWorldState`, `MediaState`, `SystemState`, `TimeState`, `AppState`.
 
-Planning
+---
 
-Skill awareness
+## 6. Runtime System (`runtime/`)
 
-Environment access
+| Component | Purpose |
+|-----------|---------|
+| `RuntimeEventLoop` | Central polling loop — bootstraps world, polls sources, ticks scheduler |
+| `ReflexEngine` | Sub-100ms deterministic skill matching (bypasses LLM) |
+| `TickSchedulerManager` | Persistent recurring/delayed job execution |
+| `TaskStore` / `JsonTaskStore` | Job persistence with JSON file backend |
+| `TemporalResolver` | Natural language → absolute timestamps ("tomorrow at 3pm") |
+| `AttentionManager` | Mission lifecycle tracking, concurrent mission limits |
+| `CompletionQueue` | Async completion events for background missions |
 
-Invariant
+---
 
-This layer should almost never change.
+## 7. Memory System (`memory/`)
 
-3.3 Mission Cortex
+| Component | Purpose |
+|-----------|---------|
+| `UserKnowledgeStore` | Structured user knowledge: preferences, facts, traits, policies, relationships |
+| `MemoryStore` | Key-value persistent storage backend |
 
-Responsibility
+Memory is injected as first-class context into the coordinator's LLM prompt. Memory skills (`memory.set_preference`, `memory.set_fact`, `memory.add_policy`, `memory.get_preference`) allow the user to teach MERLIN.
 
-Transform user intent into a static Mission DAG
+---
 
-Allowed
+## 8. Conversation System (`conversation/`)
 
-LLM usage
+| Component | Purpose |
+|-----------|---------|
+| `ConversationFrame` | Turn-by-turn history with entity tracking |
+| `Outcome` | Structured result of a mission (success/failure/partial) |
 
-Reasoning
+---
 
-Decomposition
+## 9. Reporting System (`reporting/`)
 
-Validation
+| Component | Purpose |
+|-----------|---------|
+| `ReportBuilder` | LLM-based natural language narration of skill results |
+| `NarrationPolicy` | Controls verbosity and narration style |
+| `NotificationPolicy` | Decides what to speak vs. what to show |
+| `OutputChannel` | Console + TTS output multiplexing |
+| `TTSEngine` | Abstract TTS interface |
+| TTS engines: `pyttsx3` (offline), `SilentTTS` (testing) |
 
-Forbidden
+---
 
-Execution
+## 10. Model Layer (`models/`)
 
-Path resolution
+| Component | Purpose |
+|-----------|---------|
+| `LLMClient` | Abstract interface for all LLM calls |
+| `ModelRouter` | Role-based model selection from `config/models.yaml` |
+| `OpenRouterClient` | OpenRouter API (GPT, Claude, Gemini, etc.) |
+| `GeminiClient` | Google Gemini API direct access |
+| `OllamaClient` | Local Ollama models |
+| `HuggingFaceClient` | Hugging Face Inference API |
+| `KeyPool` | API key rotation and rate limit management |
 
-Session management
+---
 
-Skill logic
+## 11. IR Layer (`ir/`)
 
-Retrying or replanning
+`MissionPlan` — The frozen intermediate representation:
 
-Output
+| Component | Purpose |
+|-----------|---------|
+| `MissionPlan` | Immutable DAG: `{id, nodes, metadata}` |
+| `MissionNode` | Atomic skill invocation: `{id, skill, inputs, outputs, depends_on, mode}` |
+| `OutputReference` | Typed inter-node data pipe: `{node, output, index?, field?}` |
+| `ExecutionMode` | `foreground`, `background`, `side_effect` |
+| `ConditionExpr` | Skip-gate evaluated at scheduling time |
 
-A fully specified Mission DAG
+**IR Version**: `1.0` (frozen). No field removals, no semantic reinterpretation.
 
-Explicit dependencies
+---
 
-Explicit conditionals
+## 12. Three-Tier Browser Execution
 
-Explicit data flow
+Browser interaction follows a strict capability hierarchy:
 
-Once emitted, the DAG is final.
+| Tier | Name | When | Example |
+|------|------|------|---------|
+| 1 | Deterministic | No reasoning needed | `scroll down`, `click entity 3`, `navigate to youtube.com` |
+| 2 | Entity Resolution | Page understanding, no planning | `play the howard stark video` → cosine match → `click(entity_index=2)` |
+| 3 | Autonomous Agent | Multi-step exploration | `find cheapest MacBook and compare prices` |
 
-3.3a Cognitive Coordinator (within Cortex Layer)
+**Entity Resolution**: Pure cosine similarity on tokenized text. Thresholds: `< 0.55` = NOT_FOUND, `second > 0.8 × top` = AMBIGUOUS.
 
-Responsibility
+**Failure cascade**: Entity found → deterministic action → Ambiguous → ask user → NOT_FOUND → recovery recompile → recompile fails → autonomous (last resort).
 
-Compute intermediate values and direct answers using world state + LLM reasoning.
+**Index drift protection**: Resolver passes `_resolved_entity_text` alongside `entity_index`. Skill gets fresh DOM snapshot and verifies text match before clicking. Falls back to text search on drift.
 
-Allowed
+---
 
-Reasoning over world state
+## 13. Context Model
 
-Arithmetic, date math, factual recall
+Three legal forms of context:
 
-Producing direct answers (no skills needed)
+| Form | Properties |
+|------|-----------|
+| **World State** | Passive facts, no triggers, no inference |
+| **Node Outputs** | Explicit, typed, directed (via `OutputReference`) |
+| **Skill-local Memory** | Private, non-shared, replaceable |
 
-Computing variables that feed into DAG compilation
+There is **no global mutable context**. If context is implicit, it is a bug.
 
-Forbidden
+---
 
-Execution
+## 14. Execution Domains
 
-OS mutation
+| Domain | Lifecycle | Handler |
+|--------|-----------|---------|
+| **Immediate Mission** | Dies with request | `MissionExecutor` (DAG walker) |
+| **Persistent Job** | Survives beyond request | `TickSchedulerManager` |
 
-Skill invocation
+A single query may produce units in both domains. Domain is a property of executable units, not queries.
 
-Replanning (Phase 1)
+**Persistent invariants**: Fully grounded (no pronoun ambiguity), no cross-domain `OutputReference`, submission requires immediate mission completion, temporal values must be absolute.
 
-Looping (Phase 1)
+---
 
-Output
+## 15. Failure Semantics
 
-DIRECT_ANSWER: final user-facing text (no skills)
+Failures are **loud**, **explicit**, and **final**.
 
-SKILL_PLAN: pass-through to Mission Cortex (unchanged)
+- **Forbidden**: Silent retries beyond declared limits, automatic replanning, hidden fallbacks
+- **Produces**: Partial results, clear error attribution, deterministic report
+- **Recovery recompile**: Limited to 1 attempt for browser entity failures. Compiler receives `execution_failures` context.
 
-REASONED_PLAN: computed variables + rewritten query for compilation
+---
 
-Constraint: Maximum 1 LLM call per invocation. No loops. No retries.
+## 16. Repository Structure
 
-Evolution seams:
-
-Phase 2 — evaluate() for post-execution bounded replan (MAX_REPLAN=1)
-
-Phase 3 — plan_iterative() for GoalGraph decomposition
-
-3.4 Skill Layer
-
-Responsibility
-
-Provide deterministic, testable capabilities
-
-Properties
-
-Stateless or locally stateful
-
-Replaceable
-
-Independently testable
-
-No knowledge of other skills
-
-Forbidden
-
-Calling other skills
-
-Modifying the DAG
-
-Reasoning about intent
-
-Skills execute; they do not decide.
-
-4. Execution & Infrastructure (Non-Cognitive)
-
-Execution and infrastructure are physiology, not intelligence.
-
-They are required for every task and therefore must not influence cognition.
-
-4.1 Executor
-
-Responsibilities
-
-Enforce DAG order
-
-Run skills
-
-Manage parallelism
-
-Propagate explicit outputs
-
-Forbidden
-
-Replanning
-
-Semantic interpretation
-
-Implicit context passing
-
-4.2 Infrastructure Services
-
-Examples:
-
-Path resolution
-
-Browser session pooling
-
-Download management
-
-OS abstraction
-
-Resource limits
-
-Rules
-
-Skills may request infrastructure
-
-Infrastructure never calls cognition
-
-Cortex is blind to infrastructure
-
-5. Context Model (Extremely Strict)
-
-There are only three legal forms of context.
-
-World State
-
-Passive facts
-
-No triggers
-
-No inference
-
-Node Outputs
-
-Explicit
-
-Typed
-
-Directed
-
-Skill-local Memory
-
-Private
-
-Non-shared
-
-Replaceable
-
-There is no global mutable context.
-
-If context is implicit, it is a bug.
-
-6. Scalability Laws
-6.1 Skill Scalability
-
-Adding a skill must not require modifying existing skills.
-
-Skill count must not affect cognition complexity.
-
-Skill lookup must be O(1).
-
-6.2 Query Scalability
-
-Long queries increase DAG size, not reasoning depth.
-
-The system must perform one LLM planning call per request.
-
-Execution time scales with actions, not words.
-
-6.3 Parallelism
-
-Independent DAG branches execute in parallel.
-
-Background nodes do not block foreground completion.
-
-Parallelism is executor-level, never cognitive.
-
-7. Configuration Rules
-Centralized
-
-Models
-
-Skill registry
-
-Path aliases
-
-OS/environment facts
-
-Execution limits
-
-Decentralized
-
-Skill behavior
-
-Domain logic
-
-Execution strategy per task
-
-Configuration is global. Behavior is local.
-
-8. Failure Semantics
-
-Failures must be:
-
-Loud
-
-Explicit
-
-Final
-
-Forbidden
-
-Silent retries beyond declared limits
-
-Automatic replanning
-
-Hidden fallbacks
-
-Failure produces:
-
-Partial results
-
-Clear error attribution
-
-Deterministic report
-
-9. Explainability Requirement
-
-The system must be explainable by inspecting:
-
-Mission DAG
-
-Execution logs
-
-Node outputs
-
-If an explanation requires:
-
-“the model decided…”
-
-The architecture has been violated.
-
-10. Non-Negotiable Rule
-
-If a component is required for every task, it is not part of intelligence.
-
-Violating this rule recreates AURA-style collapse.
-
-11. Execution Domains (Two, Strict)
-
-The system has exactly two execution domains.
-
-Immediate Mission
-
-Executes synchronously with user request.
-
-Has no persistent identity.
-
-Dies with request lifecycle.
-
-Handled by Executor (DAG walker).
-
-Uses IR v1 MissionPlan.
-
-Persistent Job
-
-Has persistent identity (TaskStore).
-
-Survives beyond request lifecycle.
-
-Executed by SchedulerManager.
-
-Uses TaskSchedule for temporal metadata.
-
-Must be fully self-contained.
-
-These domains are orthogonal.
-
-A single user query may produce units in both domains.
-
-Domain is a property of executable units, not queries.
-
-12. Persistent Execution Invariants (Frozen)
-
-12.1 Persistent units must be fully grounded
-
-No pronoun ambiguity survives decomposition.
-
-All referents are resolved to concrete skill parameters.
-
-"mute it" → "set_volume(level=0, target=YouTube)" before submission.
-
-12.2 No cross-domain OutputReference
-
-Persistent units may reference world state (always live).
-
-Persistent units may NOT reference outputs of immediate missions.
-
-If cross-domain data flow detected → UNSUPPORTED.
-
-12.3 Persistent submission requires immediate completion
-
-Persistent units are submitted to scheduler ONLY if
-
-the immediate MissionPlan status is COMPLETED.
-
-Partial success does not qualify.
-
-12.4 Scheduler condition semantics
-
-Recurring tasks evaluate condition_on each tick.
-
-If condition false → skip execution for that cycle.
-
-Task remains active. No implicit cancellation.
-
-Only explicit user cancellation or max_repeats exhaustion terminates a task.
-
-12.5 Temporal values must be absolute
-
-delay_seconds is relative to submission time.
-
-schedule_at is UTC epoch timestamp.
-
-No relative-to-previous-unit offsets.
-
-Scheduler operates without knowledge of unit ordering context.
-
-Repository Structure (Enforces the Architecture)
-
-This structure is designed to make architectural violations uncomfortable.
-
-jarvis/
+```
+MERLIN/
+├── ARCHITECTURE.md           # This document
+├── README.md                 # Project overview
+├── docs/                     # Detailed documentation
+├── main.py                   # Entry point + dependency wiring
+├── merlin.py                 # The Conductor — owns all components, routes percepts
 │
-├── ARCHITECTURE.md        # this document (frozen)
+├── brain/                    # Layer 2: Nervous System Core
+│   ├── core.py               # BrainCore — percept routing
+│   ├── escalation_policy.py  # Tier classification
+│   ├── structural_classifier.py  # Speech act + intent detection
+│   └── ordinal_resolver.py   # Ordinal reference resolution
 │
-├── config/                # CENTRALIZED configuration ONLY
-│   ├── models.yaml
-│   ├── skills.yaml
-│   ├── paths.yaml
-│   └── execution.yaml
+├── cortex/                   # Layer 3: Mission Cortex
+│   ├── mission_cortex.py     # LLM plan compiler
+│   ├── cognitive_coordinator.py  # Intermediate reasoning
+│   ├── intent_engine.py      # Skill discovery
+│   ├── entity_resolver.py    # App + browser entity resolution
+│   ├── parameter_resolver.py # Semantic type resolution
+│   ├── preference_resolver.py # User preference injection
+│   ├── validators.py         # Plan validation
+│   ├── semantic_types.py     # Type system
+│   ├── context_provider.py   # LLM context injection
+│   ├── scored_discovery.py   # TF-IDF skill scoring
+│   ├── normalizer.py         # Query normalization
+│   ├── fallback.py           # Graceful degradation
+│   └── synonyms.py           # Action synonym mapping
 │
-├── perception/            # Layer 1
-│   ├── __init__.py
-│   ├── text.py
-│   ├── speech.py          # later
-│   └── vision.py          # later
+├── execution/                # DAG execution engine
+│   ├── executor.py           # Mission executor
+│   ├── supervisor.py         # Step-level guard
+│   ├── metacognition.py      # Outcome analysis
+│   ├── registry.py           # Skill registry
+│   └── scheduler.py          # Scheduler bridge
 │
-├── brain/                 # Layer 2 (almost frozen)
-│   ├── __init__.py
-│   └── core.py
+├── orchestrator/             # Control loop
+│   └── mission_orchestrator.py  # Plan → resolve → execute → report
 │
-├── cortex/                # Layer 3 (LLM reasoning)
-│   ├── __init__.py
-│   ├── mission_schema.py  # DAG schema (frozen early)
-│   ├── mission_cortex.py
-│   └── validators.py
+├── ir/                       # Intermediate Representation
+│   └── mission.py            # MissionPlan, MissionNode, OutputReference
 │
-├── infrastructure/        # PHYSIOLOGY (not cognition)
-│   ├── __init__.py
-│   ├── paths.py
-│   ├── browser_sessions.py
-│   ├── downloads.py
-│   └── filesystem.py
+├── world/                    # World state system
+│   ├── timeline.py           # Append-only event log
+│   ├── state.py              # Pure reducer: events → state
+│   ├── snapshot.py           # Frozen state snapshot
+│   └── resolver.py           # Schema generation
 │
-├── skills/                # Layer 4 (capabilities)
-│   ├── __init__.py
-│   ├── base.py
-│   ├── fs/
-│   ├── browser/
-│   ├── research/
-│   ├── judgment/
-│   ├── presentation/
-│   └── system/
+├── runtime/                  # Event loop + scheduling
+│   ├── event_loop.py         # Central polling loop
+│   ├── reflex_engine.py      # Deterministic fast-path
+│   ├── tick_scheduler.py     # Persistent job scheduler
+│   ├── task_store.py         # Job persistence
+│   ├── json_task_store.py    # JSON file backend
+│   ├── temporal_resolver.py  # Natural language → timestamps
+│   ├── attention.py          # Mission lifecycle tracking
+│   ├── completion_event.py   # Async completion events
+│   └── sources/              # Event sources (system, media, time, browser)
 │
-├── execution/             # Spinal cord
-│   ├── __init__.py
-│   ├── registry.py
-│   ├── executor.py
-│   └── scheduler.py
+├── memory/                   # User knowledge
+│   ├── user_knowledge.py     # Structured knowledge store
+│   └── store.py              # Key-value backend
 │
-├── reporting/             # Final synthesis
-│   └── report_builder.py
+├── infrastructure/           # OS + browser interaction
+│   ├── browser_use_adapter.py    # Playwright/CDP lifecycle
+│   ├── browser_use_controller.py # DOM interaction
+│   ├── browser_controller.py     # Abstract interface
+│   ├── browser_safety.py         # URL safety
+│   ├── system_controller.py      # OS control
+│   ├── application_registry.py   # App discovery + resolution
+│   ├── app_discovery.py          # Windows app enumeration
+│   ├── app_capabilities.py       # Media capability detection
+│   ├── session.py                # Browser session management
+│   └── location_config.py        # Path configuration
 │
-├── models/                # LLM adapters only
-│   └── ollama_client.py
+├── skills/                   # Layer 4: Capabilities
+│   ├── base.py               # Skill base class
+│   ├── contract.py           # SkillContract definition
+│   ├── browser/              # 7 browser skills
+│   ├── system/               # 20 system skills
+│   ├── fs/                   # 3 file system skills
+│   ├── memory/               # 4 memory skills
+│   └── reasoning/            # 1 reasoning skill
 │
-├── jarvis.py              # Orchestrator
-└── main.py                # Entry point
+├── perception/               # Layer 1: Input
+│   ├── perception_orchestrator.py # Multi-modal orchestration
+│   ├── text.py               # Text input
+│   ├── speech.py             # Speech input
+│   └── engines/              # STT engines (Whisper, Mock)
+│
+├── reporting/                # Output synthesis
+│   ├── report_builder.py     # LLM narration
+│   ├── narration.py          # Narration policy
+│   ├── notification_policy.py # Speak vs. show
+│   ├── output.py             # Console + TTS multiplexing
+│   └── engines/              # TTS engines (pyttsx3, Silent)
+│
+├── models/                   # LLM adapters
+│   ├── router.py             # Role-based model selection
+│   ├── base.py               # Abstract LLM client
+│   ├── openrouter_client.py  # OpenRouter API
+│   ├── gemini_client.py      # Google Gemini
+│   ├── ollama_client.py      # Local Ollama
+│   ├── huggingface_client.py # Hugging Face
+│   └── key_pool.py           # API key rotation
+│
+├── conversation/             # Turn tracking
+│   ├── frame.py              # ConversationFrame
+│   └── outcome.py            # Mission outcome
+│
+├── config/                   # Configuration
+│   ├── models.yaml           # LLM model assignments
+│   ├── skills.yaml           # Skill registry metadata
+│   ├── routing.yaml          # Cognitive routing rules
+│   ├── execution.yaml        # Execution limits + policies
+│   ├── paths.yaml            # OS path aliases
+│   ├── browser.yaml          # Browser configuration
+│   ├── app_aliases.yaml      # Application name aliases
+│   └── app_capabilities.yaml # Per-app media capabilities
+│
+├── state/                    # Persistent state
+│   ├── user_knowledge.json   # Stored user knowledge
+│   └── jobs/                 # Persisted scheduled jobs
+│
+├── metrics/                  # Performance measurement
+│   ├── collect_compiler_baseline.py
+│   └── measure_phase3*.py
+│
+└── tests/                    # Test suite (1400+ tests)
