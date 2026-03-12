@@ -91,11 +91,22 @@ class AppSession(Session):
 
 
 class BrowserSession(Session):
-    """Session for a browser automation context."""
+    """Session for a browser automation context.
+
+    Extended for browser-use integration:
+    - page_title: human-readable page identification
+    - last_action_summary: what the agent last did (for context)
+    - extracted_entities: structured data from the page (links, search results)
+      Keyed by entity type (e.g., 'links', 'search_results').
+      Used by MERLIN's entity_registry for follow-up resolution.
+    """
     type: SessionType = SessionType.BROWSER
     driver_id: str = ""
     current_url: Optional[str] = None
+    page_title: Optional[str] = None
     tab_count: int = 0
+    last_action_summary: Optional[str] = None
+    extracted_entities: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TerminalSession(Session):
@@ -522,11 +533,17 @@ class SessionManager:
             browser_sessions = []
             for s in self._sessions.values():
                 if isinstance(s, BrowserSession):
-                    browser_sessions.append({
+                    entry: Dict[str, Any] = {
                         "session_id": s.id,
-                        "current_url": s.current_url,
+                        "current_url": s.current_url or "",
+                        "page_title": s.page_title or "",
                         "tab_count": s.tab_count,
-                    })
+                    }
+                    if s.last_action_summary:
+                        entry["last_action"] = s.last_action_summary
+                    if s.extracted_entities:
+                        entry["extracted_entities"] = s.extracted_entities
+                    browser_sessions.append(entry)
 
             # Task stack summary
             task_stack = []

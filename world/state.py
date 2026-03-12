@@ -108,6 +108,22 @@ class TimeState(BaseModel):
     date: Optional[str] = None
 
 
+class BrowserWorldState(BaseModel):
+    """Browser subsystem state. Updated by BrowserSource events.
+
+    Validity:
+    - active=False → no browser connection detected
+    - active=True  → browser is connected, url/title/tabs are authoritative
+    """
+    active: bool = False
+    url: Optional[str] = None
+    title: Optional[str] = None
+    entity_count: int = 0
+    tab_count: int = 0
+    active_tab_id: Optional[str] = None
+    tab_urls: List[str] = Field(default_factory=list)
+
+
 class WorldState(BaseModel):
     """
     Deterministic projection of the world at a point in time.
@@ -135,6 +151,8 @@ class WorldState(BaseModel):
     system: SystemState = Field(default_factory=SystemState)
     time: Optional[TimeState] = None
     time_known: bool = False
+
+    browser: BrowserWorldState = Field(default_factory=BrowserWorldState)
 
     last_user_focus: Optional[str] = None
 
@@ -399,5 +417,20 @@ class WorldState(BaseModel):
                     state.system.hardware.battery_charging = p.get("battery_charging")
                 if p.get("disk") is not None:
                     state.system.resources.disk_percent = p["disk"]
+
+            # ── Browser ──
+            elif t in ("browser_state_snapshot", "browser_page_changed"):
+                state.browser = BrowserWorldState(
+                    active=True,
+                    url=p.get("url"),
+                    title=p.get("title"),
+                    entity_count=p.get("entity_count", 0),
+                    tab_count=p.get("tab_count", 0),
+                    active_tab_id=p.get("active_tab_id"),
+                    tab_urls=p.get("tab_urls", []),
+                )
+
+            elif t == "browser_disconnected":
+                state.browser = BrowserWorldState(active=False)
 
         return state

@@ -721,6 +721,39 @@ User query:
             "capabilities (supports_typing, supports_copy, supports_save). "
             "Do NOT plan typing actions for apps that don't support typing."
         )
+
+        # Browser-specific context injection rule
+        if context.get("browser_sessions"):
+            bs = context["browser_sessions"][0]
+            url = bs.get("current_url", "")
+            title = bs.get("page_title", "")
+            if url and url != "about:blank":
+                lines.append("")
+                lines.append(
+                    "BROWSER CONTEXT (important): An active browser session exists. "
+                    f"Current page: {title} ({url}). "
+                )
+                # Surface typed entities for referential resolution
+                entities = bs.get("extracted_entities", {})
+                top_links = entities.get("top_links", [])
+                if top_links:
+                    entity_lines = []
+                    for l in top_links[:10]:
+                        etype = l.get("type", "link")
+                        etitle = l.get("title", "")
+                        entity_lines.append(
+                            f"  [{l['index']}] {etype}: \"{etitle}\""
+                        )
+                    lines.append("  Page entities:")
+                    lines.extend(entity_lines)
+                lines.append(
+                    "  ROUTING: For simple browser actions use the dedicated skill: "
+                    "browser.click(entity_index), browser.scroll(direction), "
+                    "browser.navigate(url), browser.fill(entity_index, text), "
+                    "browser.go_back(), browser.go_forward(). "
+                    "For complex multi-step browsing, route to browser.autonomous_task."
+                )
+
         return "\n".join(lines)
 
     def _build_failure_context_section(

@@ -87,3 +87,11 @@ speech_act_classifier:
   temperature: 0.0
   max_tokens: 64  # Single word output
 
+browser_agent:
+  # browser-use uses ChatGoogle (langchain) — NOT MERLIN's LLMClient.
+  # This role configures which model to use for browser automation.
+  # API key: set GOOGLE_BROWSER_AGENT_API_KEY in .env
+  # The BrowserUseAdapter reads model name from here and creates
+  # ChatGoogle directly, bypassing ModelRouter.
+  model: gemini-2.5-flash
+

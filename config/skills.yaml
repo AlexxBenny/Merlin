@@ -157,6 +157,32 @@ skills:
     module: "skills.memory.memory_skills"
     class: "AddPolicySkill"
 
-  # - name: "browser.open"
-  #   module: "skills.browser.open"
-  #   class: "BrowserOpenSkill"
+  # ── Browser domain (browser-use AI automation) ──
+
+  - name: "browser.autonomous_task"
+    module: "skills.browser.autonomous_task"
+    class: "BrowserAutonomousTaskSkill"
+
+  - name: "browser.click"
+    module: "skills.browser.browser_click"
+    class: "BrowserClickSkill"
+
+  - name: "browser.navigate"
+    module: "skills.browser.browser_navigate"
+    class: "BrowserNavigateSkill"
+
+  - name: "browser.scroll"
+    module: "skills.browser.browser_scroll"
+    class: "BrowserScrollSkill"
+
+  - name: "browser.fill"
+    module: "skills.browser.browser_fill"
+    class: "BrowserFillSkill"
+
+  - name: "browser.go_back"
+    module: "skills.browser.browser_go_back"
+    class: "BrowserGoBackSkill"
+
+  - name: "browser.go_forward"
+    module: "skills.browser.browser_go_forward"
+    class: "BrowserGoForwardSkill"

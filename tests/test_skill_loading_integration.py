@@ -70,6 +70,19 @@ def production_deps():
     user_knowledge.set_fact.return_value = None
     user_knowledge.add_policy.return_value = "mock-policy-id"
 
+    # browser_adapter: mock — required by browser.autonomous_task
+    browser_adapter = MagicMock()
+    browser_adapter.is_available.return_value = True
+    browser_adapter._config = {}
+    browser_adapter.run_task.return_value = {
+        "success": True, "final_url": "", "page_title": "",
+        "links": [], "action_history": [], "steps_taken": 0, "error": "",
+    }
+
+    # browser_controller: mock — required by browser.action
+    browser_controller = MagicMock()
+    browser_controller.is_alive.return_value = False
+
     # location_config: None is fine — fs skills will be skipped
     # We test separately that skipped skills are accounted for
     deps = {
@@ -79,6 +92,9 @@ def production_deps():
         "task_store": task_store,
         "session_manager": MagicMock(),
         "user_knowledge": user_knowledge,
+        "app_registry": MagicMock(),
+        "browser_adapter": browser_adapter,
+        "browser_controller": browser_controller,
     }
     yield deps
     os.unlink(tmp.name)

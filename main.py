@@ -187,6 +187,7 @@ def build_event_sources(
     system_controller=None,
     timeline=None,
     app_registry=None,
+    browser_controller=None,
 ) -> list:
     """
     Construct enabled event sources from execution.yaml.
@@ -238,6 +239,20 @@ def build_event_sources(
             logger.info("MediaSource enabled")
         except Exception as e:
             logger.warning("MediaSource construction failed: %s", e)
+
+    # BrowserSource
+    browser_cfg = sources_cfg.get("browser", {})
+    if browser_cfg.get("enabled", False):
+        try:
+            from runtime.sources.browser import BrowserSource
+            sources.append(BrowserSource(
+                browser_controller=browser_controller,
+                poll_interval=browser_cfg.get("poll_interval", 30.0),
+            ))
+            logger.info("BrowserSource enabled (poll_interval=%.0fs)",
+                        browser_cfg.get("poll_interval", 30.0))
+        except Exception as e:
+            logger.warning("BrowserSource construction failed: %s", e)
 
     return sources
 
@@ -433,6 +448,44 @@ def main(args=None):
         except Exception as e:
             logger.warning("Task store init failed: %s", e)
 
+    # ── Browser-Use Adapter (browser AI automation) ──
+    browser_config = load_yaml("browser.yaml")
+    browser_adapter = None
+    if browser_config.get("browser_use", {}).get("enabled", False):
+        try:
+            import os as _os
+            from infrastructure.browser_use_adapter import BrowserUseAdapter
+
+            browser_agent_key = _os.environ.get("GOOGLE_BROWSER_AGENT_API_KEY", "")
+            browser_model = models_config.get("browser_agent", {}).get(
+                "model", "gemini-2.5-flash"
+            )
+
+            browser_adapter = BrowserUseAdapter(
+                config=browser_config.get("browser_use", {}),
+                api_key=browser_agent_key,
+                model_name=browser_model,
+            )
+            logger.info(
+                "BrowserUseAdapter initialized (model=%s, max_steps=%d)",
+                browser_model,
+                browser_config.get("browser_use", {}).get("max_steps", 20),
+            )
+        except Exception as e:
+            logger.warning("BrowserUseAdapter init failed — browser skills disabled: %s", e)
+    else:
+        logger.info("Browser-use disabled in config")
+
+    # ── Browser Controller (deterministic browser control layer) ──
+    browser_controller = None
+    if browser_adapter:
+        try:
+            from infrastructure.browser_use_controller import BrowserUseController
+            browser_controller = BrowserUseController(browser_adapter)
+            logger.info("BrowserUseController initialized")
+        except Exception as e:
+            logger.warning("BrowserUseController init failed: %s", e)
+
     skill_deps = {
         "location_config": location_config,
         "system_controller": system_controller,
@@ -440,6 +493,8 @@ def main(args=None):
         "task_store": task_store,
         "session_manager": session_manager,
         "app_registry": app_registry,
+        "browser_adapter": browser_adapter,
+        "browser_controller": browser_controller,
         # NOTE: user_knowledge is NOT included here.
         # Memory skills require UserKnowledgeStore which hasn't been
         # created yet. They are registered in a separate late-load pass
@@ -504,6 +559,7 @@ def main(args=None):
         system_controller=system_controller,
         timeline=timeline,
         app_registry=app_registry,
+        browser_controller=browser_controller,
     )
 
     # ── Memory ──
@@ -819,6 +875,12 @@ def main(args=None):
 
     finally:
         merlin.stop()
+        # Shutdown browser adapter (close Chrome, stop event loop)
+        if browser_adapter is not None:
+            try:
+                browser_adapter.shutdown()
+            except Exception as e:
+                logger.warning("Browser adapter shutdown error: %s", e)
         print("MERLIN — Offline.")
 
 

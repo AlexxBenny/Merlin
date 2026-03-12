@@ -390,6 +390,39 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="UUID string identifying a stored policy.",
         direction="output",
     ),
+
+    # ── Browser domain ──
+    "browser_task_description": SemanticType(
+        description=(
+            "A natural language description of a browser task to perform "
+            "(e.g., \"search gaming laptops on amazon\", "
+            "\"go to youtube.com and play lofi music\")."
+        ),
+        direction="input",
+    ),
+    "url_string": SemanticType(
+        description="A URL string (e.g., \"https://example.com\").",
+        direction="both",
+    ),
+    "step_limit": SemanticType(
+        description="Maximum number of browser automation steps (default: 20).",
+        direction="input",
+        python_type=int,
+        range_min=1, range_max=50,
+    ),
+    "entity_index": SemanticType(
+        description="Browser DOM entity index to interact with.",
+        direction="input",
+        python_type=int,
+    ),
+    "scroll_direction": SemanticType(
+        description="Scroll direction: 'up' or 'down'.",
+        direction="input",
+    ),
+    "fill_text": SemanticType(
+        description="Text to type into a browser input field.",
+        direction="input",
+    ),
 }
 
 

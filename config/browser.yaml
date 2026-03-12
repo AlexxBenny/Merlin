@@ -1,0 +1,51 @@
+# config/browser.yaml
+#
+# Browser-Use integration configuration.
+# Controls the BrowserUseAdapter and safety gate.
+#
+# browser-use is a Python library for AI browser automation.
+# It runs an LLM-driven agent that observes, reasons, and acts on web pages.
+# MERLIN orchestrates it as a skill; browser-use explores.
+
+browser_use:
+  enabled: true
+
+  # ── Agent settings ──
+  max_steps: 20                    # Default max steps per task
+  agent_timeout_seconds: 120       # Hard timeout for agent execution
+  headless: false                  # Show browser window
+  keep_alive: true                 # Persist browser across tasks
+
+  # ── Chrome configuration ──
+  # Dedicated browser profile — separate from user's personal Chrome.
+  # This prevents the browser agent from accessing personal cookies,
+  # passwords, or browsing history.
+  chrome_executable: ""           # Auto-detect Chrome installation
+  user_data_dir: "D:/aura/browser_profiles/default"
+  chrome_profile: "Default"       # Profile folder inside user_data_dir
+
+  # ── DOM extraction ──
+  max_extracted_links: 15          # Cap extracted links per page
+
+  # ── Safety gate (mandatory) ──
+  safety:
+    blocked_domains:
+      - "bank"
+      - "paypal"
+      - "chase"
+      - "wellsfargo"
+      - "citibank"
+      - "venmo"
+    blocked_actions:
+      - "checkout"
+      - "purchase"
+      - "submit payment"
+      - "confirm order"
+      - "place order"
+      - "buy now"
+      - "add to cart"
+    require_confirmation_for:
+      - "login"
+      - "form_submit"
+      - "download"
+    max_steps_hard_limit: 50

@@ -110,7 +110,8 @@ sources:
     enabled: true
     tick_interval: 60              # Seconds between time_tick events
   browser:
-    enabled: false                 # Not implemented yet
+    enabled: true
+    poll_interval: 30.0            # Seconds between browser state polls
 
 # ─────────────────────────────────────────────────────────────
 # System Thresholds (hysteresis pairs)
@@ -316,5 +317,26 @@ notifications:
     priority: "background"
 
   - event_type: "system_state_snapshot"
+    action: "ignore"
+    priority: "background"
+
+  # Browser events
+  - event_type: "browser_state_snapshot"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "browser_page_changed"
+    action: "log"
+    priority: "background"
+
+  - event_type: "browser_disconnected"
+    action: "log"
+    priority: "info"
+
+  - event_type: "browser_action_completed"
+    action: "ignore"
+    priority: "background"
+
+  - event_type: "browser_task_completed"
     action: "ignore"
     priority: "background"
