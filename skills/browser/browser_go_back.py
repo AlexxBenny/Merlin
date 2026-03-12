@@ -33,6 +33,7 @@ class BrowserGoBackSkill(Skill):
         inputs={},
         outputs={
             "url": "url_string",
+            "page_title": "info_string",
         },
         allowed_modes={ExecutionMode.foreground},
         failure_policy={
@@ -53,6 +54,7 @@ class BrowserGoBackSkill(Skill):
             raise RuntimeError(f"Go back failed: {result.error}")
 
         url = result.snapshot.url if result.snapshot else ""
+        page_title = result.snapshot.title if result.snapshot else ""
 
         world.emit("skill.browser", "browser_action_completed", {
             "action": "go_back",
@@ -60,6 +62,6 @@ class BrowserGoBackSkill(Skill):
         })
 
         return SkillResult(
-            outputs={"url": url},
+            outputs={"url": url, "page_title": page_title},
             metadata={"domain": "browser", "entity": "go back"},
         )

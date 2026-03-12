@@ -48,9 +48,10 @@ class BrowserScrollSkill(Skill):
         self._controller = browser_controller
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
-        direction = str(inputs.get("direction", "down")).lower()
-        if direction not in ("up", "down"):
-            direction = "down"
+        direction = str(inputs.get("direction", "down")).lower().strip()
+        # Normalize natural language to valid direction
+        UP_SYNONYMS = {"up", "top", "above", "upward"}
+        direction = "up" if direction in UP_SYNONYMS else "down"
 
         result = self._controller.scroll_page(direction)
 

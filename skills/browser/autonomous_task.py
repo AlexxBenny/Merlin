@@ -144,8 +144,26 @@ class BrowserAutonomousTaskSkill(Skill):
                     f"Safety gate blocked: {verdict.reason}"
                 )
 
-        # ── 3. Run task via adapter ──
-        result = self._adapter.run_task(task, max_steps=max_steps)
+        # ── 3. Inject browser session context ──
+        # If a browser session exists, tell the agent where it is
+        # so it continues from the current page instead of opening a new one.
+        enriched_task = task
+        if self._controller:
+            try:
+                if self._controller.is_alive():
+                    current = self._controller.get_snapshot(cached=True)
+                    if current.url and current.url != "about:blank":
+                        enriched_task = (
+                            f"Context: Browser is currently on {current.url}"
+                            f' ("{current.title or ""}"). '
+                            f"Continue from this page if relevant. "
+                            f"Task: {task}"
+                        )
+            except Exception:
+                pass  # Graceful degradation — just use raw task
+
+        # ── 4. Run task via adapter ──
+        result = self._adapter.run_task(enriched_task, max_steps=max_steps)
 
         # ── 4. ALWAYS update BrowserSession ──
         # Browser exists → session must exist, even if task failed.

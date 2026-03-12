@@ -50,6 +50,7 @@ class BrowserSource(EventSource):
         self._last_url: Optional[str] = None
         self._last_title: Optional[str] = None
         self._last_tab_count: int = 0
+        self._last_entity_count: int = 0
         self._was_alive: bool = False
 
     def bootstrap(self) -> List[WorldEvent]:
@@ -65,6 +66,7 @@ class BrowserSource(EventSource):
             self._last_url = snapshot.url
             self._last_title = snapshot.title
             self._last_tab_count = snapshot.tab_count
+            self._last_entity_count = len(snapshot.entities)
             self._was_alive = True
 
             return [self._make_event(
@@ -77,7 +79,9 @@ class BrowserSource(EventSource):
                     snapshot.tabs[0].tab_id if snapshot.tabs else None
                 ),
                 tab_urls=[t.url for t in snapshot.tabs],
+                top_entities=self._extract_top_entities(snapshot),
             )]
+
         except Exception as e:
             logger.debug("BrowserSource bootstrap failed: %s", e)
             return []
@@ -128,6 +132,8 @@ class BrowserSource(EventSource):
         url_changed = snapshot.url != self._last_url
         title_changed = snapshot.title != self._last_title
         tab_changed = snapshot.tab_count != self._last_tab_count
+        entity_count = len(snapshot.entities)
+        entity_changed = entity_count != self._last_entity_count
 
         if url_changed or title_changed or tab_changed:
             events.append(self._make_event(
@@ -135,18 +141,53 @@ class BrowserSource(EventSource):
                 url=snapshot.url,
                 title=snapshot.title,
                 prev_url=self._last_url,
-                entity_count=len(snapshot.entities),
+                entity_count=entity_count,
                 tab_count=snapshot.tab_count,
                 active_tab_id=(
                     snapshot.tabs[0].tab_id if snapshot.tabs else None
                 ),
                 tab_urls=[t.url for t in snapshot.tabs],
+                top_entities=self._extract_top_entities(snapshot),
             ))
-            self._last_url = snapshot.url
-            self._last_title = snapshot.title
-            self._last_tab_count = snapshot.tab_count
+        elif entity_changed:
+            # Entity count changed without URL change (scroll, dynamic load)
+            # Emit entity refresh so WorldState.browser.top_entities is updated
+            events.append(self._make_event(
+                now, "browser_entities_refreshed",
+                url=snapshot.url,
+                title=snapshot.title,
+                entity_count=entity_count,
+                tab_count=snapshot.tab_count,
+                active_tab_id=(
+                    snapshot.tabs[0].tab_id if snapshot.tabs else None
+                ),
+                tab_urls=[t.url for t in snapshot.tabs],
+                top_entities=self._extract_top_entities(snapshot),
+            ))
+
+        self._last_url = snapshot.url
+        self._last_title = snapshot.title
+        self._last_tab_count = snapshot.tab_count
+        self._last_entity_count = entity_count
 
         return events
+
+    @staticmethod
+    def _extract_top_entities(snapshot, limit: int = 10) -> list:
+        """Extract top N entities as lightweight dicts for WorldState.
+
+        Returns [{index, type, text}, ...] capped at `limit`.
+        These propagate through WorldState → coordinator prompt
+        via _extract_world_facts() model_dump().
+        """
+        entities = []
+        for e in snapshot.entities[:limit]:
+            entities.append({
+                "index": e.index,
+                "type": e.entity_type,
+                "text": (e.text[:60] + "...") if len(e.text) > 60 else e.text,
+            })
+        return entities
 
     @staticmethod
     def _make_event(

@@ -663,26 +663,30 @@ class BrowserUseAdapter:
         on crash or first call.
         """
         if self._browser is not None:
-            # Check if browser is still connected
+            # Check if browser is still connected via CDP-level signals.
+            # DO NOT use Playwright internals (browser.contexts[0].pages) —
+            # browser-use manages targets independently via CDP, so
+            # Playwright's page list can be empty even when CDP is alive.
             try:
-                browser_ctx = self._browser
-                if hasattr(browser_ctx, 'browser') and browser_ctx.browser:
-                    contexts = browser_ctx.browser.contexts
-                    if contexts:
-                        pages = contexts[0].pages
-                        if pages:
-                            logger.debug(
-                                "[BrowserAdapter] Task #%d: browser alive "
-                                "(pages=%d, url=%s)",
-                                task_id, len(pages),
-                                pages[-1].url[:80] if pages[-1].url else "?",
-                            )
-                            return
-                # If we get here, browser structure is broken
+                is_cdp_alive = getattr(
+                    self._browser, 'is_cdp_connected', False,
+                )
+                conn = getattr(self._browser, 'connection', None)
+                is_ws_open = (
+                    getattr(conn, 'is_open', True) if conn else True
+                )
+                if is_cdp_alive and is_ws_open:
+                    logger.debug(
+                        "[BrowserAdapter] Task #%d: browser alive "
+                        "(CDP connected, WebSocket open)",
+                        task_id,
+                    )
+                    return
+                # CDP or WebSocket dead — browser needs recreation
                 logger.info(
-                    "[BrowserAdapter] Task #%d: browser disconnected or "
-                    "structure broken, recreating...",
-                    task_id,
+                    "[BrowserAdapter] Task #%d: browser disconnected "
+                    "(cdp=%s, ws=%s), recreating...",
+                    task_id, is_cdp_alive, is_ws_open,
                 )
             except Exception as e:
                 logger.info(

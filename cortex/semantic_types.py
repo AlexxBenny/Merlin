@@ -423,6 +423,14 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="Text to type into a browser input field.",
         direction="input",
     ),
+    "entity_ref": SemanticType(
+        description=(
+            "Text description of a browser entity to match "
+            "(e.g., 'howard stark', 'macbook listing'). "
+            "Resolved to entity_index by EntityResolver before execution."
+        ),
+        direction="input",
+    ),
 }
 
 

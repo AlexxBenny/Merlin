@@ -114,6 +114,9 @@ class BrowserWorldState(BaseModel):
     Validity:
     - active=False → no browser connection detected
     - active=True  → browser is connected, url/title/tabs are authoritative
+
+    top_entities: Up to 10 interactive page entities (index, type, text).
+    Propagated to coordinator prompt automatically via _extract_world_facts().
     """
     active: bool = False
     url: Optional[str] = None
@@ -122,6 +125,7 @@ class BrowserWorldState(BaseModel):
     tab_count: int = 0
     active_tab_id: Optional[str] = None
     tab_urls: List[str] = Field(default_factory=list)
+    top_entities: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WorldState(BaseModel):
@@ -419,7 +423,8 @@ class WorldState(BaseModel):
                     state.system.resources.disk_percent = p["disk"]
 
             # ── Browser ──
-            elif t in ("browser_state_snapshot", "browser_page_changed"):
+            elif t in ("browser_state_snapshot", "browser_page_changed",
+                        "browser_entities_refreshed"):
                 state.browser = BrowserWorldState(
                     active=True,
                     url=p.get("url"),
@@ -428,6 +433,7 @@ class WorldState(BaseModel):
                     tab_count=p.get("tab_count", 0),
                     active_tab_id=p.get("active_tab_id"),
                     tab_urls=p.get("tab_urls", []),
+                    top_entities=p.get("top_entities", []),
                 )
 
             elif t == "browser_disconnected":

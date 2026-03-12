@@ -10,6 +10,9 @@ Follows system.mute pattern: parse → controller → emit → return.
 """
 
 from typing import Any, Dict
+import logging
+
+logger = logging.getLogger(__name__)
 
 from skills.base import Skill
 from skills.contract import SkillContract, FailurePolicy
@@ -34,9 +37,11 @@ class BrowserClickSkill(Skill):
         requires_focus=True,
         inputs={
             "entity_index": "entity_index",
+            "entity_ref": "entity_ref",
         },
         outputs={
             "url": "url_string",
+            "page_title": "info_string",
         },
         allowed_modes={ExecutionMode.foreground},
         failure_policy={
@@ -52,12 +57,42 @@ class BrowserClickSkill(Skill):
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
         index = int(inputs["entity_index"])
+        # Entity text from resolver — used to verify against index drift.
+        # If the resolver resolved entity_ref, it sets _resolved_entity_text.
+        # If the compiler set entity_index directly, this is empty.
+        expected_text = inputs.pop("_resolved_entity_text", "")
 
-        page_snapshot = self._controller.get_snapshot(cached=True)
+        # ALWAYS use a fresh snapshot — cached snapshot may be stale
+        # due to DOM mutations (scroll, dynamic content, SPA navigation)
+        # between entity resolution and skill execution.
+        page_snapshot = self._controller.get_snapshot(cached=False)
+
         entity = next(
             (e for e in page_snapshot.entities if e.index == index),
             None,
         )
+
+        # Verify: if resolver provided expected text, confirm the entity
+        # at this index still matches. If not, the DOM shifted — try
+        # to find the right entity by text match.
+        if entity and expected_text:
+            if expected_text.lower() not in entity.text.lower():
+                # Index drifted — search by text instead
+                fallback = next(
+                    (e for e in page_snapshot.entities
+                     if expected_text.lower() in e.text.lower()),
+                    None,
+                )
+                if fallback:
+                    logger.info(
+                        "[BrowserClick] Index %d drifted (was '%s', now '%s'). "
+                        "Found by text at index %d.",
+                        index, expected_text[:30],
+                        entity.text[:30], fallback.index,
+                    )
+                    entity = fallback
+                    index = fallback.index
+
         if not entity:
             raise RuntimeError(
                 f"No entity at index {index} "
@@ -76,6 +111,9 @@ class BrowserClickSkill(Skill):
         })
 
         return SkillResult(
-            outputs={"url": result.snapshot.url if result.snapshot else ""},
+            outputs={
+                "url": result.snapshot.url if result.snapshot else "",
+                "page_title": result.snapshot.title if result.snapshot else "",
+            },
             metadata={"domain": "browser", "entity": f"click entity {index}"},
         )

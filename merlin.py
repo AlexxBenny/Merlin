@@ -608,9 +608,38 @@ class Merlin:
         Orchestrator adds LLM narration + LLM report generation.
         ParameterResolver is injected directly here instead.
         """
+        # ── Ordinal entity resolution pre-check ──
+        # When browser has entities and query has an ordinal reference
+        # ("first", "second", "3rd"), override to browser.click.
+        # Must run BEFORE template matching to prevent misroutes like
+        # "open the first site" → browser.navigate("first").
+        from brain.ordinal_resolver import detect_ordinal_entity_reference
+        from runtime.reflex_engine import ReflexMatch
+        browser_state = snapshot.state.browser
+        if browser_state.active and browser_state.top_entities:
+            ordinal_result = detect_ordinal_entity_reference(
+                percept.payload, browser_state.top_entities,
+            )
+            if ordinal_result is not None:
+                entity_index, matched_text = ordinal_result
+                logger.info(
+                    "Ordinal entity override: '%s' → browser.click(%d)",
+                    percept.payload[:50], entity_index,
+                )
+                reflex_match = ReflexMatch(
+                    skill="browser.click",
+                    params={"entity_index": entity_index},
+                )
+                # Skip normal template matching — jump to execution
+                # (reused from line below)
+            else:
+                reflex_match = None
+        else:
+            reflex_match = None
 
-        # Try template matching
-        reflex_match = self.reflex_engine.try_match(percept.payload)
+        # Try template matching (only if ordinal didn't override)
+        if reflex_match is None:
+            reflex_match = self.reflex_engine.try_match(percept.payload)
 
         if reflex_match:
             logger.info(
@@ -641,15 +670,18 @@ class Merlin:
                 resolver = ParameterResolver(self.reflex_engine.registry)
                 resolved_plan = resolver.resolve_plan(temp_plan)
 
-                # ── Phase 9C: Entity resolution (reflex path) ──
+                # ── Phase 9C/9D: Entity resolution (reflex path) ──
                 entity_resolver = getattr(
                     self.orchestrator, '_entity_resolver', None,
                 )
                 if entity_resolver is not None:
                     from cortex.entity_resolver import EntityResolutionError
                     try:
+                        # Build world state for browser entity resolution
+                        reflex_events = self.timeline.all_events()
+                        reflex_ws = WorldState.from_events(reflex_events)
                         resolved_plan = entity_resolver.resolve_plan(
-                            resolved_plan,
+                            resolved_plan, world_snapshot=reflex_ws,
                         )
                     except EntityResolutionError as ere:
                         response = ere.user_message()

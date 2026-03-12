@@ -33,6 +33,7 @@ class BrowserGoForwardSkill(Skill):
         inputs={},
         outputs={
             "url": "url_string",
+            "page_title": "info_string",
         },
         allowed_modes={ExecutionMode.foreground},
         failure_policy={
@@ -53,6 +54,7 @@ class BrowserGoForwardSkill(Skill):
             raise RuntimeError(f"Go forward failed: {result.error}")
 
         url = result.snapshot.url if result.snapshot else ""
+        page_title = result.snapshot.title if result.snapshot else ""
 
         world.emit("skill.browser", "browser_action_completed", {
             "action": "go_forward",
@@ -60,6 +62,6 @@ class BrowserGoForwardSkill(Skill):
         })
 
         return SkillResult(
-            outputs={"url": url},
+            outputs={"url": url, "page_title": page_title},
             metadata={"domain": "browser", "entity": "go forward"},
         )

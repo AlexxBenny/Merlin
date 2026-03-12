@@ -3,14 +3,15 @@
 """
 EntityResolver — Post-compilation entity normalization.
 
-Sits in the MissionOrchestrator transform chain as Phase 9C:
+Sits in the MissionOrchestrator transform chain as Phase 9C/9D:
 
-    Compiler → ParameterResolver (9A) → PreferenceResolver (9B) → EntityResolver (9C) → Executor
+    Compiler → ParameterResolver (9A) → PreferenceResolver (9B)
+            → EntityResolver (9C: app entities, 9D: browser entities) → Executor
 
 Responsibilities:
-- Scan plan nodes for skills with entity_params in their contract
-- Resolve each entity parameter to a canonical app_id via ApplicationRegistry
-- Add app_id alongside original app_name (never overwrite)
+- Phase 9C: Resolve app entity_params to canonical app_id via ApplicationRegistry
+- Phase 9D: Resolve browser entity_ref to entity_index via WorldState entities
+- Add app_id / entity_index alongside original params (never overwrite)
 - Return structured outcomes (resolved/ambiguous/not_found)
 - Raise EntityResolutionError for ambiguous or not_found (user clarification)
 
@@ -18,12 +19,14 @@ Design:
 - Follows same pattern as ParameterResolver (operates on MissionPlan)
 - Never mutates the original plan — produces new MissionPlan
 - Uses SkillContract.entity_params — NOT hardcoded skill names
+- Browser entity scoring: pure cosine similarity (no TF-IDF)
 - Candidate set is extensible (future: favorites, recent, GUI apps)
 - Skips IRReference values (runtime-resolved pipes)
 """
 
 import copy
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -117,6 +120,17 @@ class EntityResolutionError(Exception):
                     f"Which did you mean by \"{v.raw_value}\"? "
                     f"Options: {options}"
                 )
+            elif v.resolution_type == "not_found_browser":
+                if v.candidates:
+                    options = ", ".join(v.candidates[:5])
+                    parts.append(
+                        f"I can't find \"{v.raw_value}\" on this page. "
+                        f"I see: {options}"
+                    )
+                else:
+                    parts.append(
+                        f"I can't find \"{v.raw_value}\" on this page."
+                    )
             else:
                 if v.candidates:
                     suggestion = v.candidates[0]
@@ -168,8 +182,16 @@ class EntityResolver:
             for key, value in alias_map.items():
                 self._aliases[key.lower().strip()] = value.lower().strip()
 
-    def resolve_plan(self, plan: MissionPlan) -> MissionPlan:
+    def resolve_plan(
+        self,
+        plan: MissionPlan,
+        world_snapshot=None,
+    ) -> MissionPlan:
         """Produce a new MissionPlan with entity params resolved.
+
+        Two resolution passes:
+        - Phase 9C: App entity params → ApplicationRegistry
+        - Phase 9D: Browser entity_ref → WorldState.browser.top_entities
 
         Never mutates the original plan.
         Raises EntityResolutionError if any entity cannot be resolved.
@@ -177,6 +199,7 @@ class EntityResolver:
         violations: List[EntityViolation] = []
         resolved_nodes: List[MissionNode] = []
 
+        # ── Phase 9C: App entity resolution ──
         for node in plan.nodes:
             resolved_inputs, node_violations = self._resolve_node(node)
             violations.extend(node_violations)
@@ -190,6 +213,24 @@ class EntityResolver:
                 mode=node.mode,
             )
             resolved_nodes.append(new_node)
+
+        # ── Phase 9D: Browser entity resolution ──
+        browser_entities = []
+        if world_snapshot is not None:
+            browser_entities = getattr(
+                getattr(world_snapshot, 'browser', None),
+                'top_entities', [],
+            ) or []
+
+        for node in resolved_nodes:
+            if (node.skill == "browser.click"
+                    and "entity_ref" in node.inputs
+                    and not isinstance(node.inputs.get("entity_ref"), IRReference)):
+                ref_text = str(node.inputs["entity_ref"])
+                browser_violations = self._resolve_browser_entity(
+                    node, ref_text, browser_entities,
+                )
+                violations.extend(browser_violations)
 
         if violations:
             raise EntityResolutionError(violations=violations)
@@ -410,3 +451,145 @@ class EntityResolver:
     def resolve_terms(self, terms: List[str]) -> List[ResolutionResult]:
         """Resolve multiple terms (batch convenience method)."""
         return [self.resolve(term) for term in terms]
+
+    # ─────────────────────────────────────────────────────────
+    # Browser entity resolution (Phase 9D)
+    # ─────────────────────────────────────────────────────────
+
+    def _resolve_browser_entity(
+        self,
+        node: MissionNode,
+        ref_text: str,
+        entities: List[Dict[str, Any]],
+    ) -> List[EntityViolation]:
+        """Resolve entity_ref → entity_index for a browser.click node.
+
+        Uses cosine similarity between query tokens and entity text tokens.
+        Thresholds:
+          score < 0.55            → NOT_FOUND
+          second > 0.8 * first    → AMBIGUOUS
+          else                    → RESOLVED
+
+        On RESOLVED: replaces entity_ref with entity_index in node.inputs.
+        On AMBIGUOUS/NOT_FOUND: appends violation for ask-back / recompile.
+        """
+        if not entities:
+            return [EntityViolation(
+                node_id=node.id,
+                skill=node.skill,
+                param_key="entity_ref",
+                raw_value=ref_text,
+                resolution_type="not_found_browser",
+                candidates=[],
+            )]
+
+        query_tokens = self._tokenize(ref_text)
+        if not query_tokens:
+            return [EntityViolation(
+                node_id=node.id,
+                skill=node.skill,
+                param_key="entity_ref",
+                raw_value=ref_text,
+                resolution_type="not_found_browser",
+                candidates=[],
+            )]
+
+        scores = []
+        for entity in entities:
+            etext = entity.get("text", "")
+            entity_tokens = self._tokenize(etext)
+            score = self._cosine_similarity(query_tokens, entity_tokens)
+            scores.append((entity, score))
+
+        scores.sort(key=lambda x: -x[1])
+        top_entity, top_score = scores[0]
+        entity_names = [e.get("text", "") for e, _ in scores[:5]]
+
+        # NOT_FOUND: confidence too low
+        if top_score < 0.55:
+            logger.info(
+                "[ENTITY-BROWSER] '%s' → NOT_FOUND (top_score=%.2f)",
+                ref_text, top_score,
+            )
+            return [EntityViolation(
+                node_id=node.id,
+                skill=node.skill,
+                param_key="entity_ref",
+                raw_value=ref_text,
+                resolution_type="not_found_browser",
+                candidates=entity_names,
+            )]
+
+        # AMBIGUOUS: second candidate too close to first
+        if len(scores) > 1:
+            second_score = scores[1][1]
+            if second_score > 0.8 * top_score:
+                candidates = [e.get("text", "") for e, _ in scores[:3]]
+                logger.info(
+                    "[ENTITY-BROWSER] '%s' → AMBIGUOUS (%.2f vs %.2f)",
+                    ref_text, top_score, second_score,
+                )
+                return [EntityViolation(
+                    node_id=node.id,
+                    skill=node.skill,
+                    param_key="entity_ref",
+                    raw_value=ref_text,
+                    resolution_type="ambiguous",
+                    candidates=candidates,
+                )]
+
+        # RESOLVED: clear winner
+        resolved_index = top_entity.get("index", 0)
+        resolved_text = top_entity.get("text", "")
+        logger.info(
+            "[ENTITY-BROWSER] '%s' → entity_index=%d '%s' (score=%.2f)",
+            ref_text, resolved_index,
+            resolved_text[:50], top_score,
+        )
+        # Replace entity_ref with entity_index + resolved text for
+        # execution-time verification. The skill uses the text to
+        # confirm the target hasn't shifted due to DOM mutation.
+        node.inputs["entity_index"] = resolved_index
+        node.inputs["_resolved_entity_text"] = resolved_text
+        del node.inputs["entity_ref"]
+        return []
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        """Normalize and tokenize text for cosine similarity."""
+        # Lowercase, split on whitespace, filter stopwords
+        stopwords = {"the", "a", "an", "in", "on", "of", "to", "and", "or", "is"}
+        return [
+            t for t in text.lower().split()
+            if t and t not in stopwords
+        ]
+
+    @staticmethod
+    def _cosine_similarity(
+        query_tokens: List[str],
+        entity_tokens: List[str],
+    ) -> float:
+        """Pure cosine similarity between two token lists.
+
+        No IDF — uses raw term frequency vectors over the union vocabulary.
+        Stable with small entity sets (3-15 entities).
+        """
+        if not query_tokens or not entity_tokens:
+            return 0.0
+
+        # Build vocabulary from union
+        vocab = list(set(query_tokens) | set(entity_tokens))
+
+        # Term frequency vectors
+        q_vec = [query_tokens.count(t) for t in vocab]
+        e_vec = [entity_tokens.count(t) for t in vocab]
+
+        # Dot product / (mag_a * mag_b)
+        dot = sum(a * b for a, b in zip(q_vec, e_vec))
+        mag_q = math.sqrt(sum(a * a for a in q_vec))
+        mag_e = math.sqrt(sum(b * b for b in e_vec))
+
+        if mag_q == 0 or mag_e == 0:
+            return 0.0
+
+        return dot / (mag_q * mag_e)

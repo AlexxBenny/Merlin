@@ -34,6 +34,7 @@ class BrowserNavigateSkill(Skill):
         },
         outputs={
             "final_url": "url_string",
+            "page_title": "info_string",
         },
         allowed_modes={ExecutionMode.foreground},
         failure_policy={
@@ -59,6 +60,7 @@ class BrowserNavigateSkill(Skill):
             raise RuntimeError(f"Navigation failed: {result.error}")
 
         final_url = result.snapshot.url if result.snapshot else url
+        page_title = result.snapshot.title if result.snapshot else ""
 
         world.emit("skill.browser", "browser_action_completed", {
             "action": "navigate",
@@ -66,6 +68,6 @@ class BrowserNavigateSkill(Skill):
         })
 
         return SkillResult(
-            outputs={"final_url": final_url},
+            outputs={"final_url": final_url, "page_title": page_title},
             metadata={"domain": "browser", "entity": f"navigate {url[:60]}"},
         )

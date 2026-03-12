@@ -211,18 +211,75 @@ class MissionOrchestrator:
         if self._pref_resolver is not None:
             plan = self._pref_resolver.resolve_plan(plan)
 
-        # ── Phase 9C: Entity resolution (application entities) ──
-        if self._entity_resolver is not None:
-            try:
-                plan = self._entity_resolver.resolve_plan(plan)
-            except EntityResolutionError as ere:
-                logger.info("Entity resolution clarification: %s", ere)
-                return ere.user_message()
-
-        # 2. Snapshot world at execution time
+        # ── Phase 9C/9D: Entity resolution (app + browser entities) ──
+        # Build WorldState BEFORE entity resolution so browser entity
+        # resolver can access WorldState.browser.top_entities.
         events = self.timeline.all_events()
         state = WorldState.from_events(events)
         snapshot = WorldSnapshot.build(state, events[-10:] if events else [])
+
+        if self._entity_resolver is not None:
+            try:
+                plan = self._entity_resolver.resolve_plan(
+                    plan, world_snapshot=state,
+                )
+            except EntityResolutionError as ere:
+                # Separate browser NOT_FOUND from app ambiguous/not_found
+                browser_not_found = [
+                    v for v in ere.violations
+                    if v.resolution_type == "not_found_browser"
+                ]
+                other_violations = [
+                    v for v in ere.violations
+                    if v.resolution_type != "not_found_browser"
+                ]
+
+                # App entity violations → ask user (existing flow)
+                if other_violations:
+                    logger.info("Entity resolution clarification: %s", ere)
+                    return ere.user_message()
+
+                # Browser NOT_FOUND → recovery recompile
+                # (entity not on page — compiler can plan search instead)
+                if browser_not_found:
+                    logger.info(
+                        "[RECOVERY] Browser entity not found — "
+                        "triggering recompile for: %s",
+                        [v.raw_value for v in browser_not_found],
+                    )
+                    recovery_failures = [{
+                        "skill": v.skill,
+                        "status": "entity_not_found",
+                        "reason": (
+                            f"Entity '{v.raw_value}' not present on page. "
+                            f"Available: {', '.join(v.candidates[:3])}"
+                            if v.candidates else
+                            f"Entity '{v.raw_value}' not present on page."
+                        ),
+                        "severity": "soft_failure",
+                    } for v in browser_not_found]
+                    try:
+                        recovery_ws = state.model_dump()
+                        recovery_plan = self.cortex.compile(
+                            user_query=user_text,
+                            world_state_schema=recovery_ws,
+                            conversation=conversation,
+                            execution_failures=recovery_failures,
+                        )
+                        if isinstance(recovery_plan, MissionPlan):
+                            plan = recovery_plan
+                            logger.info(
+                                "[RECOVERY] Recompiled plan: %d nodes",
+                                len(plan.nodes),
+                            )
+                        else:
+                            # Recompile also failed → ask user
+                            return ere.user_message()
+                    except Exception as e:
+                        logger.warning(
+                            "[RECOVERY] Recompile failed: %s", e,
+                        )
+                        return ere.user_message()
 
         # ── Phase 8: Pre-narration (deterministic, no LLM) ──
         pre_narration = None
@@ -449,18 +506,59 @@ class MissionOrchestrator:
         if self._pref_resolver is not None:
             plan = self._pref_resolver.resolve_plan(plan)
 
-        # ── Phase 9C: Entity resolution ──
-        if self._entity_resolver is not None:
-            try:
-                plan = self._entity_resolver.resolve_plan(plan)
-            except EntityResolutionError as ere:
-                logger.info("Entity resolution clarification: %s", ere)
-                return ere.user_message()
-
-        # Snapshot world
+        # ── Phase 9C/9D: Entity resolution ──
         events = self.timeline.all_events()
         state = WorldState.from_events(events)
         snapshot = WorldSnapshot.build(state, events[-10:] if events else [])
+
+        if self._entity_resolver is not None:
+            try:
+                plan = self._entity_resolver.resolve_plan(
+                    plan, world_snapshot=state,
+                )
+            except EntityResolutionError as ere:
+                # Browser NOT_FOUND → recovery recompile
+                browser_not_found = [
+                    v for v in ere.violations
+                    if v.resolution_type == "not_found_browser"
+                ]
+                other_violations = [
+                    v for v in ere.violations
+                    if v.resolution_type != "not_found_browser"
+                ]
+                if other_violations:
+                    logger.info("Entity resolution clarification: %s", ere)
+                    return ere.user_message()
+                if browser_not_found:
+                    logger.info(
+                        "[RECOVERY] Browser entity not found — "
+                        "triggering recompile",
+                    )
+                    recovery_failures = [{
+                        "skill": v.skill,
+                        "status": "entity_not_found",
+                        "reason": (
+                            f"Entity '{v.raw_value}' not present on page. "
+                            f"Available: {', '.join(v.candidates[:3])}"
+                            if v.candidates else
+                            f"Entity '{v.raw_value}' not present on page."
+                        ),
+                        "severity": "soft_failure",
+                    } for v in browser_not_found]
+                    try:
+                        recovery_ws = state.model_dump()
+                        recovery_plan = self.cortex.compile(
+                            user_query=user_text,
+                            world_state_schema=recovery_ws,
+                            conversation=conversation,
+                            execution_failures=recovery_failures,
+                        )
+                        if isinstance(recovery_plan, MissionPlan):
+                            plan = recovery_plan
+                        else:
+                            return ere.user_message()
+                    except Exception:
+                        return ere.user_message()
 
         # ── Pre-narration ──
         pre_narration = None
