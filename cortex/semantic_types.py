@@ -412,7 +412,7 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
     ),
     "entity_index": SemanticType(
         description="Browser DOM entity index to interact with.",
-        direction="input",
+        direction="both",
         python_type=int,
     ),
     "scroll_direction": SemanticType(
@@ -430,6 +430,51 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
             "Resolved to entity_index by EntityResolver before execution."
         ),
         direction="input",
+    ),
+    "key_name": SemanticType(
+        description=(
+            "A keyboard key name to press "
+            "(e.g., 'Enter', 'Escape', 'Tab', 'ArrowDown', 'Space')."
+        ),
+        direction="input",
+    ),
+
+    # ── Tier 2: Reactive controller types ──
+    "search_text": SemanticType(
+        description="Text to search for on a page.",
+        direction="input",
+    ),
+    "css_selector": SemanticType(
+        description=(
+            "A CSS selector to locate a DOM element "
+            "(e.g., 'input[type=\"search\"]', '[role=\"searchbox\"]')."
+        ),
+        direction="input",
+    ),
+    "aria_role": SemanticType(
+        description=(
+            "An ARIA role to match "
+            "(e.g., 'searchbox', 'button', 'link')."
+        ),
+        direction="input",
+    ),
+    "element_type": SemanticType(
+        description=(
+            "Type of browser element to find "
+            "(e.g., 'input', 'button', 'link')."
+        ),
+        direction="both",
+    ),
+    "node_id": SemanticType(
+        description="Backend node ID of a DOM element.",
+        direction="output",
+        python_type=int,
+    ),
+    "seconds": SemanticType(
+        description="A time duration in seconds.",
+        direction="input",
+        python_type=float,
+        range_min=0.1, range_max=30.0,
     ),
 }
 

@@ -176,11 +176,11 @@ class TestExtractTopEntities:
         assert result[0]["type"] == "link"
         assert result[0]["text"] == "iPhone 14 Pro"
 
-    def test_caps_at_10(self):
-        """Should return at most 10 entities even if more exist."""
-        snapshot = _sample_snapshot(entities=_sample_entities(12))
+    def test_caps_at_25(self):
+        """Should return at most 25 entities even if more exist."""
+        snapshot = _sample_snapshot(entities=_sample_entities(30))
         result = BrowserSource._extract_top_entities(snapshot)
-        assert len(result) == 10
+        assert len(result) == 25
 
     def test_custom_limit(self):
         """Custom limit is respected."""

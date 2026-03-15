@@ -179,6 +179,10 @@ skills:
     module: "skills.browser.browser_fill"
     class: "BrowserFillSkill"
 
+  - name: "browser.keypress"
+    module: "skills.browser.browser_keypress"
+    class: "BrowserKeypressSkill"
+
   - name: "browser.go_back"
     module: "skills.browser.browser_go_back"
     class: "BrowserGoBackSkill"
@@ -186,3 +190,22 @@ skills:
   - name: "browser.go_forward"
     module: "skills.browser.browser_go_forward"
     class: "BrowserGoForwardSkill"
+
+  # ── Tier 2: Reactive controllers ──
+
+  - name: "browser.search"
+    module: "skills.browser.browser_search"
+    class: "BrowserSearchSkill"
+
+  - name: "browser.find_element"
+    module: "skills.browser.browser_find_element"
+    class: "BrowserFindElementSkill"
+
+  - name: "browser.wait_for"
+    module: "skills.browser.browser_wait_for"
+    class: "BrowserWaitForSkill"
+
+  - name: "browser.select_result"
+    module: "skills.browser.browser_select_result"
+    class: "BrowserSelectResultSkill"
+

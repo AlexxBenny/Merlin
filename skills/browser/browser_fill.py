@@ -9,6 +9,7 @@ then delegates to BrowserController.fill().
 
 from typing import Any, Dict
 
+from runtime.sources.browser import BrowserSource
 from skills.base import Skill
 from skills.contract import SkillContract, FailurePolicy
 from skills.skill_result import SkillResult
@@ -31,9 +32,13 @@ class BrowserFillSkill(Skill):
         domain="browser",
         requires_focus=True,
         inputs={
-            "entity_index": "entity_index",
             "text": "fill_text",
         },
+        optional_inputs={
+            "entity_index": "entity_index",
+            "entity_ref": "entity_ref",
+        },
+        input_groups=[{"entity_index", "entity_ref"}],
         outputs={
             "filled": "boolean",
         },
@@ -41,7 +46,7 @@ class BrowserFillSkill(Skill):
         failure_policy={
             ExecutionMode.foreground: FailurePolicy.FAIL,
         },
-        emits_events=["browser_action_completed"],
+        emits_events=["browser_entities_refreshed"],
         mutates_world=True,
         output_style="terse",
     )
@@ -50,6 +55,11 @@ class BrowserFillSkill(Skill):
         self._controller = browser_controller
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
+        if "entity_index" not in inputs:
+            raise RuntimeError(
+                "entity_index is required (provide entity_index directly "
+                "or entity_ref for resolver to convert)"
+            )
         index = int(inputs["entity_index"])
         text = inputs["text"]
 
@@ -72,9 +82,17 @@ class BrowserFillSkill(Skill):
         if not result.success:
             raise RuntimeError(f"Fill failed: {result.error}")
 
-        world.emit("skill.browser", "browser_action_completed", {
-            "action": "fill",
-            "entity_index": index,
+        # Fill may cause DOM mutation (autocomplete) — refresh for world state
+        post_snap = self._controller.get_snapshot(cached=False)
+        world.emit("skill.browser", "browser_entities_refreshed", {
+            "url": post_snap.url if post_snap else "",
+            "title": post_snap.title if post_snap else "",
+            "entity_count": len(post_snap.entities) if post_snap else 0,
+            "tab_count": post_snap.tab_count if post_snap else 0,
+            "top_entities": (
+                BrowserSource._extract_top_entities(post_snap)
+                if post_snap else []
+            ),
         })
 
         return SkillResult(

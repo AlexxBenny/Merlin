@@ -533,24 +533,79 @@ class BrowserUseAdapter:
     # Async implementation
     # ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_429_error(exc: Exception) -> bool:
+        """Check if an exception is a 429/RESOURCE_EXHAUSTED error.
+
+        Uses exception message inspection — does NOT depend on
+        browser-use agent internals (history objects, step results).
+        """
+        msg = str(exc).upper()
+        return "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
     async def _run_task_async(
         self, task: str, max_steps: int, task_id: int,
     ) -> Dict[str, Any]:
         """Core async implementation. Runs on the dedicated loop thread.
 
-        1. Ensure browser is alive (lazy-create or reconnect)
-        2. Ensure LLM is created (with round-robin key)
-        3. Create Agent per task
-        4. Run agent
-        5. Extract structured data from live page DOM
-        6. Return structured result
+        Wraps agent execution in a key-rotation retry loop:
+        if the agent fails entirely due to 429/RESOURCE_EXHAUSTED,
+        rotate to the next API key and retry immediately (no backoff —
+        each key has independent quota buckets).
+
+        Steps per attempt:
+            1. Ensure browser is alive (lazy-create or reconnect)
+            2. Create LLM with next rotated key
+            3. Create Agent per task
+            4. Run agent
+            5. Extract structured data from live page DOM
+            6. Return structured result
+        """
+        max_key_retries = max(_browser_key_pool.pool_size, 1)
+        last_429_error = ""
+
+        for key_attempt in range(max_key_retries):
+            try:
+                return await self._run_single_attempt(
+                    task, max_steps, task_id, key_attempt,
+                )
+            except Exception as e:
+                if self._is_429_error(e) and key_attempt < max_key_retries - 1:
+                    last_429_error = str(e)[:300]
+                    logger.warning(
+                        "[BrowserAdapter] Task #%d: 429 RESOURCE_EXHAUSTED "
+                        "→ rotating API key (attempt %d/%d)",
+                        task_id, key_attempt + 1, max_key_retries,
+                    )
+                    # Immediate retry with next key — no backoff needed
+                    # because each key has independent quota.
+                    continue
+                raise
+
+        # All keys exhausted — return structured error
+        logger.error(
+            "[BrowserAdapter] Task #%d: all %d API keys rate-limited (429)",
+            task_id, max_key_retries,
+        )
+        return self._error_result(
+            f"All {max_key_retries} API keys rate-limited (429). "
+            f"Last error: {last_429_error}"
+        )
+
+    async def _run_single_attempt(
+        self, task: str, max_steps: int, task_id: int, key_attempt: int,
+    ) -> Dict[str, Any]:
+        """Execute one agent attempt with the current API key.
+
+        Separated from _run_task_async() so key-rotation retries
+        can cleanly re-enter without nesting try/except blocks.
         """
         try:
             # ── 1. Browser lifecycle ──
             logger.debug("[BrowserAdapter] Task #%d: ensuring browser...", task_id)
             await self._ensure_browser(task_id)
 
-            # ── 2. LLM lifecycle ──
+            # ── 2. LLM lifecycle (fresh key each attempt) ──
             logger.debug("[BrowserAdapter] Task #%d: ensuring LLM...", task_id)
             self._ensure_llm(task_id)
 
@@ -570,9 +625,11 @@ class BrowserUseAdapter:
                 "[BrowserAdapter] Task #%d: agent created, running...\n"
                 "  Model: %s\n"
                 "  Max steps: %d\n"
-                "  Browser alive: %s",
+                "  Browser alive: %s\n"
+                "  Key attempt: %d/%d",
                 task_id, self._model_name, max_steps,
                 "yes" if self._browser else "no",
+                key_attempt + 1, _browser_key_pool.pool_size,
             )
 
             # ── 4. Run agent ──
@@ -591,6 +648,27 @@ class BrowserUseAdapter:
                 self._format_action_log(action_summary),
             )
 
+            # ── 5b. Detect all-429 failure (key exhaustion) ──
+            # browser-use Agent.run() swallows 429 exceptions internally:
+            #   step() → _handle_step_error() stores ActionResult(error=msg)
+            #   → never re-raises → run() returns normally.
+            # The 429 errors appear ONLY as strings in action results.
+            # We check action_summary (MERLIN's own extracted strings,
+            # NOT browser-use internals) for 429/RESOURCE_EXHAUSTED.
+            if steps_taken > 0 and all(
+                "429" in s.upper() or "RESOURCE_EXHAUSTED" in s.upper()
+                for s in action_summary
+            ):
+                logger.warning(
+                    "[BrowserAdapter] Task #%d: all %d agent steps failed "
+                    "with 429 RESOURCE_EXHAUSTED → triggering key rotation",
+                    task_id, steps_taken,
+                )
+                raise RuntimeError(
+                    f"All {steps_taken} agent steps failed with "
+                    "429 RESOURCE_EXHAUSTED (key exhausted)"
+                )
+
             # ── 6. Detect task failure from agent history ──
             # browser-use agent.run() does NOT throw on task failure.
             # It returns a history with errors. We must inspect it.
@@ -600,7 +678,33 @@ class BrowserUseAdapter:
                 history, steps_taken, task_id,
             )
 
-            # ── 7. Extract DOM data ──
+            # If failure is a 429, re-raise so the retry loop can rotate keys
+            if task_failed and (
+                "429" in failure_reason or "RESOURCE_EXHAUSTED" in failure_reason
+            ):
+                raise RuntimeError(
+                    f"Agent failed with 429: {failure_reason}"
+                )
+
+            # ── 7. Extract agent's answer text ──
+            # This is the ground truth answer from the agent's "done" action.
+            # MERLIN must NOT regenerate this with LLM — pass it through.
+            agent_answer = ""
+            try:
+                if hasattr(history, 'final_result') and callable(history.final_result):
+                    raw = history.final_result()
+                    agent_answer = str(raw) if raw else ""
+                    logger.info(
+                        "[BrowserAdapter] Task #%d: agent answer: %s",
+                        task_id, agent_answer[:200],
+                    )
+            except Exception as e:
+                logger.debug(
+                    "[BrowserAdapter] Task #%d: final_result extraction failed: %s",
+                    task_id, e,
+                )
+
+            # ── 8. Extract DOM data ──
             logger.debug("[BrowserAdapter] Task #%d: extracting page data...", task_id)
             page_data = await self._extract_page_data(task_id)
 
@@ -625,9 +729,14 @@ class BrowserUseAdapter:
                 "action_history": action_summary,
                 "steps_taken": steps_taken,
                 "error": failure_reason,
+                "extracted_text": agent_answer,
             }
 
         except Exception as e:
+            # Let 429 errors propagate to key-rotation retry loop
+            if self._is_429_error(e):
+                raise
+
             logger.error(
                 "[BrowserAdapter] Task #%d: async execution failed: %s",
                 task_id, e, exc_info=True,
@@ -647,6 +756,7 @@ class BrowserUseAdapter:
                 "action_history": [],
                 "steps_taken": 0,
                 "error": str(e),
+                "extracted_text": "",
             }
 
     # ─────────────────────────────────────────────────────────
@@ -742,40 +852,69 @@ class BrowserUseAdapter:
         )
 
     def _ensure_llm(self, task_id: int = 0) -> None:
-        """Create LLM client once. Reused across all tasks.
+        """Create LLM with per-call key rotation.
 
-        Uses round-robin key rotation from _BrowserKeyPool.
-        The key is set as GOOGLE_API_KEY env var (required by
-        browser-use/langchain).
+        ChatGoogle caches api_key and genai.Client internally.
+        To rotate keys on EVERY ainvoke() call (each agent step),
+        we wrap ainvoke to mutate api_key and clear _client before
+        each call.  This is critical for RPM-limited keys from
+        different Google Cloud projects.
+
+        Cost is negligible: genai.Client is a thin HTTP wrapper.
         """
-        # Rotate API key on every task for round-robin
-        key = _browser_key_pool.next_key()
-        if key:
-            os.environ["GOOGLE_API_KEY"] = key
-            logger.debug(
-                "[BrowserAdapter] Task #%d: set GOOGLE_API_KEY = %s...%s "
-                "(pool size: %d)",
-                task_id, key[:8],
-                key[-4:] if len(key) > 8 else "****",
-                _browser_key_pool.pool_size,
-            )
-        elif not os.environ.get("GOOGLE_API_KEY"):
-            logger.warning(
-                "[BrowserAdapter] Task #%d: no API key available! "
-                "Set GOOGLE_BROWSER_AGENT_API_KEY or GOOGLE_BROWSER_AGENT_API_KEYS "
-                "in .env",
-                task_id,
-            )
-
-        if self._llm is not None:
+        if not _browser_key_pool.has_keys:
+            if self._llm is None:
+                if os.environ.get("GOOGLE_API_KEY"):
+                    self._llm = ChatGoogle(model=self._model_name)
+                    logger.info(
+                        "[BrowserAdapter] Task #%d: LLM created (env fallback): "
+                        "ChatGoogle(model=%s)",
+                        task_id, self._model_name,
+                    )
+                else:
+                    logger.warning(
+                        "[BrowserAdapter] Task #%d: no API key available! "
+                        "Set GOOGLE_BROWSER_AGENT_API_KEY or "
+                        "GOOGLE_BROWSER_AGENT_API_KEYS in .env",
+                        task_id,
+                    )
             return
 
-        self._llm = ChatGoogle(model=self._model_name)
+        # Create fresh LLM with the next key
+        initial_key = _browser_key_pool.next_key()
+        self._llm = ChatGoogle(model=self._model_name, api_key=initial_key)
+        os.environ["GOOGLE_API_KEY"] = initial_key
+
         logger.info(
-            "[BrowserAdapter] Task #%d: LLM created (once): "
-            "ChatGoogle(model=%s)",
-            task_id, self._model_name,
+            "[BrowserAdapter] Task #%d: LLM created with key: "
+            "%s...%s (pool size: %d, model=%s, per-call rotation: ON)",
+            task_id, initial_key[:8],
+            initial_key[-4:] if len(initial_key) > 8 else "****",
+            _browser_key_pool.pool_size, self._model_name,
         )
+
+        # ── Install per-call key rotation wrapper ──
+        # browser-use Agent calls ainvoke() once per step.
+        # We intercept each call to rotate the API key BEFORE
+        # the request is sent, so each step hits a different
+        # Google Cloud project's RPM quota.
+        llm = self._llm
+        original_ainvoke = llm.ainvoke
+
+        async def _rotating_ainvoke(messages, output_format=None, **kwargs):
+            # Rotate to next key BEFORE the API call
+            key = _browser_key_pool.next_key()
+            if key:
+                llm.api_key = key
+                llm._client = None          # force get_client() to rebuild
+                os.environ["GOOGLE_API_KEY"] = key
+                logger.debug(
+                    "[BrowserAdapter] Per-call key rotation: %s...%s",
+                    key[:8], key[-4:] if len(key) > 8 else "****",
+                )
+            return await original_ainvoke(messages, output_format, **kwargs)
+
+        llm.ainvoke = _rotating_ainvoke
 
     # ─────────────────────────────────────────────────────────
     # DOM extraction (query live page, not history)
@@ -1014,41 +1153,47 @@ class BrowserUseAdapter:
         It returns a history that may contain errors. If we don't check,
         MERLIN reports "success" to the user — which is a lie.
 
-        Checks (in order):
-            1. final_result() contains error keywords
-            2. History steps contain error entries
+        Uses structured checks (NOT keyword matching on content text):
+            1. Agent is_done() / has_errors() — structured API
+            2. History steps error fields (step.error, step.is_error)
             3. Zero steps taken (agent couldn't start)
-            4. Agent hit max_steps (likely stuck/failed)
+            4. Max steps exhaustion without done action
+            5. Last-resort: crash-level keywords in final_result
+               (narrowly scoped — "exception", "crash", "timeout" only)
 
         Returns:
             (failed: bool, reason: str)
         """
-        # ── 1. Check final_result for error indicators ──
+        # ── 1. Structured agent check — is_done / has_errors ──
         try:
-            if hasattr(history, 'final_result') and callable(history.final_result):
-                final = str(history.final_result() or "")
-                final_lower = final.lower()
-                error_keywords = [
-                    "error", "failed", "could not", "unable to",
-                    "not found", "timed out", "timeout",
-                    "exception", "crash", "profile copy failed",
-                    "cannot", "refused", "blocked",
-                ]
-                for keyword in error_keywords:
-                    if keyword in final_lower:
-                        logger.warning(
-                            "[BrowserAdapter] Task #%d: FAILURE detected "
-                            "in final_result: '%s' (keyword: '%s')",
-                            task_id, final[:200], keyword,
-                        )
-                        return (True, final[:300])
+            # browser-use AgentHistoryList provides is_done() and has_errors()
+            if hasattr(history, 'has_errors') and callable(history.has_errors):
+                if history.has_errors():
+                    errors = getattr(history, 'errors', []) or []
+                    error_msg = str(errors[0])[:300] if errors else "Agent reported errors"
+                    logger.warning(
+                        "[BrowserAdapter] Task #%d: FAILURE detected via "
+                        "history.has_errors(): %s",
+                        task_id, error_msg,
+                    )
+                    return (True, error_msg)
+
+            if hasattr(history, 'is_done') and callable(history.is_done):
+                if not history.is_done():
+                    logger.warning(
+                        "[BrowserAdapter] Task #%d: Agent did not reach done state "
+                        "(is_done=False)",
+                        task_id,
+                    )
+                    # Not a hard failure — agent may have done useful work
+                    # Fall through to additional checks
         except Exception as e:
             logger.debug(
-                "[BrowserAdapter] Task #%d: final_result check error: %s",
+                "[BrowserAdapter] Task #%d: structured agent check error: %s",
                 task_id, e,
             )
 
-        # ── 2. Check history steps for errors ──
+        # ── 2. Check history steps for error fields ──
         try:
             if hasattr(history, 'history') and history.history:
                 for step in history.history:
@@ -1085,13 +1230,11 @@ class BrowserUseAdapter:
             )
             return (True, "Browser agent completed zero steps")
 
-        # ── 4. Check if agent was stuck (no success signal) ──
-        # If agent hit max_steps, it likely failed to complete
+        # ── 4. Check if agent hit max_steps without completion ──
         try:
             if hasattr(history, 'history') and history.history:
                 max_steps_cfg = self._max_steps
                 if len(history.history) >= max_steps_cfg:
-                    # Check if the last step looks like completion or exhaustion
                     last_step = history.history[-1]
                     last_action = str(getattr(last_step, 'action', ''))
                     if 'done' not in last_action.lower():
@@ -1100,10 +1243,35 @@ class BrowserUseAdapter:
                             "hit max_steps (%d) without 'done' action",
                             task_id, max_steps_cfg,
                         )
-                        # Not a hard failure — just a warning
-                        # Some tasks legitimately use all steps
+                        # Not a hard failure — some tasks legitimately use all steps
         except Exception:
             pass
+
+        # ── 5. Last-resort: crash-level signals in final_result ──
+        # Narrowly scoped — only catches infrastructure crashes, NOT
+        # content words like "error" that appear in normal task results.
+        try:
+            if hasattr(history, 'final_result') and callable(history.final_result):
+                final = str(history.final_result() or "")
+                final_lower = final.lower()
+                # Only match crash-level infrastructure keywords
+                crash_keywords = [
+                    "exception", "crash", "profile copy failed",
+                    "timed out", "timeout", "connection refused",
+                ]
+                for keyword in crash_keywords:
+                    if keyword in final_lower:
+                        logger.warning(
+                            "[BrowserAdapter] Task #%d: FAILURE detected "
+                            "in final_result (crash signal: '%s'): %s",
+                            task_id, keyword, final[:200],
+                        )
+                        return (True, final[:300])
+        except Exception as e:
+            logger.debug(
+                "[BrowserAdapter] Task #%d: final_result check error: %s",
+                task_id, e,
+            )
 
         return (False, "")
 
@@ -1122,4 +1290,5 @@ class BrowserUseAdapter:
             "action_history": [],
             "steps_taken": 0,
             "error": message,
+            "extracted_text": "",
         }

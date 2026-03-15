@@ -272,10 +272,20 @@ class NarrationPolicy:
                 phrase = contract.narration_template
                 # Interpolate input values if template has {placeholders}
                 if "{" in phrase:
-                    try:
-                        phrase = phrase.format_map(node.inputs)
-                    except (KeyError, IndexError):
-                        pass
+                    # OutputReference values aren't resolved at narration
+                    # time — fall back to description to avoid leaking
+                    # raw repr into user-facing speech.
+                    from ir.mission import OutputReference
+                    if any(isinstance(v, OutputReference)
+                           for v in node.inputs.values()):
+                        if contract.description:
+                            desc = contract.description
+                            return desc[0].lower() + desc[1:] if desc else desc
+                    else:
+                        try:
+                            phrase = phrase.format_map(node.inputs)
+                        except (KeyError, IndexError):
+                            pass
                 return phrase
 
             if contract.description:

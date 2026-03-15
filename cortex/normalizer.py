@@ -10,6 +10,9 @@ Design rules:
 - No invention: never adds fields the LLM didn't emit.
 - No reasoning: doesn't interpret semantic meaning.
 - No suppression: unknown keys pass through to Pydantic (which rejects via extra="forbid").
+- Hierarchy flattening: LLM decomposition may use hierarchical representation
+  (e.g. parent + path). Execution skills require flattened paths.
+  The normalizer bridges these two representations.
 - 'id' is compiler-assigned — if LLM emits it, it passes through for warning/ignore.
 - 'condition_on' is compiler-managed — if LLM emits it, it passes through for warning/ignore.
 - Required field (skill) is NOT defaulted. None → Pydantic rejection.
@@ -21,6 +24,7 @@ Pipeline position:
 """
 
 import logging
+from pathlib import PurePosixPath
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
@@ -98,6 +102,11 @@ def normalize_node(raw: dict) -> dict:
         if key not in known_keys:
             normalized[key] = raw[key]
 
+    # Flatten hierarchical path inputs (parent + path → path)
+    normalized["inputs"] = _flatten_parent_into_path(
+        normalized.get("skill") or "", normalized["inputs"],
+    )
+
     return normalized
 
 
@@ -157,6 +166,47 @@ def _coerce_dict(value: Any, field_name: str) -> Dict:
     raise TypeError(
         f"'{field_name}' must be a dict or null, got {type(value).__name__}"
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# Hierarchy flattening (decomposition → execution bridge)
+# ─────────────────────────────────────────────────────────────
+
+def _flatten_parent_into_path(skill: str, inputs: dict) -> dict:
+    """Fold hierarchical `parent` into `path` for file-operation skills.
+
+    LLM decomposition may produce hierarchical representation:
+        write_file(path="test.py", parent="alex")
+
+    Execution skills require flattened paths:
+        write_file(path="alex/test.py")
+
+    Trigger condition (structural, not skill-name-based):
+        Both 'parent' and 'path' are present in inputs.
+
+    This naturally excludes fs.create_folder (uses 'name', not 'path').
+
+    If 'parent' exists WITHOUT 'path', it is left untouched —
+    the validator will reject it as an unexpected input.
+    """
+    parent = inputs.get("parent")
+    path = inputs.get("path")
+
+    if not parent or not path:
+        return inputs
+
+    # Path-safe join via PurePosixPath (preserves forward slashes)
+    folded = str(PurePosixPath(parent) / path)
+
+    logger.info(
+        "[NORMALIZER] Folded parent=%r into path=%r for %s",
+        parent, folded, skill,
+    )
+
+    inputs["path"] = folded
+    inputs.pop("parent")
+
+    return inputs
 
 
 # ─────────────────────────────────────────────────────────────

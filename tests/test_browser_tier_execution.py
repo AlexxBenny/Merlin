@@ -402,16 +402,31 @@ class TestWorldStateBrowserEntitiesRefreshed:
 
 
 # ─────────────────────────────────────────────────────────────
-# browser.click contract — entity_ref input
+# browser.click contract — entity_ref / entity_index alternatives
 # ─────────────────────────────────────────────────────────────
 
 class TestBrowserClickEntityRef:
-    """browser.click contract accepts entity_ref input."""
+    """browser.click contract accepts entity_ref as optional input."""
 
-    def test_entity_ref_in_inputs(self):
+    def test_entity_ref_in_optional_inputs(self):
         from skills.browser.browser_click import BrowserClickSkill
-        assert "entity_ref" in BrowserClickSkill.contract.inputs
-        assert BrowserClickSkill.contract.inputs["entity_ref"] == "entity_ref"
+        assert "entity_ref" in BrowserClickSkill.contract.optional_inputs
+        assert BrowserClickSkill.contract.optional_inputs["entity_ref"] == "entity_ref"
+
+    def test_entity_index_in_optional_inputs(self):
+        from skills.browser.browser_click import BrowserClickSkill
+        assert "entity_index" in BrowserClickSkill.contract.optional_inputs
+
+    def test_input_groups_defined(self):
+        from skills.browser.browser_click import BrowserClickSkill
+        groups = BrowserClickSkill.contract.input_groups
+        assert len(groups) == 1
+        assert {"entity_index", "entity_ref"} in groups
+
+    def test_no_required_inputs(self):
+        """browser.click has no required inputs — all via optional + groups."""
+        from skills.browser.browser_click import BrowserClickSkill
+        assert BrowserClickSkill.contract.inputs == {}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -440,11 +455,13 @@ class TestBrowserClickIndexDrift:
         return BrowserClickSkill(controller), controller
 
     def test_fresh_snapshot_used(self):
-        """Skill uses cached=False for fresh DOM."""
+        """Skill uses cached=False for fresh DOM (called twice: entity + post-click event)."""
         entities = [self._make_entity(1, "Video A")]
         skill, ctrl = self._make_skill(entities)
         skill.execute({"entity_index": 1}, MagicMock())
-        ctrl.get_snapshot.assert_called_once_with(cached=False)
+        # Called twice: once for entity resolution, once for post-click world state
+        assert ctrl.get_snapshot.call_count == 2
+        ctrl.get_snapshot.assert_called_with(cached=False)
 
     def test_text_match_no_drift(self):
         """Entity text matches resolved text → click proceeds normally."""

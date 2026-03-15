@@ -300,5 +300,18 @@ class OutcomeAnalyzer:
                 return OutcomeSeverity.BENIGN
             return OutcomeSeverity.SOFT_FAILURE
 
+        # Browser entity not found — recoverable via replanning
+        # (e.g. entity_ref didn't match, index drifted, page changed)
+        if status in ("failed",):
+            reason = metadata.get("reason", "")
+            error = metadata.get("error", "")
+            combined = f"{reason} {error}".lower()
+            if any(sig in combined for sig in (
+                "no entity at index",
+                "entity_index is required",
+                "entity_ref",
+            )):
+                return OutcomeSeverity.SOFT_FAILURE
+
         # FAILED, TIMED_OUT, or unknown
         return OutcomeSeverity.HARD_FAILURE

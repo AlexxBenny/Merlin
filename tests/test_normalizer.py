@@ -15,6 +15,7 @@ from cortex.normalizer import (
     normalize_node,
     _coerce_list,
     _coerce_dict,
+    _flatten_parent_into_path,
 )
 
 
@@ -227,6 +228,66 @@ class TestCoerceDict:
 
 
 # ==================================================================
+# Parent → path flattening
+# ==================================================================
+
+
+class TestParentPathFlattening:
+    """_flatten_parent_into_path: hierarchy flattening for file ops."""
+
+    def test_write_file_parent_folded(self):
+        """write_file(path="test.py", parent="alex") → path="alex/test.py"."""
+        inputs = {"path": "test.py", "parent": "alex", "content": ""}
+        result = _flatten_parent_into_path("fs.write_file", inputs)
+        assert result["path"] == "alex/test.py"
+        assert "parent" not in result
+        assert result["content"] == ""  # other keys untouched
+
+    def test_read_file_parent_folded(self):
+        """read_file(path="file.txt", parent="docs/notes") → path="docs/notes/file.txt"."""
+        inputs = {"path": "file.txt", "parent": "docs/notes"}
+        result = _flatten_parent_into_path("fs.read_file", inputs)
+        assert result["path"] == "docs/notes/file.txt"
+        assert "parent" not in result
+
+    def test_create_folder_not_folded(self):
+        """create_folder uses 'name', not 'path' — parent stays untouched."""
+        inputs = {"name": "foo", "parent": "bar", "anchor": "WORKSPACE"}
+        result = _flatten_parent_into_path("fs.create_folder", inputs)
+        # parent NOT folded because there is no 'path' key
+        assert result["parent"] == "bar"
+        assert result["name"] == "foo"
+
+    def test_no_parent_passthrough(self):
+        """No parent in inputs → nothing changes."""
+        inputs = {"path": "test.py", "content": "hello"}
+        result = _flatten_parent_into_path("fs.write_file", inputs)
+        assert result["path"] == "test.py"
+        assert "parent" not in result
+
+    def test_parent_without_path_left_for_validator(self):
+        """parent without path → left untouched for validator to reject."""
+        inputs = {"parent": "alex", "content": "hello"}
+        result = _flatten_parent_into_path("fs.write_file", inputs)
+        # parent stays — validator will reject as unexpected input
+        assert result["parent"] == "alex"
+
+    def test_trailing_slash_handled(self):
+        """PurePosixPath normalizes trailing slashes."""
+        inputs = {"path": "test.py", "parent": "alex/"}
+        result = _flatten_parent_into_path("fs.write_file", inputs)
+        assert result["path"] == "alex/test.py"  # no double slash
+        assert "parent" not in result
+
+    def test_deep_nested_parent(self):
+        """Multi-level parent path folds correctly."""
+        inputs = {"path": "test.py", "parent": "alex/projects/merlin"}
+        result = _flatten_parent_into_path("fs.write_file", inputs)
+        assert result["path"] == "alex/projects/merlin/test.py"
+        assert "parent" not in result
+
+
+# ==================================================================
 # Integration: normalize_plan → normalize_node pipeline
 # ==================================================================
 
@@ -277,9 +338,7 @@ class TestNormalizationPipeline:
         assert node["outputs"] == {}
         assert node["depends_on"] == []
         assert node["mode"] == "foreground"
-        # id passes through since LLM emitted it (parser will warn and ignore)
         assert node["id"] == "n1"
-        # condition_on NOT present — LLM didn't emit it
         assert "condition_on" not in node
 
     def test_id_free_node_normalized(self):
@@ -292,10 +351,8 @@ class TestNormalizationPipeline:
         }
         result = normalize_plan(payload)
         assert len(result["nodes"]) == 2
-        # No id in normalized output — compiler assigns it
         assert "id" not in result["nodes"][0]
         assert "id" not in result["nodes"][1]
-        # No condition_on in normalized output
         assert "condition_on" not in result["nodes"][0]
         assert result["nodes"][0]["skill"] == "system.unmute"
         assert result["nodes"][1]["inputs"] == {"level": 10}
@@ -363,3 +420,41 @@ class TestNormalizationPipeline:
         assert len(result["nodes"]) == 4
         assert result["nodes"][2]["depends_on"] == ["create_x"]
         assert result["nodes"][3]["depends_on"] == ["create_y"]
+
+    def test_parent_folded_in_pipeline(self):
+        """End-to-end: LLM emits parent on write_file → normalize folds it.
+
+        Exact reproduction of the failing query:
+        'create two folders named ann and alex. Inside alex create test.py'
+        """
+        payload = {
+            "nodes": [
+                {
+                    "skill": "fs.create_folder",
+                    "inputs": {"name": "ann", "anchor": "WORKSPACE"},
+                    "depends_on": [],
+                    "mode": "foreground",
+                },
+                {
+                    "skill": "fs.create_folder",
+                    "inputs": {"name": "alex", "anchor": "WORKSPACE"},
+                    "depends_on": [],
+                    "mode": "foreground",
+                },
+                {
+                    "skill": "fs.write_file",
+                    "inputs": {"path": "test.py", "parent": "alex", "content": ""},
+                    "depends_on": [1],
+                    "mode": "foreground",
+                },
+            ]
+        }
+        result = normalize_plan(payload)
+        write_node = result["nodes"][2]
+        # parent folded into path
+        assert write_node["inputs"]["path"] == "alex/test.py"
+        assert "parent" not in write_node["inputs"]
+        # other inputs untouched
+        assert write_node["inputs"]["content"] == ""
+        # create_folder nodes unchanged — parent stays if present
+        assert result["nodes"][0]["inputs"] == {"name": "ann", "anchor": "WORKSPACE"}

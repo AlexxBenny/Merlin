@@ -1,25 +1,24 @@
 # skills/browser/autonomous_task.py
 
 """
-BrowserAutonomousTaskSkill — AI-driven browser automation via browser-use.
+BrowserAutonomousTaskSkill — Browser automation via browser-use Agent.
 
-This is the primary (and Phase 1 only) browser skill. It delegates to
-BrowserUseAdapter which wraps the browser-use library.
-
-Flow:
+Architecture:
     1. Safety gate checks task text
-    2. Adapter runs agent on persistent browser
-    3. DOM extraction captures page state
-    4. SkillResult contains structured links for entity resolution
-    5. BrowserSession updated for follow-up context
+    2. Enrich task with current page context (URL, title)
+    3. browser-use Agent executes the task
+    4. Extract structured result (success, URL, title, data, agent answer)
+    5. Update BrowserSession for follow-up context
 
 Design rules:
     - Skill is sync; adapter handles async bridge
     - Safety gate is mandatory — checked before dispatch
-    - Extracted links go into result outputs for entity_registry
-    - MERLIN resolves follow-up references (URLs), not browser-use
+    - Agent's extracted answer is passed through verbatim (no re-generation)
+    - Controller snapshot enriches context to prevent redundant navigation
+    - Hard timeout via adapter (max_steps)
 """
 
+import logging
 from typing import Any, Dict, Optional
 
 from skills.base import Skill
@@ -28,9 +27,11 @@ from skills.skill_result import SkillResult
 from ir.mission import ExecutionMode
 from world.timeline import WorldTimeline
 
+logger = logging.getLogger(__name__)
+
 
 class BrowserAutonomousTaskSkill(Skill):
-    """Execute a browser task autonomously via browser-use.
+    """Execute a browser task via browser-use Agent.
 
     Inputs:
         task: Natural language description of the browser task
@@ -40,10 +41,8 @@ class BrowserAutonomousTaskSkill(Skill):
         success: Whether the task completed
         final_url: The URL of the page after task completion
         page_title: Title of the final page
-        extracted_data: List of links ({index, title, url}) from the page
-
-    Delegates to BrowserUseAdapter.run_task().
-    Updates BrowserSession via SessionManager on success.
+        extracted_data: List of links/entities from the page
+        extracted_text: Agent's answer text (passed through verbatim)
     """
 
     contract = SkillContract(
@@ -73,6 +72,7 @@ class BrowserAutonomousTaskSkill(Skill):
             "final_url": "url_string",
             "page_title": "info_string",
             "extracted_data": "any",
+            "extracted_text": "info_string",
         },
         allowed_modes={ExecutionMode.foreground},
         failure_policy={
@@ -83,12 +83,17 @@ class BrowserAutonomousTaskSkill(Skill):
         output_style="rich",
     )
 
-    def __init__(self, browser_adapter, session_manager=None, browser_controller=None):
+    def __init__(
+        self,
+        browser_adapter,
+        session_manager=None,
+        browser_controller=None,
+    ):
         """
         Args:
-            browser_adapter: BrowserUseAdapter instance (injected by main.py)
-            session_manager: SessionManager instance (optional, for session tracking)
-            browser_controller: BrowserUseController instance (optional, for post-agent state)
+            browser_adapter: BrowserUseAdapter instance
+            session_manager: SessionManager instance (for session tracking)
+            browser_controller: BrowserUseController instance (for context)
         """
         self._adapter = browser_adapter
         self._session_mgr = session_manager
@@ -109,14 +114,15 @@ class BrowserAutonomousTaskSkill(Skill):
         world: WorldTimeline,
         snapshot=None,
     ) -> SkillResult:
-        """Execute browser task.
+        """Execute browser task via browser-use Agent.
 
         Steps:
             1. Validate adapter availability
             2. Safety gate check
-            3. Run task via adapter
-            4. Update BrowserSession
-            5. Return structured result
+            3. Enrich task with current page context
+            4. Run browser-use Agent
+            5. Update BrowserSession
+            6. Return structured result with agent answer
 
         Failure semantics:
             Raises RuntimeError on failure (same as all MERLIN skills).
@@ -144,9 +150,7 @@ class BrowserAutonomousTaskSkill(Skill):
                     f"Safety gate blocked: {verdict.reason}"
                 )
 
-        # ── 3. Inject browser session context ──
-        # If a browser session exists, tell the agent where it is
-        # so it continues from the current page instead of opening a new one.
+        # ── 3. Enrich task with current page context ──
         enriched_task = task
         if self._controller:
             try:
@@ -162,21 +166,19 @@ class BrowserAutonomousTaskSkill(Skill):
             except Exception:
                 pass  # Graceful degradation — just use raw task
 
-        # ── 4. Run task via adapter ──
+        # ── 4. Run browser-use Agent ──
         result = self._adapter.run_task(enriched_task, max_steps=max_steps)
 
-        # ── 4. ALWAYS update BrowserSession ──
-        # Browser exists → session must exist, even if task failed.
-        # This ensures MERLIN knows a browser window is active.
+        # ── 5. ALWAYS update BrowserSession ──
         if self._session_mgr:
             self._update_browser_session(result, task)
 
-        # ── 5. Check for failure — do NOT lie to the user ──
+        # ── 6. Check for failure ──
         if not result.get("success"):
             error_msg = result.get("error", "Browser task failed")
             raise RuntimeError(f"Browser task failed: {error_msg}")
 
-        # ── 6. Emit event ──
+        # ── 7. Emit event ──
         try:
             world.emit("skill.browser", "browser_task_completed", {
                 "task": task,
@@ -184,19 +186,22 @@ class BrowserAutonomousTaskSkill(Skill):
                 "success": True,
             })
         except Exception:
-            pass  # Event emission is best-effort
+            pass
 
-        # ── 7. Post-agent state via controller (if available) ──
-        # The controller rebuilds a fresh snapshot from actual DOM,
-        # which is far more accurate than the agent's internal state.
+        # ── 8. Extract structured result ──
+        # Agent's answer text is passed through verbatim.
+        # MERLIN must NOT regenerate this with LLM — it's the ground truth.
+        agent_text = result.get("extracted_text", "") or ""
+
+        # Post-agent state via controller (more accurate than adapter data)
         controller_entities = []
         final_url = result.get("final_url", "")
         page_title = result.get("page_title", "")
         if self._controller:
             try:
-                snapshot = self._controller.get_snapshot(cached=False)
-                final_url = snapshot.url or final_url
-                page_title = snapshot.title or page_title
+                snap = self._controller.get_snapshot(cached=False)
+                final_url = snap.url or final_url
+                page_title = snap.title or page_title
                 controller_entities = [
                     {
                         "index": e.index,
@@ -205,21 +210,20 @@ class BrowserAutonomousTaskSkill(Skill):
                         "url": e.url or "",
                         "backend_node_id": e.backend_node_id,
                     }
-                    for e in snapshot.entities[:15]
+                    for e in snap.entities[:15]
                 ]
             except Exception:
-                pass  # Fallback to adapter result below
+                pass
 
-        # Use controller entities if available, else adapter links
         extracted_data = controller_entities or result.get("links", [])
 
-        # ── 8. Return structured result (only on success) ──
         return SkillResult(
             outputs={
                 "success": True,
                 "final_url": final_url,
                 "page_title": page_title,
                 "extracted_data": extracted_data,
+                "extracted_text": agent_text,
             },
             metadata={
                 "domain": "browser",
@@ -227,6 +231,8 @@ class BrowserAutonomousTaskSkill(Skill):
                 "steps_taken": result.get("steps_taken", 0),
             },
         )
+
+    # ── Helper: update browser session ──
 
     def _update_browser_session(
         self, result: Dict[str, Any], task: str,
@@ -245,12 +251,9 @@ class BrowserAutonomousTaskSkill(Skill):
             title = result.get("page_title", "")
             links = result.get("links", [])
 
-            # Build entity summary (counts, not raw arrays)
             entity_summary: Dict[str, Any] = {
                 "links_count": len(links),
             }
-            # Store top link details for referential resolution
-            # Include URLs so MERLIN can resolve "the second one" → URL
             if links:
                 entity_summary["top_links"] = [
                     {
@@ -261,14 +264,12 @@ class BrowserAutonomousTaskSkill(Skill):
                     for l in links[:10]
                 ]
 
-            # Check for existing browser session
             existing_sessions = self._session_mgr.get_sessions_by_type(
                 SessionType.BROWSER,
             )
             existing = existing_sessions[0] if existing_sessions else None
 
             if existing:
-                # Update existing session via SessionManager API
                 self._session_mgr.update_session(
                     existing.id,
                     current_url=url or existing.current_url,
@@ -277,7 +278,6 @@ class BrowserAutonomousTaskSkill(Skill):
                     extracted_entities=entity_summary,
                 )
             else:
-                # Create new browser session
                 session = BrowserSession(
                     current_url=url,
                     page_title=title,
@@ -288,7 +288,6 @@ class BrowserAutonomousTaskSkill(Skill):
                 self._session_mgr.create_session(session)
 
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug(
+            logger.debug(
                 "BrowserSession update failed: %s", e,
             )

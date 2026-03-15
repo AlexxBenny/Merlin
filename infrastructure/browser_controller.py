@@ -90,6 +90,33 @@ class BrowserResult:
     new_tab_opened: bool = False        # True if tab count increased
 
 
+@dataclass
+class ElementScore:
+    """Scored element candidate from multi-strategy resolution.
+
+    Used by locate_element() to rank candidates deterministically.
+    Higher score = better match.
+    """
+    entity: DOMEntity
+    score: float
+    strategy: str                       # Which strategy matched
+    details: str = ""                   # Human-readable match info
+
+
+# ─────────────────────────────────────────────────────────────
+# Blocking element detection
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class BlockingElement:
+    """A modal, cookie banner, or overlay blocking page interaction."""
+    blocking_type: str                  # "dialog", "cookie_banner", "overlay"
+    dismiss_node_id: Optional[int] = None  # backend_node_id of dismiss button
+    dismiss_text: str = ""              # Text of the dismiss button
+    covers_viewport: bool = False       # True if > 50% viewport
+    z_index: int = 0
+
+
 # ─────────────────────────────────────────────────────────────
 # Abstract Interface
 # ─────────────────────────────────────────────────────────────
@@ -101,6 +128,13 @@ class BrowserController(ABC):
     All methods are pure infrastructure — no LLM calls.
     Semantic operations (extract_content, find_element_by_prompt)
     belong in browser skills, not here.
+
+    Tier 1 — Deterministic primitives:
+        navigate, click, fill, press_key, scroll, get_snapshot
+
+    Tier 2 — Reactive controller methods:
+        find_by_css, locate_element, wait_for_element, wait_for_dom_change,
+        check_visibility
 
     Skills using this controller must declare:
         domain = "browser"
@@ -142,6 +176,16 @@ class BrowserController(ABC):
         """Fill an input element with text.
 
         Clears existing content before typing.
+        """
+        ...
+
+    @abstractmethod
+    def press_key(self, key: str) -> BrowserResult:
+        """Press a keyboard key on the current page.
+
+        Common keys: Enter, Escape, Tab, ArrowDown, ArrowUp, Space, Backspace.
+        Used for form submission (Enter), modal dismissal (Escape), and
+        keyboard navigation (Tab, Arrow keys).
         """
         ...
 
@@ -211,3 +255,146 @@ class BrowserController(ABC):
     def is_alive(self) -> bool:
         """Check if the browser connection is alive."""
         ...
+
+    # ── Reactive Controller Methods (Tier 2) ──
+
+    @abstractmethod
+    def find_by_css(self, selector: str) -> List[DOMEntity]:
+        """Find elements by CSS selector — deterministic, structural.
+
+        Uses Page.get_elements_by_css_selector() for exact DOM queries.
+        Returns DOMEntity list with backend_node_ids.
+
+        Example selectors:
+            'input[type="search"]'
+            'button[aria-label*="Submit"]'
+            '[role="searchbox"]'
+        """
+        ...
+
+    @abstractmethod
+    def locate_element(
+        self,
+        *,
+        text: Optional[str] = None,
+        role: Optional[str] = None,
+        css: Optional[str] = None,
+        element_type: Optional[str] = None,
+    ) -> Optional[ElementScore]:
+        """Multi-strategy element location with scoring. No LLM.
+
+        Tries resolution strategies in priority order:
+            1. CSS selector (structural, most stable)
+            2. ARIA role match
+            3. Attribute match (name, aria-label, placeholder)
+            4. Text content match
+            5. DOM heuristics (largest visible input, etc.)
+
+        Scores candidates:
+            +3  visible in viewport
+            +5  aria-label/placeholder contains keyword
+            +2  inside <form> element
+            +2  large bounding box (prominent element)
+            +1  near top of page
+
+        Returns highest-scoring ElementScore or None.
+        """
+        ...
+
+    @abstractmethod
+    def wait_for_element(
+        self, selector: str, timeout: float = 5.0,
+    ) -> Optional[DOMEntity]:
+        """Poll DOM until element matching CSS selector appears.
+
+        Polls every 300ms up to timeout. Returns first match or None.
+        Used for: AJAX responses, lazy-loaded content, SPA transitions.
+        """
+        ...
+
+    @abstractmethod
+    def wait_for_dom_change(self, timeout: float = 5.0) -> PageSnapshot:
+        """Wait for DOM to change (snapshot_id differs from current).
+
+        Detects: element count changes, node additions/removals,
+        URL changes (SPA navigation), content mutations.
+
+        Returns snapshot after change, or current snapshot on timeout.
+        """
+        ...
+
+    @abstractmethod
+    def check_visibility(self, backend_node_id: int) -> Dict[str, Any]:
+        """Check if an element is truly visible and interactable.
+
+        Checks: display != none, visibility != hidden, opacity > 0,
+        bounding box exists, within viewport bounds, not covered by
+        overlay (elementFromPoint), form proximity.
+
+        Returns dict with:
+            visible: bool
+            in_viewport: bool
+            bbox: {x, y, width, height} or None
+            inside_form: bool
+            reason: str (if not visible)
+        """
+        ...
+
+    @abstractmethod
+    def scroll_to_element(self, backend_node_id: int) -> None:
+        """Scroll element into viewport center.
+
+        Uses scrollIntoView({block: 'center'}) via JS.
+        Must be called before clicking off-screen elements.
+        """
+        ...
+
+    @abstractmethod
+    def submit_form(self, backend_node_id: int) -> None:
+        """Submit the form containing the given element.
+
+        Uses element.closest('form')?.submit() via JS.
+        Raises RuntimeError if element is not inside a form.
+        """
+        ...
+
+    @abstractmethod
+    def get_full_dom(self) -> Dict[str, Any]:
+        """Return raw selector_map from latest browser state.
+
+        Returns the full DOM (all interactive nodes). The map is
+        refreshed when ``get_snapshot(cached=False)`` is called.
+        """
+        ...
+
+    @abstractmethod
+    def detect_semantic_groups(
+        self,
+        *,
+        min_group_size: int = 3,
+        hint_text: Optional[str] = None,
+    ) -> List[List[DOMEntity]]:
+        """Detect repeated DOM structures via structural clustering.
+
+        Returns list of groups sorted by score. Each group is a list
+        of DOMEntity sorted by visual position (y, x).
+        """
+        ...
+
+    @abstractmethod
+    def click_nth_result(
+        self,
+        ordinal: int,
+        hint_text: Optional[str] = None,
+    ) -> "BrowserResult":
+        """Click the nth result in the highest-scoring group.
+
+        Args:
+            ordinal: 1-based index (1 = first result)
+            hint_text: optional query for text similarity bias
+
+        Returns:
+            BrowserResult with updated snapshot
+        """
+        ...
+

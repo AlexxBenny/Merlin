@@ -222,8 +222,9 @@ class EntityResolver:
                 'top_entities', [],
             ) or []
 
+        ENTITY_REF_SKILLS = {"browser.click", "browser.fill"}
         for node in resolved_nodes:
-            if (node.skill == "browser.click"
+            if (node.skill in ENTITY_REF_SKILLS
                     and "entity_ref" in node.inputs
                     and not isinstance(node.inputs.get("entity_ref"), IRReference)):
                 ref_text = str(node.inputs["entity_ref"])

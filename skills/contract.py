@@ -76,6 +76,15 @@ class SkillContract(BaseModel):
     #              Reuses PendingMission confirmation flow in merlin.py.
     risk_level: Literal["safe", "moderate", "destructive"] = "safe"
 
+    # ── Input group constraints (mutually-exclusive alternatives) ──
+    # Each entry is a set of input keys where AT LEAST ONE must be
+    # provided. Used for alternative input patterns:
+    #   input_groups=[{"entity_index", "entity_ref"}]
+    #   → compiler must provide entity_index OR entity_ref (or both)
+    # Validator enforces this at compile time (deterministic, no runtime guard).
+    # Scales to future skills: file.open(path | file_id), etc.
+    input_groups: List[Set[str]] = Field(default_factory=list)
+
     # ── Entity resolution metadata ──
     # Input params that reference application entities.
     # EntityResolver uses this to know which params to resolve

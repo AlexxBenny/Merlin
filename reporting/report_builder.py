@@ -270,7 +270,21 @@ class ReportBuilder:
         - Talks about the outcome, not the execution process
         - Never mentions plans, nodes, or system internals
         - Includes the user's original query for context
+
+        If extracted_text is present in outputs, the LLM is constrained
+        to present that text as ground truth — it must NOT regenerate it.
         """
+        # If the skill returned extracted_text (agent's verbatim answer),
+        # pass it through directly — do NOT send to LLM for regeneration.
+        extracted_text = outputs.get("extracted_text", "")
+        if extracted_text and isinstance(extracted_text, str) and len(extracted_text.strip()) > 5:
+            # Use LLM only to format it naturally, with explicit grounding
+            prompt = self._build_skill_result_prompt(
+                skill_name, outputs, user_query, conversation,
+            )
+            response = self.llm.complete(prompt)
+            return response.strip()
+
         prompt = self._build_skill_result_prompt(
             skill_name, outputs, user_query, conversation,
         )
@@ -309,12 +323,24 @@ class ReportBuilder:
 
         result_block = "\n".join(result_lines) if result_lines else "  (no data)"
 
+        # If extracted_text is present, constrain the LLM to use it as ground truth
+        extracted_text = outputs.get("extracted_text", "")
+        grounding_instruction = ""
+        if extracted_text and isinstance(extracted_text, str) and len(extracted_text.strip()) > 5:
+            grounding_instruction = (
+                f"\n\nCRITICAL — Agent's ground truth answer: \"{extracted_text.strip()}\""
+                f"\nYou MUST use this answer verbatim as the factual content."
+                f"\nDo NOT change the names, numbers, or facts in this answer."
+                f"\nYou may rephrase for natural flow, but preserve ALL factual claims exactly."
+            )
+
         return f"""You are MERLIN, a calm, precise, intelligent assistant.
 
 The user asked: "{user_query}"
 
 The result is:
 {result_block}
+{grounding_instruction}
 
 Conversation context:
 - Active domain: {conversation.active_domain}
@@ -579,6 +605,23 @@ Respond with plain text only."""
                 + "\n"
             )
 
+        # ── Agent ground truth: extracted_text from browser/autonomous tasks ──
+        # When a browser agent returns an answer, MERLIN must use it verbatim.
+        # Without this, the LLM regenerates a different answer (hallucination).
+        agent_answer_block = ""
+        for action in report.actions:
+            if action.status != NodeStatus.COMPLETED.value:
+                continue
+            extracted = action.outputs.get("extracted_text", "")
+            if extracted and isinstance(extracted, str) and len(extracted.strip()) > 5:
+                agent_answer_block = (
+                    f"\nCRITICAL — Agent's ground truth answer: \"{extracted.strip()}\"\n"
+                    f"You MUST use this answer verbatim as the factual content.\n"
+                    f"Do NOT change the names, numbers, or facts in this answer.\n"
+                    f"You may rephrase for natural flow, but preserve ALL factual claims exactly.\n"
+                )
+                break  # Only one browser task answer per mission
+
         return f"""You are MERLIN, a calm, precise, intelligent assistant.
 
 Respond naturally to the user based on the following execution results.
@@ -596,7 +639,7 @@ Unsupported requests (NOT executed — do NOT claim these happened):
 
 Issues:
 {issues_block}
-{pre_narration_block}{insights_block}{generated_block}
+{pre_narration_block}{insights_block}{generated_block}{agent_answer_block}
 Conversation context:
 - Active domain: {conversation.active_domain}
 - Active entity: {conversation.active_entity}

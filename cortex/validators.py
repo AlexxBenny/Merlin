@@ -199,6 +199,15 @@ def validate_mission_plan(
                     f"Allowed: {sorted(allowed)}"
                 )
 
+            # 10. Input group constraints (at least one from each group)
+            for group in getattr(contract, 'input_groups', None) or []:
+                if not (provided & group):
+                    raise MissionValidationError(
+                        f"Node '{node.id}': skill '{node.skill}' requires "
+                        f"at least one of {sorted(group)} but none were "
+                        f"provided"
+                    )
+
 
 # ──────────────────────────────────────────────────────────────
 # Intent Coverage Verification (Phase 5A)
@@ -209,6 +218,17 @@ def validate_mission_plan(
 # ──────────────────────────────────────────────────────────────
 
 _coverage_logger = logging.getLogger(__name__ + ".coverage")
+
+# Subsumption table: broad action → set of specific actions it covers.
+# One-directional: "autonomous_task" covers everything, but "search"
+# cannot subsume "autonomous_task". Used as safety net when decomposer
+# and compiler disagree on action granularity.
+_ACTION_SUBSUMPTION: Dict[str, set] = {
+    "autonomous_task": {
+        "search", "select_result", "navigate", "click", "fill",
+        "scroll", "keypress", "go_back", "go_forward",
+    },
+}
 
 
 @runtime_checkable
@@ -265,6 +285,48 @@ class CapabilityIntentMatcher:
             )
             if node_action.lower() == action:
                 action_matches.append(node)
+
+        # Subsumption fallback: check both directions.
+        #
+        # Forward: intent is broad, plan is specific.
+        #   Example: decomposer says "autonomous_task", compiler produced "search"
+        #   → intent "autonomous_task" subsumes node "search" ✓
+        #
+        # Reverse: intent is specific, plan is broad.
+        #   Example: decomposer says "search", compiler produced "autonomous_task"
+        #   → node "autonomous_task" subsumes intent "search" ✓
+        if not action_matches:
+            # Forward: intent action subsumes node action
+            subsumable = _ACTION_SUBSUMPTION.get(action, set())
+            if subsumable:
+                for node in candidate_nodes:
+                    node_action = (
+                        node.skill.split(".", 1)[1]
+                        if "." in node.skill else node.skill
+                    )
+                    if node_action.lower() in subsumable:
+                        action_matches.append(node)
+                if action_matches:
+                    _coverage_logger.debug(
+                        "Intent [%s] matched via forward subsumption → node '%s'",
+                        action, action_matches[0].id,
+                    )
+
+            # Reverse: node action subsumes intent action
+            if not action_matches:
+                for node in candidate_nodes:
+                    node_action = (
+                        node.skill.split(".", 1)[1]
+                        if "." in node.skill else node.skill
+                    ).lower()
+                    node_subsumable = _ACTION_SUBSUMPTION.get(node_action, set())
+                    if action in node_subsumable:
+                        action_matches.append(node)
+                if action_matches:
+                    _coverage_logger.debug(
+                        "Intent [%s] matched via reverse subsumption → node '%s'",
+                        action, action_matches[0].id,
+                    )
 
         if not action_matches:
             return None

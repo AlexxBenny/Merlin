@@ -8,6 +8,7 @@ Delegates to BrowserController.navigate().
 
 from typing import Any, Dict
 
+from runtime.sources.browser import BrowserSource
 from skills.base import Skill
 from skills.contract import SkillContract, FailurePolicy
 from skills.skill_result import SkillResult
@@ -25,8 +26,12 @@ class BrowserNavigateSkill(Skill):
         description="Navigate browser to a URL",
         narration_template="navigate to {url}",
         intent_verbs=["navigate", "go", "open", "visit"],
-        intent_keywords=["website", "page", "site", "url"],
-        verb_specificity="generic",
+        intent_keywords=[
+            "website", "page", "site", "url",
+            ".com", ".org", ".net", ".io", ".dev", ".ai", ".edu",
+            "youtube", "google", "github", "reddit",
+        ],
+        verb_specificity="specific",
         domain="browser",
         requires_focus=True,
         inputs={
@@ -40,7 +45,7 @@ class BrowserNavigateSkill(Skill):
         failure_policy={
             ExecutionMode.foreground: FailurePolicy.FAIL,
         },
-        emits_events=["browser_action_completed"],
+        emits_events=["browser_page_changed"],
         mutates_world=True,
         output_style="terse",
     )
@@ -62,9 +67,15 @@ class BrowserNavigateSkill(Skill):
         final_url = result.snapshot.url if result.snapshot else url
         page_title = result.snapshot.title if result.snapshot else ""
 
-        world.emit("skill.browser", "browser_action_completed", {
-            "action": "navigate",
+        world.emit("skill.browser", "browser_page_changed", {
             "url": final_url,
+            "title": page_title,
+            "entity_count": len(result.snapshot.entities) if result.snapshot else 0,
+            "tab_count": result.snapshot.tab_count if result.snapshot else 0,
+            "top_entities": (
+                BrowserSource._extract_top_entities(result.snapshot)
+                if result.snapshot else []
+            ),
         })
 
         return SkillResult(

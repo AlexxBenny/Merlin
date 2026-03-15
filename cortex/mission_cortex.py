@@ -250,8 +250,16 @@ INFORMATIONAL: Commentary, opinion, or observation — not executable.
               Example: "I think the volume was better yesterday", "great job", "maybe later".
               Emit: {{"type": "INFORMATIONAL", "text": "<clause text>"}}
 
-VAGUE:        Intended action but parameters are missing or ambiguous (cannot execute without clarification).
-              Example: "set brightness to something comfortable", "make it a bit louder".
+VAGUE:        Intended action but parameters are genuinely ambiguous and CANNOT be
+              resolved by calling any other available action in the list above.
+              BEFORE classifying as VAGUE, perform this check:
+                1. Identify the missing parameter.
+                2. Check if ANY available action above could produce that parameter as output.
+                3. If yes → emit ACTION for BOTH the retrieval action AND the target action.
+                   Describe the dependency in natural language as the parameter value.
+                4. If no action can resolve it → emit VAGUE.
+              Example VAGUE: "set brightness to something comfortable" (no action resolves "comfortable").
+              Example NOT VAGUE: "set brightness to my preferred value" → resolve via get_preference first.
               Emit: {{"type": "VAGUE", "action": "<best-guess action or empty>", "missing": "<what is unclear>", "text": "<clause text>"}}
 
 ═══════════════════════════════════════════════════
@@ -272,6 +280,8 @@ RULES (MANDATORY):
   Ambiguous ordinals like "last", "next", "previous" → emit VAGUE.
   Selection by attribute ("the one with most memory") → emit VAGUE.
 - "maybe X" or "perhaps X" — if the action is clear, emit ACTION. If parameter is unclear, emit VAGUE.
+- NEVER emit "autonomous_task" as an action. It is a fallback execution strategy, not a decomposable action. Always decompose into specific actions (search, select_result, navigate, click, etc.).
+- For compound browser queries ("search X and play Y"), decompose into separate sequential actions. Example: search + select_result.
 - Output ONLY the JSON array. No explanation. No markdown.
 
 User query:
@@ -755,17 +765,55 @@ User query:
                     lines.extend(entity_lines)
                 lines.append(
                     "  BROWSER ACTION TEMPLATES (use these, not free-form):\n"
-                    "  • CLICK entity:    browser.click(entity_index=N)\n"
+                    "  ── Tier 1: Deterministic primitives ──\n"
+                    "  • CLICK by index:  browser.click(entity_index=N)\n"
                     "  • CLICK by text:   browser.click(entity_ref='text to match')\n"
-                    "  • SEARCH on page:  browser.fill(entity_index=N, text='query')\n"
+                    "  • FILL by index:   browser.fill(entity_index=N, text='query')\n"
+                    "  • FILL by text:    browser.fill(entity_ref='Search', text='query')\n"
+                    "  • PRESS KEY:       browser.keypress(key='Enter')\n"
                     "  • NAVIGATE:        browser.navigate(url='https://...')\n"
                     "  • SCROLL:          browser.scroll(direction='down')\n"
                     "  • HISTORY:         browser.go_back() / browser.go_forward()\n"
+                    "\n"
+                    "  ── Tier 2: Reactive controllers (preferred for common tasks) ──\n"
+                    "  • SEARCH:          browser.search(query='cars movie scenes')\n"
+                    "    ↳ finds search input automatically, fills, submits\n"
+                    "  • SELECT RESULT:   browser.select_result(ordinal=1)\n"
+                    "    ↳ selects the Nth result/video/product/item on the page\n"
+                    "    ↳ ordinal: 1=first, 2=second, 3=third, etc.\n"
+                    "    ↳ optional: hint_text='search query' for better targeting\n"
+                    "  • FIND ELEMENT:    browser.find_element(text='Download', "
+                    "element_type='button')\n"
+                    "    ↳ multi-strategy element location with scoring\n"
+                    "  • WAIT:            browser.wait_for(css_selector='div.results')\n"
+                    "    ↳ polls DOM until element appears (max 5s)\n"
+                    "\n"
+                    "  ── Tier 3: Autonomous agent (last resort) ──\n"
                     "  • EXPLORE:         browser.autonomous_task(task='...')\n"
                     "    ↳ use ONLY when no browser session exists or page is unknown\n"
-                    "  When page entities are listed above, you MUST use "
-                    "CLICK/SEARCH/SCROLL.\n"
-                    "  EXPLORE is only for first-time navigation to unknown sites."
+                    "\n"
+                    "  RULES:\n"
+                    "  • For selecting videos, products, search results, repos, articles,\n"
+                    "    or any ordinal item selection: use browser.select_result(ordinal=N)\n"
+                    "    Do NOT use browser.find_element + browser.click for this.\n"
+                    "  • Prefer browser.search(query) over fill+keypress for searches\n"
+                    "  • Use entity_index OR entity_ref for click/fill, never both\n"
+                    "  • When page entities are listed above, use "
+                    "CLICK/FILL/SCROLL\n"
+                    "  • EXPLORE is only for first-time navigation to unknown sites\n"
+                    "\n"
+                    "  EXAMPLE PLANS:\n"
+                    "  Search YouTube:\n"
+                    "    node_0: browser.search(query='cars movie scenes')\n"
+                    "  Play first video:\n"
+                    "    node_0: browser.select_result(ordinal=1)\n"
+                    "  Search and play:\n"
+                    "    node_0: browser.search(query='cars movie')\n"
+                    "    node_1: browser.select_result(ordinal=1, hint_text='cars movie')\n"
+                    "  Click a specific element:\n"
+                    "    node_0: browser.click(entity_ref='cars movie scenes')\n"
+                    "  Click by index:\n"
+                    "    node_0: browser.click(entity_index=3)"
                 )
 
         return "\n".join(lines)

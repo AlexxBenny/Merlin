@@ -14,6 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from runtime.sources.browser import BrowserSource
 from skills.base import Skill
 from skills.contract import SkillContract, FailurePolicy
 from skills.skill_result import SkillResult
@@ -35,10 +36,12 @@ class BrowserClickSkill(Skill):
         verb_specificity="specific",
         domain="browser",
         requires_focus=True,
-        inputs={
+        inputs={},
+        optional_inputs={
             "entity_index": "entity_index",
             "entity_ref": "entity_ref",
         },
+        input_groups=[{"entity_index", "entity_ref"}],
         outputs={
             "url": "url_string",
             "page_title": "info_string",
@@ -47,7 +50,7 @@ class BrowserClickSkill(Skill):
         failure_policy={
             ExecutionMode.foreground: FailurePolicy.FAIL,
         },
-        emits_events=["browser_action_completed"],
+        emits_events=["browser_entities_refreshed"],
         mutates_world=True,
         output_style="terse",
     )
@@ -56,6 +59,11 @@ class BrowserClickSkill(Skill):
         self._controller = browser_controller
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:
+        if "entity_index" not in inputs:
+            raise RuntimeError(
+                "entity_index is required (provide entity_index directly "
+                "or entity_ref for resolver to convert)"
+            )
         index = int(inputs["entity_index"])
         # Entity text from resolver — used to verify against index drift.
         # If the resolver resolved entity_ref, it sets _resolved_entity_text.
@@ -104,10 +112,17 @@ class BrowserClickSkill(Skill):
         if not result.success:
             raise RuntimeError(f"Click failed: {result.error}")
 
-        world.emit("skill.browser", "browser_action_completed", {
-            "action": "click",
-            "entity_index": index,
-            "url": result.snapshot.url if result.snapshot else "",
+        # Click may cause DOM mutation — refresh snapshot for world state
+        post_snap = self._controller.get_snapshot(cached=False)
+        world.emit("skill.browser", "browser_entities_refreshed", {
+            "url": post_snap.url if post_snap else "",
+            "title": post_snap.title if post_snap else "",
+            "entity_count": len(post_snap.entities) if post_snap else 0,
+            "tab_count": post_snap.tab_count if post_snap else 0,
+            "top_entities": (
+                BrowserSource._extract_top_entities(post_snap)
+                if post_snap else []
+            ),
         })
 
         return SkillResult(

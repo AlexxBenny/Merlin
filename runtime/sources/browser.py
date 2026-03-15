@@ -173,7 +173,7 @@ class BrowserSource(EventSource):
         return events
 
     @staticmethod
-    def _extract_top_entities(snapshot, limit: int = 10) -> list:
+    def _extract_top_entities(snapshot, limit: int = 25) -> list:
         """Extract top N entities as lightweight dicts for WorldState.
 
         Returns [{index, type, text}, ...] capped at `limit`.

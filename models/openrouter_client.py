@@ -79,6 +79,12 @@ class OpenRouterClient(LLMClient):
         """
         Send a prompt to OpenRouter and return the response text.
 
+        Failover policy:
+          - Primary key stays stable across calls.
+          - On retryable failure (429, 402, 5xx, timeout) → rotate to
+            next key and retry.
+          - If all keys fail → bubble the last error.
+
         Args:
             prompt: The prompt string.
             temperature: Optional per-call override.
@@ -101,14 +107,14 @@ class OpenRouterClient(LLMClient):
 
         last_error = None
         for attempt in range(max_attempts):
-            # Resolve current key (rotates on each call if pool exists)
+            # Failover: rotate key after a failed attempt
             if self._pool_provider and self._pool_role and attempt > 0:
                 from models.key_pool import resolve_api_key
                 self.api_key = resolve_api_key(
                     self._pool_provider, self._pool_role,
                 )
                 logger.info(
-                    "[KEY_ROTATION] OpenRouter 429 → rotated to next key "
+                    "[KEY_FAILOVER] Rotated to next key "
                     "(attempt %d/%d)", attempt + 1, max_attempts,
                 )
 
@@ -116,13 +122,18 @@ class OpenRouterClient(LLMClient):
                 return self._do_request(
                     prompt, temperature, format, timeout, max_tokens,
                 )
-            except RuntimeError as e:
-                if "429" in str(e) and attempt < max_attempts - 1:
+            except (RuntimeError, ConnectionError) as e:
+                msg = str(e)
+                retryable = any(
+                    code in msg
+                    for code in ("429", "402", "500", "502", "503")
+                ) or "timed out" in msg
+                if retryable and attempt < max_attempts - 1:
                     last_error = e
                     continue
                 raise
 
-        raise last_error or RuntimeError("All keys rate limited.")
+        raise last_error or RuntimeError("All keys exhausted.")
 
     def _resolve_max_tokens(
         self, per_call: Optional[int],
@@ -276,7 +287,7 @@ class OpenRouterClient(LLMClient):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 method="GET",
             )
-            with request.urlopen(req, timeout=5) as resp:
+            with request.urlopen(req, timeout=15) as resp:
                 return resp.status == 200
         except Exception:
             return False

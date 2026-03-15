@@ -9,6 +9,7 @@ Zero inputs — same pattern as system.mute.
 
 from typing import Any, Dict
 
+from runtime.sources.browser import BrowserSource
 from skills.base import Skill
 from skills.contract import SkillContract, FailurePolicy
 from skills.skill_result import SkillResult
@@ -39,7 +40,7 @@ class BrowserGoForwardSkill(Skill):
         failure_policy={
             ExecutionMode.foreground: FailurePolicy.FAIL,
         },
-        emits_events=["browser_action_completed"],
+        emits_events=["browser_page_changed"],
         mutates_world=True,
         output_style="terse",
     )
@@ -56,9 +57,15 @@ class BrowserGoForwardSkill(Skill):
         url = result.snapshot.url if result.snapshot else ""
         page_title = result.snapshot.title if result.snapshot else ""
 
-        world.emit("skill.browser", "browser_action_completed", {
-            "action": "go_forward",
+        world.emit("skill.browser", "browser_page_changed", {
             "url": url,
+            "title": page_title,
+            "entity_count": len(result.snapshot.entities) if result.snapshot else 0,
+            "tab_count": result.snapshot.tab_count if result.snapshot else 0,
+            "top_entities": (
+                BrowserSource._extract_top_entities(result.snapshot)
+                if result.snapshot else []
+            ),
         })
 
         return SkillResult(
