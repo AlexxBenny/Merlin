@@ -822,6 +822,50 @@ def main(args=None):
     # ── Start runtime ──
     merlin.start()
 
+    # ── UI Mode: Start bridge, API server, widget ──
+    ui_mode = getattr(args, 'ui', False)
+    bridge = None
+    api_process = None
+    widget_process = None
+
+    if ui_mode:
+        import subprocess
+        import sys
+        project_root = Path(__file__).resolve().parent
+
+        # 1. Install log buffer (inside MERLIN process)
+        from interface.log_buffer import install_log_buffer
+        log_buffer = install_log_buffer(maxlen=500)
+
+        # 2. Start bridge daemon thread
+        from interface.bridge import MerlinBridge
+        bridge = MerlinBridge(
+            merlin=merlin,
+            base_path=str(project_root),
+            log_buffer=log_buffer,
+        )
+        bridge.start()
+
+        # 3. Start API server subprocess
+        api_process = subprocess.Popen(
+            [sys.executable, "-m", "interface.api_server"],
+            cwd=str(project_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # 4. Start widget subprocess (if PySide6 available)
+        try:
+            widget_process = subprocess.Popen(
+                [sys.executable, "-m", "ui.widget.widget"],
+                cwd=str(project_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning("Widget launch failed (PySide6 may not be installed): %s", e)
+            widget_process = None
+
     # ── Interactive loop ──
     print("=" * 60)
     print("  MERLIN — Online")
@@ -840,6 +884,10 @@ def main(args=None):
         print(f"  Reporter: {reporter_client.model} (temp={reporter_client.default_temperature})")
     else:
         print("  Reporter: not connected")
+    if ui_mode:
+        print(f"  Dashboard: http://localhost:8420")
+        print(f"  API: http://localhost:8420/api/v1/")
+        print(f"  API Docs: http://localhost:8420/docs")
     print("=" * 60)
     print()
 
@@ -874,6 +922,21 @@ def main(args=None):
         print("\n\nInterrupted.")
 
     finally:
+        # Shutdown in reverse order: widget → API → bridge → MERLIN core
+        if widget_process is not None:
+            try:
+                widget_process.terminate()
+                widget_process.wait(timeout=5)
+            except Exception as e:
+                logger.warning("Widget shutdown error: %s", e)
+        if api_process is not None:
+            try:
+                api_process.terminate()
+                api_process.wait(timeout=5)
+            except Exception as e:
+                logger.warning("API server shutdown error: %s", e)
+        if bridge is not None:
+            bridge.stop()
         merlin.stop()
         # Shutdown browser adapter (close Chrome, stop event loop)
         if browser_adapter is not None:
@@ -893,6 +956,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hybrid", action="store_true",
         help="Hybrid mode: both text and voice input (first wins per cycle)",
+    )
+    parser.add_argument(
+        "--ui", action="store_true",
+        help="Launch dashboard UI, API server, and desktop widget",
     )
     args = parser.parse_args()
     main(args)

@@ -153,6 +153,53 @@ class TickSchedulerManager(SchedulerManager):
         """Number of tasks in PENDING status."""
         return len(self._store.list_by_status(TaskStatus.PENDING))
 
+    def pause(self, task_id: str) -> bool:
+        """Pause a pending task.
+
+        Only PENDING → PAUSED is allowed.
+        RUNNING → PAUSED is explicitly disallowed (inconsistent state).
+
+        Returns True if paused, False if task not found or wrong state.
+        """
+        task = self._store.get(task_id)
+        if task is None:
+            return False
+        if task.status != TaskStatus.PENDING:
+            logger.warning(
+                "[SCHEDULER] Cannot pause %s: status=%s (only PENDING allowed)",
+                task.short_id or task_id, task.status.value,
+            )
+            return False
+        task.status = TaskStatus.PAUSED
+        self._store.update_task(task)
+        logger.info("[SCHEDULER] Paused %s", task.short_id or task_id)
+        return True
+
+    def resume(self, task_id: str) -> bool:
+        """Resume a paused task.
+
+        Only PAUSED → PENDING is allowed.
+
+        Returns True if resumed, False if task not found or wrong state.
+        """
+        task = self._store.get(task_id)
+        if task is None:
+            return False
+        if task.status != TaskStatus.PAUSED:
+            logger.warning(
+                "[SCHEDULER] Cannot resume %s: status=%s (only PAUSED allowed)",
+                task.short_id or task_id, task.status.value,
+            )
+            return False
+        task.status = TaskStatus.PENDING
+        self._store.update_task(task)
+        logger.info("[SCHEDULER] Resumed %s", task.short_id or task_id)
+        return True
+
+    def paused_count(self) -> int:
+        """Number of tasks in PAUSED status."""
+        return len(self._store.list_by_status(TaskStatus.PAUSED))
+
     # ─────────────────────────────────────────────────────────
     # Completion callback
     # ─────────────────────────────────────────────────────────

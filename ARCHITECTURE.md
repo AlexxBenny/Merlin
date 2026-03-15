@@ -306,7 +306,47 @@ Failures are **loud**, **explicit**, and **final**.
 
 ---
 
-## 16. Repository Structure
+## 16. Frontend System (`interface/`, `ui/`)
+
+The frontend is a **separate-process** architecture. The UI never touches MERLIN internals.
+
+### 16.1 Interface Layer (`interface/`)
+
+| Component | Process | Purpose |
+|-----------|---------|---------|
+| `MerlinBridge` | MERLIN (daemon thread) | Export state → JSON files, poll command queue |
+| `LogBufferHandler` | MERLIN (root logger) | Ring-buffer capture of all log records |
+| `api_server.py` | **Separate** (uvicorn) | FastAPI REST + WebSocket + SSE on port 8420 |
+| `config_schema.py` | API server | Pydantic validation for config editing |
+
+**IPC**: Filesystem-based. Bridge writes `state/api/*.json` (atomic tmp→rename). API server reads them. Commands flow via `state/api/command_queue/` with exactly-once semantics.
+
+**Endpoints**: 15+ REST endpoints under `/api/v1/`, two WebSocket channels (`/ws/logs`, `/ws/events`), SSE streaming for chat.
+
+### 16.2 Dashboard (`ui/dashboard/`)
+
+React + TypeScript + Vite + Tailwind CSS v4. Dark theme with cyan accent.
+
+8 pages: Overview (gauges), Chat (SSE streaming), Scheduler (pause/resume), Memory (5 domains), Logs (WebSocket live), Config (inline editing), Missions (DAG inspector), World State (tree view).
+
+### 16.3 Desktop Widget (`ui/widget/`)
+
+PySide6 floating orb. Click to expand into chat panel. Polls `/api/v1/health` every 5 seconds — grey when disconnected, cyan when connected.
+
+### 16.4 Activation
+
+```bash
+python main.py --ui
+```
+
+Startup order: MERLIN core → bridge thread → API subprocess → widget subprocess.
+Shutdown order (reverse): widget → API → bridge → core.
+
+**Forbidden**: UI importing core modules. Bridge accessing MERLIN from the API process. Shared memory between processes.
+
+---
+
+## 17. Repository Structure
 
 ```
 MERLIN/
@@ -428,12 +468,34 @@ MERLIN/
 │   ├── app_aliases.yaml      # Application name aliases
 │   └── app_capabilities.yaml # Per-app media capabilities
 │
+├── interface/                # API boundary layer
+│   ├── bridge.py             # IPC bridge (daemon thread inside MERLIN)
+│   ├── api_server.py         # FastAPI server (separate process)
+│   ├── log_buffer.py         # Ring-buffer log handler
+│   └── config_schema.py      # Pydantic config validation
+│
+├── ui/                       # Frontend UIs
+│   ├── dashboard/            # React + Vite + Tailwind dashboard
+│   │   └── src/              # TypeScript source (8 pages + layout + API client)
+│   └── widget/               # PySide6 desktop widget
+│       └── widget.py         # Floating orb + chat panel
+│
 ├── state/                    # Persistent state
 │   ├── user_knowledge.json   # Stored user knowledge
-│   └── jobs/                 # Persisted scheduled jobs
+│   ├── jobs/                 # Persisted scheduled jobs
+│   └── api/                  # IPC bridge state (auto-generated)
+│       ├── system.json       # System metrics
+│       ├── jobs.json         # Scheduler jobs export
+│       ├── memory.json       # Knowledge store export
+│       ├── world.json        # World state snapshot
+│       ├── missions.json     # Mission history
+│       ├── logs.json         # Log buffer export
+│       ├── command_queue/    # Pending commands
+│       ├── responses/        # Command responses
+│       └── chat_sessions/    # Session-scoped chat history
 │
 ├── metrics/                  # Performance measurement
 │   ├── collect_compiler_baseline.py
 │   └── measure_phase3*.py
 │
-└── tests/                    # Test suite (1400+ tests)
+└── tests/                    # Test suite (1498+ tests)

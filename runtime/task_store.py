@@ -54,12 +54,18 @@ class TaskStatus(str, Enum):
         RUNNING → COMPLETED (on success)
         RUNNING → FAILED (on error)
         PENDING → CANCELLED (on user cancel)
+        PENDING → PAUSED (user pause via API)
+        PAUSED  → PENDING (user resume via API)
+
+    Disallowed:
+        RUNNING → PAUSED (would leave task in inconsistent state)
     """
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 # ─────────────────────────────────────────────────────────────
