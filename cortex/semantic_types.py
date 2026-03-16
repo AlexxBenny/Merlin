@@ -476,6 +476,28 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         python_type=float,
         range_min=0.1, range_max=30.0,
     ),
+
+    # ── Email domain ──────────────────────────────────────────
+    "email_address": SemanticType(
+        description='An email address (e.g., "user@example.com").',
+        direction="input",
+    ),
+    "email_subject": SemanticType(
+        description="Subject line for an email.",
+        direction="both",
+    ),
+    "draft_identifier": SemanticType(
+        description="ULID identifying a draft message.",
+        direction="both",
+    ),
+    "email_list": SemanticType(
+        description="List of email messages with metadata.",
+        direction="output",
+    ),
+    "email_search_query": SemanticType(
+        description="Natural language search query for emails.",
+        direction="input",
+    ),
 }
 
 

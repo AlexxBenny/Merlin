@@ -1,7 +1,7 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, MessageSquare, Clock, Brain,
-  ScrollText, Settings, GitBranch, Globe,
+  ScrollText, Settings, GitBranch, Globe, Mail,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
@@ -9,6 +9,7 @@ import { api } from '../lib/api'
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
   { to: '/chat', icon: MessageSquare, label: 'Chat' },
+  { to: '/mail', icon: Mail, label: 'Mail' },
   { to: '/scheduler', icon: Clock, label: 'Scheduler' },
   { to: '/memory', icon: Brain, label: 'Memory' },
   { to: '/logs', icon: ScrollText, label: 'Logs' },

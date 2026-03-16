@@ -66,6 +66,33 @@ class EditableBrowserConfig(BaseModel):
     headless: Optional[bool] = None
 
 
+class EditableEmailConfig(BaseModel):
+    """Email settings (mirrors email.yaml → email section)."""
+    enabled: Optional[bool] = None
+    provider: Optional[str] = None
+
+
+class EditableEmailSmtpConfig(BaseModel):
+    """Email SMTP settings."""
+    host: Optional[str] = None
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    use_tls: Optional[bool] = None
+
+
+class EditableEmailImapConfig(BaseModel):
+    """Email IMAP settings."""
+    host: Optional[str] = None
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    use_ssl: Optional[bool] = None
+
+
+class EditableEmailDefaultsConfig(BaseModel):
+    """Email defaults settings."""
+    from_address: Optional[str] = None
+    signature: Optional[str] = None
+    max_inbox_fetch: Optional[int] = Field(None, ge=1, le=100)
+
+
 # ─────────────────────────────────────────────────────────────
 # Master config update model
 # ─────────────────────────────────────────────────────────────
@@ -83,6 +110,10 @@ class ConfigUpdateRequest(BaseModel):
     narration: Optional[EditableNarrationConfig] = None
     voice: Optional[EditableVoiceConfig] = None
     browser: Optional[EditableBrowserConfig] = None
+    email: Optional[EditableEmailConfig] = None
+    email_smtp: Optional[EditableEmailSmtpConfig] = None
+    email_imap: Optional[EditableEmailImapConfig] = None
+    email_defaults: Optional[EditableEmailDefaultsConfig] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -164,6 +195,62 @@ CONFIG_FIELD_METADATA: Dict[str, Dict[str, Any]] = {
         "label": "Headless Browser",
         "description": "Run browser in headless mode",
         "type": "bool",
+    },
+    # Email config fields
+    "email.enabled": {
+        "label": "Email Enabled",
+        "description": "Master switch for email integration",
+        "type": "bool",
+    },
+    "email.provider": {
+        "label": "Email Provider",
+        "description": "Provider type: smtp, gmail_api, microsoft_graph",
+        "type": "str",
+    },
+    "email.smtp.host": {
+        "label": "SMTP Host",
+        "description": "SMTP server hostname (e.g., smtp.gmail.com)",
+        "type": "str",
+    },
+    "email.smtp.port": {
+        "label": "SMTP Port",
+        "description": "SMTP server port (587 for TLS, 465 for SSL)",
+        "type": "int", "min": 1, "max": 65535,
+    },
+    "email.smtp.use_tls": {
+        "label": "SMTP Use TLS",
+        "description": "Enable STARTTLS for SMTP connection",
+        "type": "bool",
+    },
+    "email.imap.host": {
+        "label": "IMAP Host",
+        "description": "IMAP server hostname (e.g., imap.gmail.com)",
+        "type": "str",
+    },
+    "email.imap.port": {
+        "label": "IMAP Port",
+        "description": "IMAP server port (993 for SSL)",
+        "type": "int", "min": 1, "max": 65535,
+    },
+    "email.imap.use_ssl": {
+        "label": "IMAP Use SSL",
+        "description": "Enable SSL for IMAP connection",
+        "type": "bool",
+    },
+    "email.defaults.from_address": {
+        "label": "From Address",
+        "description": "Default sender email address",
+        "type": "str",
+    },
+    "email.defaults.signature": {
+        "label": "Email Signature",
+        "description": "Signature appended to all outgoing emails",
+        "type": "str",
+    },
+    "email.defaults.max_inbox_fetch": {
+        "label": "Max Inbox Fetch",
+        "description": "Maximum emails to fetch per inbox read",
+        "type": "int", "min": 1, "max": 100,
     },
 }
 

@@ -87,6 +87,32 @@ export interface ChatResponse {
   response: string;
 }
 
+export interface Draft {
+  id: string;
+  recipient: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+  status: 'pending_review' | 'approved' | 'sent' | 'discarded';
+  attachments: { path: string; filename: string; mime_type: string }[];
+  source_query: string;
+  intent_source: string;
+  reply_to_message_id?: string;
+  thread_id?: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DraftUpdate {
+  recipient?: string;
+  cc?: string;
+  bcc?: string;
+  subject?: string;
+  body?: string;
+  status?: string;
+}
+
 // ── Fetch helpers ───────────────────────────────────────
 
 async function get<T>(path: string): Promise<T> {
@@ -140,6 +166,13 @@ export const api = {
   getChatHistory: () => get<{ messages: ChatMessage[] }>('/chat/history'),
   newChatSession: () => post<{ status: string }>('/chat/new_session', {}),
   getHealth: () => get<{ status: string; merlin_connected: boolean }>('/health'),
+
+  // ── Drafts (email integration) ──────────────────────────
+  getDrafts: () => get<Draft[]>('/drafts'),
+  getDraft: (id: string) => get<Draft>(`/drafts/${id}`),
+  updateDraft: (id: string, updates: DraftUpdate) => patch<{ status: string; response: string }>(`/drafts/${id}`, updates),
+  deleteDraft: (id: string) => del<{ status: string; response: string }>(`/drafts/${id}`),
+  sendDraft: (id: string) => post<{ status: string; response: string }>(`/drafts/${id}/send`, {}),
 };
 
 // ── WebSocket helper ────────────────────────────────────

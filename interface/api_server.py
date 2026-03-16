@@ -408,6 +408,13 @@ async def get_config():
             models_config = yaml.safe_load(f) or {}
         config["models"] = _mask_secrets(models_config)
 
+    # Load email.yaml if exists
+    email_path = _CONFIG_DIR / "email.yaml"
+    if email_path.exists():
+        with open(email_path, "r", encoding="utf-8") as f:
+            email_config = yaml.safe_load(f) or {}
+        config["email"] = _mask_secrets(email_config.get("email", email_config))
+
     # Load field metadata for dashboard display
     from interface.config_schema import CONFIG_FIELD_METADATA
     config["_field_metadata"] = CONFIG_FIELD_METADATA
@@ -523,6 +530,98 @@ async def health():
         "merlin_connected": merlin_running,
         "timestamp": time.time(),
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# Draft management endpoints (email integration)
+# ─────────────────────────────────────────────────────────────
+
+_DRAFTS_SUMMARY = _STATE_DIR / "drafts_summary.json"
+_DRAFTS_STATE_DIR = _BASE_PATH / "state" / "email" / "drafts"
+
+
+class DraftUpdate(BaseModel):
+    """Pydantic model for draft PATCH requests."""
+    recipient: Optional[str] = None
+    cc: Optional[str] = None
+    bcc: Optional[str] = None
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    status: Optional[str] = None
+
+
+@app.get("/api/v1/drafts")
+async def get_drafts():
+    """List all drafts (read from bridge-exported summary)."""
+    data = _read_json(_DRAFTS_SUMMARY)
+    if data is None:
+        # Fallback: try reading individual draft files directly
+        _DRAFTS_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        drafts = []
+        for f in sorted(_DRAFTS_STATE_DIR.glob("d-*.json"), reverse=True):
+            d = _read_json(f)
+            if d:
+                drafts.append(d)
+        return drafts
+    return data
+
+
+@app.get("/api/v1/drafts/{draft_id}")
+async def get_draft(draft_id: str):
+    """Get a specific draft."""
+    # Try exported summary first
+    drafts = _read_json(_DRAFTS_SUMMARY)
+    if drafts:
+        for d in drafts:
+            if d.get("id") == draft_id:
+                return d
+
+    # Fallback to direct file
+    path = _DRAFTS_STATE_DIR / f"{draft_id}.json"
+    data = _read_json(path)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found")
+    return data
+
+
+@app.patch("/api/v1/drafts/{draft_id}")
+async def update_draft(draft_id: str, update: DraftUpdate):
+    """Update draft fields via bridge command."""
+    updates = {k: v for k, v in update.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+
+    # Validate status transitions
+    if "status" in updates:
+        valid_statuses = {"pending_review", "approved", "discarded"}
+        if updates["status"] not in valid_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: {valid_statuses}",
+            )
+
+    cmd_id = _submit_command("update_draft", {
+        "draft_id": draft_id,
+        **updates,
+    })
+    response = await _wait_for_response(cmd_id, timeout=10.0)
+    return response
+
+
+@app.delete("/api/v1/drafts/{draft_id}")
+async def delete_draft(draft_id: str):
+    """Discard a draft via bridge command."""
+    cmd_id = _submit_command("discard_draft", {"draft_id": draft_id})
+    response = await _wait_for_response(cmd_id, timeout=10.0)
+    return response
+
+
+@app.post("/api/v1/drafts/{draft_id}/send")
+async def send_draft(draft_id: str):
+    """Send an approved draft via bridge command."""
+    cmd_id = _submit_command("send_draft", {"draft_id": draft_id})
+    response = await _wait_for_response(cmd_id, timeout=30.0)
+    return response
 
 
 # ─────────────────────────────────────────────────────────────

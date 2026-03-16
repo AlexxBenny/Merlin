@@ -39,6 +39,8 @@ domain_state_mapping:
   browser:
     - "system.session"
   reasoning: []  # Pure generation — no world state needed
+  email: []       # Email skills — no world state needed
+
 
 skills:
   - name: "fs.create_folder"
@@ -209,3 +211,24 @@ skills:
     module: "skills.browser.browser_select_result"
     class: "BrowserSelectResultSkill"
 
+  # ── Email domain ──────────────────────────────────────────
+
+  - name: "email.draft_message"
+    module: "skills.email.draft_message"
+    class: "DraftMessageSkill"
+
+  - name: "email.modify_draft"
+    module: "skills.email.modify_draft"
+    class: "ModifyDraftSkill"
+
+  - name: "email.send_message"
+    module: "skills.email.send_message"
+    class: "SendMessageSkill"
+
+  - name: "email.read_inbox"
+    module: "skills.email.read_inbox"
+    class: "ReadInboxSkill"
+
+  - name: "email.search_email"
+    module: "skills.email.search_email"
+    class: "SearchEmailSkill"

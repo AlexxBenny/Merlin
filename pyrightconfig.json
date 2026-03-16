@@ -9,6 +9,8 @@
       "extraPaths": ["."]
     }
   ],
+  "pythonPlatform": "Windows",
   "reportMissingImports": "warning",
-  "reportPossiblyUnbound": "warning"
+  "reportPossiblyUnbound": "warning",
+  "reportMissingModuleSource": "none"
 }

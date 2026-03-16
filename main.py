@@ -486,6 +486,35 @@ def main(args=None):
         except Exception as e:
             logger.warning("BrowserUseController init failed: %s", e)
 
+    # ── Email Provider (pluggable — v1: SMTP) ──
+    email_config = load_yaml("email.yaml")
+    email_client = None
+    if email_config.get("email", {}).get("enabled", False):
+        try:
+            from providers.email.smtp_provider import SMTPProvider
+            from providers.email.client import EmailClient
+
+            provider = SMTPProvider(email_config["email"])
+            email_client = EmailClient(
+                provider=provider,
+                drafts_dir="state/email/drafts",
+                from_address=email_config["email"].get("defaults", {}).get(
+                    "from_address", ""
+                ),
+                signature=email_config["email"].get("defaults", {}).get(
+                    "signature", ""
+                ),
+            )
+            logger.info(
+                "EmailClient initialized (provider=%s, configured=%s)",
+                email_config["email"].get("provider", "smtp"),
+                provider.is_configured(),
+            )
+        except Exception as e:
+            logger.warning("EmailClient init failed — email skills disabled: %s", e)
+    else:
+        logger.info("Email disabled in config")
+
     skill_deps = {
         "location_config": location_config,
         "system_controller": system_controller,
@@ -495,6 +524,7 @@ def main(args=None):
         "app_registry": app_registry,
         "browser_adapter": browser_adapter,
         "browser_controller": browser_controller,
+        "email_client": email_client,
         # NOTE: user_knowledge is NOT included here.
         # Memory skills require UserKnowledgeStore which hasn't been
         # created yet. They are registered in a separate late-load pass

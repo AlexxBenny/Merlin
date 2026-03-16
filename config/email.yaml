@@ -1,0 +1,41 @@
+# config/email.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Email Provider Configuration
+# ─────────────────────────────────────────────────────────────
+#
+# Provider types:
+#   "smtp"             — SMTP send + IMAP read (v1, Python stdlib)
+#   "gmail_api"        — Gmail API with OAuth2 (v2, planned)
+#   "microsoft_graph"  — Microsoft Graph API with OAuth2 (v2, planned)
+#
+# Credentials are read from environment variables (.env file),
+# never stored in this YAML file.
+
+email:
+  enabled: true
+  provider: "smtp"
+
+  smtp:
+    host: "smtp.gmail.com"       # e.g., "smtp.gmail.com" — override via EMAIL_SMTP_HOST env
+    port: 587
+    use_tls: true
+
+  imap:
+    host: "imap.gmail.com"       # e.g., "imap.gmail.com" — override via EMAIL_IMAP_HOST env
+    port: 993
+    use_ssl: true
+
+  defaults:
+    from_address: "alexbenny2004@gmail.com"            # override via EMAIL_FROM_ADDRESS env
+    signature: "-Sent via MERLIN"
+    max_inbox_fetch: 20
+
+  # ── Future: OAuth2 (v2) ──────────────────────────────────
+  # oauth2:
+  #   client_id: ""
+  #   client_secret: ""         # from env: EMAIL_OAUTH_CLIENT_SECRET
+  #   tenant_id: ""             # Microsoft only
+  #   scopes:
+  #     - "https://www.googleapis.com/auth/gmail.send"
+  #     - "https://www.googleapis.com/auth/gmail.readonly"

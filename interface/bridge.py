@@ -171,6 +171,7 @@ class MerlinBridge:
                 self._export_world()
                 self._export_missions()
                 self._export_logs()
+                self._export_drafts()
             except Exception as e:
                 logger.debug("[BRIDGE] Export error: %s", e)
 
@@ -431,6 +432,12 @@ class MerlinBridge:
             return self._handle_resume_job(cmd)
         elif cmd_type == "update_config":
             return self._handle_update_config(cmd)
+        elif cmd_type == "update_draft":
+            return self._handle_update_draft(cmd)
+        elif cmd_type == "discard_draft":
+            return self._handle_discard_draft(cmd)
+        elif cmd_type == "send_draft":
+            return self._handle_send_draft(cmd)
         else:
             return f"Unknown command type: {cmd_type}"
 
@@ -515,13 +522,174 @@ class MerlinBridge:
         payload = cmd.get("payload", {})
         try:
             update = ConfigUpdateRequest(**payload)
+
+            all_changes = {}
+
+            # Apply non-email changes to execution.yaml
             config_path = str(self._base_path / "config" / "execution.yaml")
             changes = apply_config_update(config_path, update)
-            if changes:
-                return f"Updated: {', '.join(f'{k}={v}' for k, v in changes.items())}"
+            all_changes.update(changes)
+
+            # Apply email changes to email.yaml
+            email_changes = self._apply_email_config(payload)
+            all_changes.update(email_changes)
+
+            if all_changes:
+                return f"Updated: {', '.join(f'{k}={v}' for k, v in all_changes.items())}"
             return "No changes applied."
         except Exception as e:
             return f"Config update failed: {e}"
+
+    def _apply_email_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply email-specific config updates to email.yaml."""
+        # Map flat payload keys to email.yaml nested structure
+        mapping = {
+            "email": None,           # top-level email fields
+            "email_smtp": "smtp",    # email → smtp
+            "email_imap": "imap",    # email → imap
+            "email_defaults": "defaults",
+        }
+
+        updates_for_email = {}
+        for payload_key, yaml_key in mapping.items():
+            section_data = payload.get(payload_key)
+            if not section_data or not isinstance(section_data, dict):
+                continue
+            for k, v in section_data.items():
+                if v is not None:
+                    if yaml_key:
+                        updates_for_email.setdefault(yaml_key, {})[k] = v
+                    else:
+                        updates_for_email[k] = v
+
+        if not updates_for_email:
+            return {}
+
+        email_path = self._base_path / "config" / "email.yaml"
+        try:
+            import yaml
+            with open(email_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            email_section = data.get("email", {})
+
+            changes = {}
+            for key, value in updates_for_email.items():
+                if isinstance(value, dict):
+                    # Nested section (smtp, imap, defaults)
+                    if key not in email_section:
+                        email_section[key] = {}
+                    for sub_k, sub_v in value.items():
+                        email_section[key][sub_k] = sub_v
+                        changes[f"email.{key}.{sub_k}"] = sub_v
+                else:
+                    email_section[key] = value
+                    changes[f"email.{key}"] = value
+
+            data["email"] = email_section
+            with open(email_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+            return changes
+        except Exception as e:
+            logger.warning("[BRIDGE] Email config update failed: %s", e)
+            return {}
+
+    # ─────────────────────────────────────────────────────────
+    # Draft command handlers (email integration)
+    # ─────────────────────────────────────────────────────────
+
+    def _export_drafts(self) -> None:
+        """Export drafts from MERLIN-owned store to API-readable summary."""
+        drafts_dir = self._base_path / "state" / "email" / "drafts"
+        if not drafts_dir.exists():
+            return
+
+        drafts = []
+        for f in sorted(drafts_dir.glob("d-*.json"), reverse=True):
+            data = _safe_read_json(str(f))
+            if data:
+                drafts.append(data)
+
+        summary_path = self._state_dir / "drafts_summary.json"
+        _atomic_write_json(str(summary_path), drafts)
+
+    def _handle_update_draft(self, cmd: Dict[str, Any]) -> str:
+        """Update draft fields in MERLIN-owned store."""
+        payload = cmd.get("payload", {})
+        draft_id = payload.pop("draft_id", None)
+        if not draft_id:
+            return "Missing draft_id"
+
+        draft_path = self._base_path / "state" / "email" / "drafts" / f"{draft_id}.json"
+        draft = _safe_read_json(str(draft_path))
+        if draft is None:
+            return f"Draft {draft_id} not found"
+
+        # Apply allowed updates
+        allowed = {"recipient", "cc", "bcc", "subject", "body", "status"}
+        for key, value in payload.items():
+            if key in allowed:
+                draft[key] = value
+
+        import time as _time
+        draft["updated_at"] = _time.time()
+        _atomic_write_json(str(draft_path), draft)
+        return f"Draft {draft_id} updated"
+
+    def _handle_discard_draft(self, cmd: Dict[str, Any]) -> str:
+        """Mark a draft as discarded."""
+        draft_id = cmd.get("payload", {}).get("draft_id")
+        if not draft_id:
+            return "Missing draft_id"
+
+        draft_path = self._base_path / "state" / "email" / "drafts" / f"{draft_id}.json"
+        draft = _safe_read_json(str(draft_path))
+        if draft is None:
+            return f"Draft {draft_id} not found"
+
+        import time as _time
+        draft["status"] = "discarded"
+        draft["updated_at"] = _time.time()
+        _atomic_write_json(str(draft_path), draft)
+        return f"Draft {draft_id} discarded"
+
+    def _handle_send_draft(self, cmd: Dict[str, Any]) -> str:
+        """Send an approved draft via EmailClient."""
+        draft_id = cmd.get("payload", {}).get("draft_id")
+        if not draft_id:
+            return "Missing draft_id"
+
+        draft_path = self._base_path / "state" / "email" / "drafts" / f"{draft_id}.json"
+        draft = _safe_read_json(str(draft_path))
+        if draft is None:
+            return f"Draft {draft_id} not found"
+
+        if draft.get("status") != "approved":
+            return (
+                f"Draft {draft_id} is '{draft.get('status')}', not 'approved'. "
+                f"Approve the draft before sending."
+            )
+
+        # Try to get email_client from MERLIN
+        # email_client is in skill_deps and accessible via the executor's registry
+        try:
+            from providers.email.client import EmailClient as _EmailClient
+            # Search for a skill that has an email_client attribute
+            email_client = None
+            if hasattr(self._merlin, "executor") and hasattr(self._merlin.executor, "registry"):
+                for skill in self._merlin.executor.registry._skills.values():
+                    if hasattr(skill, "_email_client"):
+                        email_client = skill._email_client
+                        break
+
+            if email_client is None:
+                return "Email client not available — email is disabled in config"
+
+            result = email_client.send_draft(draft_id)
+            return f"Email sent to {draft.get('recipient', 'unknown')}. Message ID: {result.get('message_id', 'N/A')}"
+        except Exception as e:
+            return f"Send failed: {e}"
 
     # ─────────────────────────────────────────────────────────
     # Helpers
