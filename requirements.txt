@@ -1,5 +1,5 @@
 # MERLIN Python dependencies (core + optional subsystems)
-# Canonical source remains pyproject.toml; keep this file in sync.
+# Canonical source remains pyproject.toml; this file is manually synchronized.
 
 pydantic>=2.7,<3.0
 PyYAML>=6.0,<7.0
@@ -29,8 +29,8 @@ browser-use>=0.1.48,<1.0
 langchain-google-genai>=2.0,<3.0
 
 # Windows-only integrations
-pywin32>=306; platform_system == "Windows"
-comtypes>=1.2,<2.0; platform_system == "Windows"
-pycaw>=20240210; platform_system == "Windows"
-pygetwindow>=0.0.9; platform_system == "Windows"
-winsdk>=1.0; platform_system == "Windows"
+pywin32>=306; platform_system == 'Windows'
+comtypes>=1.2,<2.0; platform_system == 'Windows'
+pycaw>=20240210; platform_system == 'Windows'
+pygetwindow>=0.0.9; platform_system == 'Windows'
+winsdk>=1.0; platform_system == 'Windows'
