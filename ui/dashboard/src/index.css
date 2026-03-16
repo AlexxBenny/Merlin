@@ -25,6 +25,16 @@
   --color-info: #6366f1;
   --font-family-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-family-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* ─── MERLIN Glow Palette ─── */
+  --color-m-cyan: oklch(0.78 0.15 195);
+  --color-m-cyan-glow: oklch(0.7 0.18 195);
+  --color-m-purple: oklch(0.65 0.2 300);
+  --color-m-purple-glow: oklch(0.6 0.22 300);
+  --color-m-amber: oklch(0.78 0.16 75);
+  --color-m-amber-glow: oklch(0.72 0.18 75);
+  --color-m-emerald: oklch(0.72 0.17 160);
+  --color-m-emerald-glow: oklch(0.65 0.19 160);
 }
 
 /* ─── Base ─── */
@@ -97,6 +107,28 @@ body::before {
   border: 1px solid var(--color-border);
   border-radius: 16px;
   backdrop-filter: blur(20px);
+}
+
+/* ─── Glass Panel (reference-inspired) ─── */
+.glass-panel {
+  background: oklch(0.15 0.02 260 / 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid oklch(0.3 0.02 260 / 0.3);
+  border-radius: 12px;
+}
+
+/* ─── Glow Effects ─── */
+.glow-cyan {
+  box-shadow: 0 0 20px oklch(0.7 0.18 195 / 0.3), 0 0 40px oklch(0.7 0.18 195 / 0.1);
+}
+.glow-purple {
+  box-shadow: 0 0 20px oklch(0.6 0.22 300 / 0.3), 0 0 40px oklch(0.6 0.22 300 / 0.1);
+}
+.glow-amber {
+  box-shadow: 0 0 20px oklch(0.72 0.18 75 / 0.3), 0 0 40px oklch(0.72 0.18 75 / 0.1);
+}
+.glow-emerald {
+  box-shadow: 0 0 20px oklch(0.65 0.19 160 / 0.3), 0 0 40px oklch(0.65 0.19 160 / 0.1);
 }
 
 /* ─── Status Badges ─── */
@@ -174,6 +206,40 @@ body::before {
   animation: shimmer 3s ease-in-out infinite;
 }
 
+/* ─── New Animations (from reference) ─── */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 20s linear infinite;
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 8s ease infinite;
+}
+
+@keyframes count-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-count-up {
+  animation: count-up 0.5s ease-out forwards;
+}
+
+@keyframes progress-ring {
+  0% { stroke-dashoffset: 283; }
+}
+.progress-ring-animate {
+  animation: progress-ring 1.5s ease-out forwards;
+}
+
 /* ─── Page Transitions ─── */
 .page-enter {
   animation: pageIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
@@ -204,6 +270,7 @@ body::before {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   text-decoration: none;
+  overflow: hidden;
 }
 .sidebar-nav-item:hover {
   background: var(--color-bg-hover);
@@ -224,6 +291,24 @@ body::before {
   height: 20px;
   background: var(--color-accent);
   border-radius: 0 4px 4px 0;
+}
+/* Hover glow sweep */
+.sidebar-nav-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(0,212,255,0) 0%, rgba(0,212,255,0.05) 50%, rgba(0,212,255,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.sidebar-nav-item:hover::after,
+.sidebar-nav-item.active::after {
+  opacity: 1;
+}
+/* Active icon glow */
+.sidebar-nav-item.active svg {
+  filter: drop-shadow(0 0 8px rgba(0,212,255,0.6));
 }
 
 /* ─── Section Headers ─── */
@@ -338,3 +423,14 @@ body::before {
 
 /* ─── Mono text ─── */
 .font-mono { font-family: var(--font-family-mono); }
+
+/* ─── Noise Overlay ─── */
+.noise-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  opacity: 0.03;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+}
