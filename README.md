@@ -161,18 +161,30 @@ The non-cognitive layer that mutates the world.
    cd Merlin
    ```
 
-2. **Set up API Keys:**
+2. **Create a virtual environment and install Python dependencies (single command):**
+   ```bash
+   python -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+   ```
+   This installs the canonical Python dependency set from `pyproject.toml`.
+
+   Optional feature extras:
+   - `.[voice]` for local STT/TTS dependencies
+   - `.[ui]` for the PySide desktop widget
+   - `.[browser]` for browser-use integrations
+   - `.[windows]` for Windows-only control integrations
+
+3. **Set up API Keys:**
    Copy the example environment file and configure your keys.
    ```bash
    cp .env.example .env
    ```
    *Edit `.env` to include your provider API keys (e.g., `OPENROUTER_API_KEY`, `GEMINI_API_KEY`).*
 
-3. **Configure Routing & Models:**
+4. **Configure Routing & Models:**
    * Adjust routing policies in `config/routing.yaml`.
    * Configure specific LLMs for specific roles in `config/models.yaml`.
 
-4. **Run MERLIN:**
+5. **Run MERLIN:**
    ```bash
    python main.py          # Terminal-only mode
    python main.py --ui     # With dashboard + widget
