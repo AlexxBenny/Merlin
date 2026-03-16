@@ -290,6 +290,31 @@ WebSocket channels:
 - `/ws/logs` for real-time logs
 - `/ws/events` for system/job/mission updates
 
+### 🔌 UI ↔ API ↔ Core Bridge (Execution Path)
+
+When UI clients issue commands, MERLIN uses a decoupled, filesystem-backed command queue:
+
+```mermaid
+sequenceDiagram
+    participant UI as Dashboard / Widget
+    participant API as FastAPI (:8420)
+    participant Q as state/api/command_queue
+    participant B as MerlinBridge Thread
+    participant M as MERLIN Core
+    participant R as state/api/responses
+
+    UI->>API: POST /api/v1/chat (or job/config command)
+    API->>Q: write cmd_*.json
+    B->>Q: poll + consume command
+    B->>M: execute via live conductor
+    M-->>B: result / error
+    B->>R: write response JSON
+    API->>R: poll response by cmd_id
+    API-->>UI: HTTP/SSE/WS response
+```
+
+This allows the API server and frontends to remain process-isolated from core internals while still supporting exactly-once command handling.
+
 ### 🧰 Skill Inventory Snapshot
 
 MERLIN currently ships with 34 registered skills (per `docs/skills/overview.md`, as of March 2026; inventory may evolve):
@@ -298,6 +323,70 @@ MERLIN currently ships with 34 registered skills (per `docs/skills/overview.md`,
 - `fs`: 3
 - `memory`: 4
 - `reasoning`: 1
+
+### 📊 Dashboard Pages (What You Can Inspect)
+
+The React dashboard provides 8 focused views:
+
+| Route | Purpose |
+|-------|---------|
+| `/` | System overview (CPU/RAM/Disk/battery + mission state) |
+| `/chat` | Chat with streaming responses + session controls |
+| `/scheduler` | Job lifecycle controls (pause/resume/cancel) |
+| `/memory` | User knowledge domains (preferences, facts, traits, policies, relationships) |
+| `/logs` | Live logs via WebSocket with filtering/search |
+| `/config` | Editable configuration forms with validation/masking |
+| `/missions` | Mission history + DAG node inspector |
+| `/world` | World state tree snapshot |
+
+### 🧾 Mission IR Snapshot
+
+Complex instructions are compiled to a validated MissionPlan DAG (IR v1). Minimal shape:
+
+```json
+{
+  "id": "mission_123",
+  "nodes": [
+    {
+      "id": "n1",
+      "skill": "fs.read_file",
+      "inputs": { "path": "/tmp/example.txt" },
+      "depends_on": [],
+      "mode": "foreground"
+    }
+  ],
+  "metadata": { "ir_version": "1.0" }
+}
+```
+
+See full schema and constraints in `docs/ir/mission-ir.md`.
+
+### 🧠 Model Provider Routing (Role-Based)
+
+MERLIN routes different cognitive roles to different model providers via `config/models.yaml`.
+
+| Provider | Best For | Notes |
+|----------|----------|-------|
+| OpenRouter | Flexible multi-model access | Good default for trying multiple model families |
+| Gemini | Direct Google Gemini access | Often used for coordinator/compiler roles |
+| Ollama | Local/offline-ish inference | Requires local Ollama server (`OLLAMA_HOST`) |
+| HuggingFace | Inference API workflows | Set `HUGGINGFACE_API_KEY` when used |
+
+### 🛠️ Troubleshooting
+
+| Symptom | Likely Cause | What to Check |
+|---------|--------------|---------------|
+| `python -m pytest` fails to start | Dev deps not installed | `python -m pip install -e ".[dev]"` |
+| `--ui` starts but dashboard is unavailable | API server failed / port conflict | Check `http://localhost:8420/health` and logs |
+| Voice mode does nothing | Missing voice dependencies or mic permissions | Install `.[voice]`; verify `STT_ENGINE` / `TTS_ENGINE` |
+| Browser actions fail | Missing browser integrations/config | Install `.[browser]`; review `config/browser.yaml` |
+| LLM calls fail | Missing/invalid provider keys | Verify `.env` keys and provider selection in `config/models.yaml` |
+
+### 🖥️ Platform Notes
+
+- `.[windows]` extra is only for Windows-native control integrations.
+- On non-Windows platforms, avoid installing `.[windows]`.
+- The React dashboard is platform-agnostic, but requires Node.js for local development.
 
 ---
 
