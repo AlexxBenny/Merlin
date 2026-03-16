@@ -26,7 +26,7 @@ MERLIN is equipped to operate as a JARVIS-level assistant, featuring robust OS i
 * ⏱️ **Proactive Attention Management**: MERLIN doesn't just wait to be spoken to. It runs scheduled tasks, evaluates completion queues, and uses an `AttentionManager` to decide whether to *interrupt* you immediately, *queue* a notification for later, or *suppress* it entirely based on priority.
 * 🌐 **File System & Browser Control**: Native capabilities to search, read, write to your local file system, and scrape/control the web browser.
 * 🔀 **Granular LLM Routing**: Configure specific LLM providers (OpenRouter, Gemini, HuggingFace, Ollama) for specific cognitive tasks based on speed, cost, and intelligence requirements via `models.yaml`.
-* 🖥️ **Professional Dashboard & Widget**: A React dashboard with 8 pages (system gauges, chat, scheduler, memory, logs, config, mission inspector, world state) and a PySide6 floating desktop widget — all communicating via a decoupled REST/WebSocket API.
+* 🖥️ **Professional Dashboard & Widget**: A React dashboard with 9 pages (system gauges, chat,mail, scheduler, memory, logs, config, mission inspector, world state) and a PySide6 floating desktop widget — all communicating via a decoupled REST/WebSocket API.
 
 ---
 
