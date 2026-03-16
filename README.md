@@ -167,6 +167,11 @@ The non-cognitive layer that mutates the world.
    ```
    This installs the canonical Python dependency set from `pyproject.toml`.
 
+   If you prefer `requirements.txt`:
+   ```bash
+   python -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+   ```
+
    Optional feature extras:
    - `.[voice]` for local STT/TTS dependencies
    - `.[ui]` for the PySide desktop widget
