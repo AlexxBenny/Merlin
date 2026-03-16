@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Save } from 'lucide-react'
+import { Save, Settings2 } from 'lucide-react'
 import { api } from '../lib/api'
 
 export default function Config() {
@@ -31,25 +31,20 @@ export default function Config() {
   }
 
   if (!config) return (
-    <div className="flex items-center justify-center h-full">
+    <div className="flex items-center justify-center h-[80vh]">
       <div className="animate-pulse-glow w-3 h-3 rounded-full" style={{ background: 'var(--color-accent)' }} />
     </div>
   )
 
   return (
     <div className="page-enter space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="section-header">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--color-text-primary)' }}>Configuration</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--color-text-muted)' }}>
-            Edit MERLIN runtime settings
-          </p>
+          <h1 className="section-title">Configuration</h1>
+          <p className="section-subtitle">Edit MERLIN runtime settings</p>
         </div>
         {message && (
-          <span className="text-xs px-3 py-1 rounded-full" style={{
-            background: message.includes('fail') ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
-            color: message.includes('fail') ? 'var(--color-error)' : 'var(--color-success)',
-          }}>
+          <span className={`badge ${message.toLowerCase().includes('fail') ? 'badge-error' : 'badge-success'}`}>
             {message}
           </span>
         )}
@@ -60,14 +55,19 @@ export default function Config() {
         const sectionData = values as Record<string, unknown>
 
         return (
-          <div key={section} className="glass-card p-5">
-            <h3 className="text-sm font-semibold mb-4 uppercase tracking-wider" style={{ color: 'var(--color-accent-dim)' }}>
-              {section}
-            </h3>
-            <div className="space-y-3">
+          <div key={section} className="glass-card overflow-hidden">
+            {/* Section header */}
+            <div className="px-6 py-4 flex items-center gap-3"
+              style={{ background: 'rgba(255,255,255,0.015)', borderBottom: '1px solid var(--color-border)' }}>
+              <Settings2 size={14} style={{ color: 'var(--color-accent-dim)' }} />
+              <h3 className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--color-accent-dim)' }}>
+                {section}
+              </h3>
+            </div>
+
+            <div className="p-6 space-y-1">
               {Object.entries(sectionData).map(([key, value]) => {
                 if (typeof value === 'object' && value !== null) {
-                  // Nested object
                   return Object.entries(value as Record<string, unknown>).map(([subKey, subVal]) => (
                     <ConfigField
                       key={`${section}.${key}.${subKey}`}
@@ -102,9 +102,9 @@ function ConfigField({ label, description, value, onSave, saving }: {
   label: string; description?: string; value: unknown;
   onSave: (v: unknown) => void; saving: boolean
 }) {
-  const strValue = typeof value === 'string' && value.startsWith('****')
-    ? value : undefined
+  const strValue = typeof value === 'string' && value.startsWith('****') ? value : undefined
   const isSecret = !!strValue
+  const isBool = typeof value === 'boolean'
 
   const [editValue, setEditValue] = useState(String(value ?? ''))
   const changed = editValue !== String(value ?? '')
@@ -118,29 +118,53 @@ function ConfigField({ label, description, value, onSave, saving }: {
     onSave(parsed)
   }
 
+  const toggleBool = () => {
+    const newVal = value === true ? false : true
+    onSave(newVal)
+  }
+
   return (
-    <div className="flex items-center gap-4 py-2" style={{ borderBottom: '1px solid var(--color-border)' }}>
+    <div className="flex items-center gap-4 py-3 px-2 rounded-lg transition-colors"
+      onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-bg-hover)')}
+      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{label}</div>
-        {description && <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>{description}</div>}
+        {description && <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>{description}</div>}
       </div>
       <div className="flex items-center gap-2">
-        <input
-          value={isSecret ? strValue : editValue}
-          onChange={e => setEditValue(e.target.value)}
-          disabled={isSecret || saving}
-          className="w-40 px-3 py-1.5 rounded-lg text-xs outline-none"
-          style={{
-            background: 'var(--color-bg-input)',
-            color: isSecret ? 'var(--color-text-muted)' : 'var(--color-text-primary)',
-            border: `1px solid ${changed ? 'var(--color-accent)' : 'var(--color-border)'}`,
-          }}
-        />
-        {changed && !isSecret && (
-          <button onClick={handleSave} disabled={saving}
-            className="p-1.5 rounded-md transition-colors" style={{ background: 'var(--color-accent-glow)' }}>
-            <Save size={12} style={{ color: 'var(--color-accent)' }} />
+        {isBool ? (
+          <button onClick={toggleBool} disabled={saving}
+            className="relative w-10 h-5 rounded-full transition-colors cursor-pointer"
+            style={{ background: value ? 'rgba(0,212,255,0.3)' : 'rgba(255,255,255,0.08)' }}>
+            <div className="absolute top-0.5 w-4 h-4 rounded-full transition-all"
+              style={{
+                left: value ? '22px' : '2px',
+                background: value ? 'var(--color-accent)' : 'var(--color-text-muted)',
+              }} />
           </button>
+        ) : (
+          <>
+            <input
+              value={isSecret ? strValue : editValue}
+              onChange={e => setEditValue(e.target.value)}
+              disabled={isSecret || saving}
+              className="input-field text-xs py-1.5 px-3"
+              style={{
+                width: '160px',
+                borderRadius: '10px',
+                fontSize: '0.75rem',
+                borderColor: changed ? 'rgba(0,212,255,0.3)' : undefined,
+                color: isSecret ? 'var(--color-text-muted)' : undefined,
+              }}
+            />
+            {changed && !isSecret && (
+              <button onClick={handleSave} disabled={saving}
+                className="p-2 rounded-lg transition-all hover:scale-105"
+                style={{ background: 'var(--color-accent-glow-strong)' }}>
+                <Save size={12} style={{ color: 'var(--color-accent)' }} />
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>

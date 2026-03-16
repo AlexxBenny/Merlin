@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Plus } from 'lucide-react'
+import { Send, Plus, Sparkles } from 'lucide-react'
 import { api, type ChatMessage, streamChat } from '../lib/api'
 
 export default function Chat() {
@@ -42,7 +42,6 @@ export default function Chat() {
         }
       )
     } catch {
-      // Fallback to sync
       try {
         const res = await api.chat(msg)
         setMessages(prev => [...prev, { role: 'assistant', content: res.response, timestamp: Date.now() / 1000 }])
@@ -60,66 +59,101 @@ export default function Chat() {
   }
 
   return (
-    <div className="page-enter flex flex-col h-full" style={{ maxHeight: 'calc(100vh - 48px)' }}>
+    <div className="page-enter flex flex-col h-full" style={{ maxHeight: 'calc(100vh - 80px)' }}>
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="section-header">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--color-text-primary)' }}>Chat</h1>
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Talk to MERLIN</p>
+          <h1 className="section-title">Chat</h1>
+          <p className="section-subtitle">Talk to MERLIN</p>
         </div>
-        <button onClick={newSession} className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors"
-          style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
+        <button onClick={newSession} className="btn-ghost">
           <Plus size={14} /> New Session
         </button>
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-auto space-y-3 mb-4 pr-2">
+      <div ref={scrollRef} className="flex-1 overflow-auto space-y-4 mb-5 pr-1">
         {messages.length === 0 && !loading && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
-              <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                style={{ background: 'var(--color-accent-glow)' }}>
-                <span className="text-2xl font-bold" style={{ color: 'var(--color-accent)' }}>M</span>
+              <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5 animate-float"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(0,212,255,0.1), rgba(124,92,252,0.1))',
+                  border: '1px solid rgba(0,212,255,0.1)',
+                }}>
+                <Sparkles size={32} style={{ color: 'var(--color-accent)' }} />
               </div>
-              <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Send a message to start</p>
+              <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+                Start a conversation
+              </p>
+              <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                Send a message to interact with MERLIN
+              </p>
             </div>
           </div>
         )}
 
         {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className="max-w-[70%] px-4 py-3 rounded-2xl text-sm leading-relaxed"
+          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} gap-3`}>
+            {m.role === 'assistant' && (
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-1"
+                style={{
+                  background: 'linear-gradient(135deg, var(--color-accent), #0099cc)',
+                  fontSize: '11px', fontWeight: 700, color: '#000',
+                }}>
+                M
+              </div>
+            )}
+            <div className={`max-w-[65%] px-4 py-3 text-sm leading-relaxed ${
+              m.role === 'user' ? 'rounded-2xl rounded-br-md' : 'rounded-2xl rounded-bl-md'
+            }`}
               style={{
-                background: m.role === 'user' ? 'var(--color-accent-dim)' : 'var(--color-bg-tertiary)',
+                background: m.role === 'user'
+                  ? 'linear-gradient(135deg, rgba(0,212,255,0.15), rgba(0,180,220,0.1))'
+                  : 'var(--color-bg-tertiary)',
                 color: 'var(--color-text-primary)',
-                borderBottomRightRadius: m.role === 'user' ? '4px' : undefined,
-                borderBottomLeftRadius: m.role === 'assistant' ? '4px' : undefined,
+                border: m.role === 'user'
+                  ? '1px solid rgba(0,212,255,0.15)'
+                  : '1px solid var(--color-border)',
               }}>
               {m.content}
             </div>
           </div>
         ))}
 
-        {/* Streaming text */}
+        {/* Streaming */}
         {streamText && (
-          <div className="flex justify-start">
-            <div className="max-w-[70%] px-4 py-3 rounded-2xl text-sm leading-relaxed"
-              style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-primary)', borderBottomLeftRadius: '4px' }}>
+          <div className="flex justify-start gap-3">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-1"
+              style={{
+                background: 'linear-gradient(135deg, var(--color-accent), #0099cc)',
+                fontSize: '11px', fontWeight: 700, color: '#000',
+              }}>
+              M
+            </div>
+            <div className="max-w-[65%] px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
+              style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)' }}>
               {streamText}
-              <span className="inline-block w-2 h-4 ml-1 animate-pulse" style={{ background: 'var(--color-accent)' }} />
+              <span className="inline-block w-1.5 h-4 ml-1 rounded-sm animate-pulse" style={{ background: 'var(--color-accent)' }} />
             </div>
           </div>
         )}
 
-        {/* Loading indicator */}
+        {/* Typing indicator */}
         {loading && !streamText && (
-          <div className="flex justify-start">
-            <div className="px-4 py-3 rounded-2xl" style={{ background: 'var(--color-bg-tertiary)' }}>
-              <div className="flex gap-1">
+          <div className="flex justify-start gap-3">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-1"
+              style={{
+                background: 'linear-gradient(135deg, var(--color-accent), #0099cc)',
+                fontSize: '11px', fontWeight: 700, color: '#000',
+              }}>
+              M
+            </div>
+            <div className="px-4 py-3 rounded-2xl rounded-bl-md"
+              style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+              <div className="flex gap-1.5">
                 {[0, 1, 2].map(i => (
-                  <div key={i} className="w-2 h-2 rounded-full animate-bounce"
-                    style={{ background: 'var(--color-accent-dim)', animationDelay: `${i * 150}ms` }} />
+                  <div key={i} className="typing-dot" style={{ animationDelay: `${i * 200}ms` }} />
                 ))}
               </div>
             </div>
@@ -135,17 +169,10 @@ export default function Chat() {
           onKeyDown={e => e.key === 'Enter' && send()}
           placeholder="Ask MERLIN anything..."
           disabled={loading}
-          className="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-colors"
-          style={{
-            background: 'var(--color-bg-input)',
-            color: 'var(--color-text-primary)',
-            border: '1px solid var(--color-border)',
-          }}
+          className="input-field flex-1"
         />
-        <button onClick={send} disabled={loading || !input.trim()}
-          className="px-4 py-3 rounded-xl transition-all duration-200 disabled:opacity-40"
-          style={{ background: 'var(--color-accent)', color: 'var(--color-bg-primary)' }}>
-          <Send size={18} />
+        <button onClick={send} disabled={loading || !input.trim()} className="btn-primary px-5">
+          <Send size={16} />
         </button>
       </div>
     </div>

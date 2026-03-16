@@ -170,6 +170,9 @@ class Merlin:
         # Covers: clarification, partial capability confirmation.
         self._pending_mission: Optional[PendingMission] = None
 
+        # ── User knowledge (wired post-init by main.py) ──
+        self._user_knowledge: Optional[Any] = None
+
         # ── Deterministic confirmation tokens ──
         self._CONFIRM_TOKENS = frozenset({
             "yes", "proceed", "continue", "do it", "go ahead",

@@ -1,7 +1,7 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, MessageSquare, Clock, Brain,
-  ScrollText, Settings, GitBranch, Globe, Activity,
+  ScrollText, Settings, GitBranch, Globe,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
@@ -32,62 +32,84 @@ export default function Layout() {
   }, [])
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen relative" style={{ zIndex: 1 }}>
       {/* Sidebar */}
-      <aside className="w-56 flex flex-col border-r shrink-0"
-        style={{ background: 'var(--color-bg-secondary)', borderColor: 'var(--color-border)' }}>
+      <aside className="w-60 flex flex-col shrink-0 relative"
+        style={{
+          background: 'linear-gradient(180deg, rgba(12,12,20,0.97) 0%, rgba(8,8,14,0.99) 100%)',
+          borderRight: '1px solid var(--color-border)',
+        }}>
+
+        {/* Ambient glow at top */}
+        <div className="absolute top-0 left-0 right-0 h-32 pointer-events-none"
+          style={{
+            background: 'radial-gradient(ellipse at 50% -20%, rgba(0,212,255,0.06) 0%, transparent 70%)',
+          }} />
+
         {/* Logo */}
-        <div className="p-5 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold"
-            style={{ background: 'var(--color-accent)', color: 'var(--color-bg-primary)' }}>
+        <div className="p-5 pb-6 flex items-center gap-3 relative">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold relative"
+            style={{
+              background: 'linear-gradient(135deg, var(--color-accent), #0099cc)',
+              color: '#000',
+              boxShadow: '0 0 20px rgba(0,212,255,0.25)',
+            }}>
             M
           </div>
           <div>
-            <div className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>MERLIN</div>
-            <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Dashboard</div>
+            <div className="text-sm font-bold tracking-wide" style={{ color: 'var(--color-text-primary)' }}>MERLIN</div>
+            <div className="text-[10px] font-medium tracking-widest uppercase" style={{ color: 'var(--color-text-muted)' }}>Dashboard</div>
           </div>
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 px-3 py-2 space-y-1">
+        {/* Divider */}
+        <div className="mx-4 mb-2" style={{ height: '1px', background: 'linear-gradient(90deg, transparent, var(--color-border), transparent)' }} />
+
+        {/* Nav label */}
+        <div className="px-5 py-2">
+          <span className="text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--color-text-muted)' }}>
+            Navigation
+          </span>
+        </div>
+
+        {/* Nav items */}
+        <nav className="flex-1 px-3 space-y-0.5">
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
               end={to === '/'}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
-                  isActive
-                    ? 'font-medium'
-                    : 'hover:bg-[var(--color-bg-hover)]'
-                }`
+                `sidebar-nav-item ${isActive ? 'active' : ''}`
               }
-              style={({ isActive }) => ({
-                background: isActive ? 'var(--color-accent-glow)' : undefined,
-                color: isActive ? 'var(--color-accent)' : 'var(--color-text-secondary)',
-                borderLeft: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
-              })}
             >
-              <Icon size={18} />
+              <Icon size={17} strokeWidth={1.8} />
               {label}
             </NavLink>
           ))}
         </nav>
 
-        {/* Status */}
-        <div className="p-4 border-t" style={{ borderColor: 'var(--color-border)' }}>
-          <div className="flex items-center gap-2 text-xs">
-            <Activity size={12} style={{ color: connected ? 'var(--color-success)' : 'var(--color-error)' }} />
-            <span style={{ color: 'var(--color-text-muted)' }}>
-              {connected ? 'Connected' : 'Disconnected'}
-            </span>
+        {/* Bottom status */}
+        <div className="p-4 mx-3 mb-3 rounded-xl" style={{ background: 'var(--color-bg-hover)' }}>
+          <div className="flex items-center gap-2.5">
+            <div className={`status-dot ${connected ? 'online' : 'offline'}`} />
+            <div>
+              <div className="text-xs font-medium" style={{ color: connected ? 'var(--color-success)' : 'var(--color-error)' }}>
+                {connected ? 'Connected' : 'Disconnected'}
+              </div>
+              <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+                MERLIN Core
+              </div>
+            </div>
           </div>
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="flex-1 overflow-auto p-6 page-enter" style={{ background: 'var(--color-bg-primary)' }}>
-        <Outlet />
+      {/* Main content */}
+      <main className="flex-1 overflow-auto relative" style={{ background: 'var(--color-bg-primary)' }}>
+        <div className="p-7 page-enter">
+          <Outlet />
+        </div>
       </main>
     </div>
   )

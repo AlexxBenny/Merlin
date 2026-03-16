@@ -34,3 +34,8 @@ class TTSEngine(ABC):
     @abstractmethod
     def is_available(self) -> bool:
         """Check whether this engine is ready to speak."""
+        ...
+
+    def start(self, timeout: float = 5.0) -> None:
+        """Optional eager initialization. Override if needed."""
+        pass

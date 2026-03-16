@@ -51,9 +51,10 @@ except ImportError:
     sys.exit(1)
 
 try:
-    import requests
+    import requests as _requests_mod
     HAS_REQUESTS = True
 except ImportError:
+    _requests_mod = None  # type: ignore[assignment]
     HAS_REQUESTS = False
 
 
@@ -96,11 +97,11 @@ class ChatWorker(QThread):
 
     def run(self):
         try:
-            if not HAS_REQUESTS:
+            if _requests_mod is None:
                 self.error_occurred.emit("requests library not installed")
                 return
 
-            resp = requests.post(
+            resp = _requests_mod.post(
                 f"{API_BASE}/api/v1/chat",
                 json={"message": self.message},
                 timeout=120,
@@ -110,10 +111,11 @@ class ChatWorker(QThread):
                 self.response_ready.emit(data.get("response", "No response."))
             else:
                 self.error_occurred.emit(f"API error: {resp.status_code}")
-        except requests.ConnectionError:
-            self.error_occurred.emit("Cannot connect to MERLIN API.")
         except Exception as e:
-            self.error_occurred.emit(str(e))
+            if 'ConnectionError' in type(e).__name__:
+                self.error_occurred.emit("Cannot connect to MERLIN API.")
+            else:
+                self.error_occurred.emit(str(e))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -144,7 +146,7 @@ class ChatBubble(QWidget):
                 padding: 8px 12px;
             }}
         """)
-        label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         label.setMaximumWidth(PANEL_WIDTH - 60)
 
         if self.is_user:
@@ -180,11 +182,11 @@ class MerlinOrb(QWidget):
 
     def _setup_window(self):
         self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.Tool  # Don't show in taskbar
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool  # Don't show in taskbar
         )
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(ORB_SIZE, ORB_SIZE)
 
     def _position_window(self):
@@ -208,7 +210,7 @@ class MerlinOrb(QWidget):
     def paintEvent(self, event):
         """Custom paint for the orb."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         if self._expanded:
             # Draw panel background
@@ -231,7 +233,7 @@ class MerlinOrb(QWidget):
             gradient.setColorAt(0, glow_color)
             gradient.setColorAt(1, QColor(0, 0, 0, 0))
             painter.setBrush(QBrush(gradient))
-            painter.setPen(Qt.NoPen)
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(
                 center_x - glow_radius, center_y - glow_radius,
                 glow_radius * 2, glow_radius * 2,
@@ -251,9 +253,9 @@ class MerlinOrb(QWidget):
 
         # Text
         painter.setPen(QPen(COLOR_ACCENT if self._connected else COLOR_GREY))
-        font = QFont("Segoe UI", 10, QFont.Bold)
+        font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignCenter, "M")
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "M")
 
     def _animate_glow(self):
         """Pulse glow animation."""
@@ -276,7 +278,7 @@ class MerlinOrb(QWidget):
         # Header
         header = QHBoxLayout()
         title = QLabel("MERLIN")
-        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {COLOR_ACCENT.name()};")
         header.addWidget(title)
 
@@ -407,12 +409,12 @@ class MerlinOrb(QWidget):
     # ─── Mouse events ──────────────────────────────────────
 
     def mousePressEvent(self, event):
-        if not self._expanded and event.button() == Qt.LeftButton:
+        if not self._expanded and event.button() == Qt.MouseButton.LeftButton:
             self._expand()
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self._collapse()
         super().keyPressEvent(event)
 
@@ -480,8 +482,8 @@ class MerlinOrb(QWidget):
         """Check if MERLIN API is reachable."""
         def _do_check():
             try:
-                if HAS_REQUESTS:
-                    resp = requests.get(
+                if HAS_REQUESTS and _requests_mod is not None:
+                    resp = _requests_mod.get(
                         f"{API_BASE}/api/v1/health",
                         timeout=3,
                     )

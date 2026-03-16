@@ -22,6 +22,9 @@ class LLMClient(ABC):
     should type-hint against LLMClient, not a concrete class.
     """
 
+    model: str
+    default_temperature: float
+
     @abstractmethod
     def complete(
         self,

@@ -1,0 +1,14 @@
+{
+  "include": ["."],
+  "venvPath": ".",
+  "venv": "venv",
+  "pythonVersion": "3.11",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": ["."]
+    }
+  ],
+  "reportMissingImports": "warning",
+  "reportPossiblyUnbound": "warning"
+}
