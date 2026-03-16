@@ -194,9 +194,10 @@ flowchart LR
 
     Optional feature extras:
     - `.[voice]` for local STT/TTS dependencies
-    - `.[ui]` for the PySide desktop widget integration
+    - `.[ui]` for the PySide6 desktop widget
     - `.[browser]` for browser-use integrations
     - `.[windows]` for Windows-only control integrations
+    - React dashboard dependencies are installed via `npm` in `ui/dashboard` (see UI section below)
 
 3. **Set up API Keys:**
    Copy the example environment file and configure your keys.
@@ -291,7 +292,7 @@ WebSocket channels:
 
 ### 🧰 Skill Inventory Snapshot
 
-MERLIN currently ships with 34 registered skills:
+MERLIN currently ships with 34 registered skills (per `docs/skills/overview.md`, as of March 2026; inventory may evolve):
 - `system`: 20
 - `browser`: 7
 - `fs`: 3
