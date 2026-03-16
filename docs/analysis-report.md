@@ -79,13 +79,13 @@ Readiness scale: **Excellent / Good / Partial / Missing**
 
 ## Gaps, Faults, and Missing Subsystems
 
-## A) Developer experience and installability
+## A) Developer experience and installability — ✅ FIXED
 
-1. No canonical Python dependency manifest (`pyproject.toml` / `requirements.txt`) at repo root.  
-2. Frontend dependency graph has a peer-resolution conflict (Tailwind Vite plugin vs Vite major).  
-3. Baseline local setup path is not fully reproducible from a single install command.
+~~1. No canonical Python dependency manifest (`pyproject.toml` / `requirements.txt`) at repo root.~~  
+~~2. Frontend dependency graph has a peer-resolution conflict (Tailwind Vite plugin vs Vite major).~~  
+~~3. Baseline local setup path is not fully reproducible from a single install command.~~
 
-Impact: harder onboarding, less reproducible builds, slower contributor velocity.
+**Status:** Resolved. `pyproject.toml` and `requirements.txt` now exist at repo root. Frontend dependency conflicts addressed.
 
 ## B) External ecosystem capability
 
