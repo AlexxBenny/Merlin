@@ -145,6 +145,24 @@ The non-cognitive layer that mutates the world.
 * **Enforced Execution Contracts:** Skills are rigorously defined. An LLM cannot hallucinate arguments or manipulate the system in undefined ways.
 * **World State Timeline:** Every action, input, and response is tracked as an append-only event stream in the `WorldTimeline`, allowing MERLIN to maintain perfect contextual awareness of its environment.
 
+### 🧭 Request Lifecycle (Control-Flow View)
+
+```mermaid
+flowchart LR
+    U[User Input] --> P[Perception]
+    P --> B[BrainCore]
+    B -->|Simple command| R[ReflexEngine]
+    B -->|Complex intent| C[Cognitive Coordinator]
+    C -->|Plan required| MC[MissionCortex Compiler]
+    MC --> O[MissionOrchestrator]
+    O --> E[MissionExecutor]
+    R --> S[Skill Registry]
+    E --> S
+    S --> W[WorldTimeline]
+    W --> RB[ReportBuilder]
+    RB --> OUT[Console / TTS / API]
+```
+
 ---
 
 ## 🚀 Getting Started
@@ -174,11 +192,11 @@ The non-cognitive layer that mutates the world.
    ```
    `requirements.txt` mirrors the union of core + optional dependencies for pip-only workflows.
 
-   Optional feature extras:
-   - `.[voice]` for local STT/TTS dependencies
-   - `.[ui]` for the PySide desktop widget
-   - `.[browser]` for browser-use integrations
-   - `.[windows]` for Windows-only control integrations
+    Optional feature extras:
+    - `.[voice]` for local STT/TTS dependencies
+    - `.[ui]` for the PySide desktop widget integration
+    - `.[browser]` for browser-use integrations
+    - `.[windows]` for Windows-only control integrations
 
 3. **Set up API Keys:**
    Copy the example environment file and configure your keys.
@@ -190,6 +208,7 @@ The non-cognitive layer that mutates the world.
 4. **Configure Routing & Models:**
    * Adjust routing policies in `config/routing.yaml`.
    * Configure specific LLMs for specific roles in `config/models.yaml`.
+   * Tune execution and runtime behavior in `config/execution.yaml`, `config/browser.yaml`, and `config/skills.yaml`.
 
 5. **Run MERLIN:**
    ```bash
@@ -198,9 +217,86 @@ The non-cognitive layer that mutates the world.
    python main.py --voice  # Voice-only mode
    python main.py --hybrid # Text + voice
    ```
-   *Note: Ensure your virtual environment is active and all dependencies are installed before running.*
+    *Note: Ensure your virtual environment is active and all dependencies are installed before running.*
 
-   When using `--ui`, the dashboard is available at `http://localhost:8420` and API docs at `http://localhost:8420/docs`.
+    When using `--ui`, the dashboard is available at `http://localhost:8420` and API docs at `http://localhost:8420/docs`.
+
+### UI Frontend Development (Optional)
+
+If you are developing the React dashboard, install frontend dependencies separately:
+
+```bash
+cd ui/dashboard
+npm install
+npm run dev    # http://localhost:5173 (proxied to API on :8420)
+npm run build  # production build
+```
+
+### Environment Variables (Quick Reference)
+
+Copy `.env.example` to `.env`, then set at least one provider key.
+
+Required (at least one provider key):
+- `OPENROUTER_API_KEY`
+- `GEMINI_API_KEY`
+
+Common optional variables:
+- `OLLAMA_HOST` (default: `http://localhost:11434`)
+- `LOG_LEVEL` (default: `INFO`)
+- `STT_ENGINE` / `TTS_ENGINE` (defaults: `whisper` / `pyttsx3`)
+- `BROWSER_HEADLESS` (default: `false`)
+
+### Configuration Quick Reference
+
+Key files in `config/`:
+
+| File | Purpose |
+|------|---------|
+| `models.yaml` | Role-based LLM provider/model routing |
+| `routing.yaml` | BrainCore and escalation routing rules |
+| `skills.yaml` | Skill registry metadata/configuration |
+| `execution.yaml` | Executor concurrency, timeout, retries |
+| `browser.yaml` | Browser headless/security/timeout settings |
+| `paths.yaml` | Filesystem alias mapping |
+| `app_aliases.yaml` | App name alias normalization |
+| `app_capabilities.yaml` | Per-app media capability flags |
+
+### 🧪 Running Tests
+
+```bash
+# Run default test suite
+python -m pytest -q
+
+# Run tests marked as slow (live infra/network dependent)
+python -m pytest -m slow
+```
+
+`@pytest.mark.slow` tests are excluded by default unless you explicitly run `-m slow`.
+
+### 🌐 API & Frontend Surface (Quick Reference)
+
+MERLIN exposes versioned endpoints under `/api/v1` when running with `--ui`:
+
+| Area | Example Endpoints |
+|------|-------------------|
+| Chat | `POST /api/v1/chat`, `POST /api/v1/chat/stream`, `GET /api/v1/chat/history` |
+| Runtime state | `GET /api/v1/system`, `GET /api/v1/world`, `GET /api/v1/logs` |
+| Missions/jobs | `GET /api/v1/missions`, `GET /api/v1/jobs`, `PATCH /api/v1/jobs/{id}` |
+| Config | `GET /api/v1/config`, `PATCH /api/v1/config` |
+| Health | `GET /api/v1/health` |
+
+WebSocket channels:
+- `/ws/logs` for real-time logs
+- `/ws/events` for system/job/mission updates
+
+### 🧰 Skill Inventory Snapshot
+
+MERLIN currently ships with 34 registered skills:
+- `system`: 20
+- `browser`: 7
+- `fs`: 3
+- `memory`: 4
+- `reasoning`: 1
 
 ---
 
@@ -245,4 +341,13 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 
 * System overview and doc index: `docs/overview.md`
 * Architectural laws: `ARCHITECTURE.md`
+* Cognitive request flow: `docs/architecture/cognitive-pipeline.md`
+* World-state model: `docs/architecture/world-state.md`
+* Interface/API layer: `docs/subsystems/interface.md`
+* UI dashboard and widget internals: `docs/subsystems/ui.md`
+* Model routing and provider adapters: `docs/subsystems/models.md`
+* Skills reference index: `docs/skills/overview.md`
+* Environment variable reference: `docs/configuration/environment.md`
+* YAML configuration reference: `docs/configuration/config-files.md`
+* Mission IR specification: `docs/ir/mission-ir.md`
 * Autonomous readiness analysis report: `docs/analysis-report.md`
