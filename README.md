@@ -145,9 +145,27 @@ The non-cognitive layer that mutates the world.
 * **Enforced Execution Contracts:** Skills are rigorously defined. An LLM cannot hallucinate arguments or manipulate the system in undefined ways.
 * **World State Timeline:** Every action, input, and response is tracked as an append-only event stream in the `WorldTimeline`, allowing MERLIN to maintain perfect contextual awareness of its environment.
 
+### 🧭 Request Lifecycle (Control-Flow View)
+
+```mermaid
+flowchart LR
+    U[User Input] --> P[Perception]
+    P --> B[BrainCore]
+    B -->|Simple command| R[ReflexEngine]
+    B -->|Complex intent| C[Cognitive Coordinator]
+    C -->|Plan required| MC[MissionCortex Compiler]
+    MC --> O[MissionOrchestrator]
+    O --> E[MissionExecutor]
+    R --> S[Skill Registry]
+    E --> S
+    S --> W[WorldTimeline]
+    W --> RB[ReportBuilder]
+    RB --> OUT[Console / TTS / API]
+```
+
 ---
 
-## � Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 * Python 3.10+
@@ -174,11 +192,12 @@ The non-cognitive layer that mutates the world.
    ```
    `requirements.txt` mirrors the union of core + optional dependencies for pip-only workflows.
 
-   Optional feature extras:
-   - `.[voice]` for local STT/TTS dependencies
-   - `.[ui]` for the PySide desktop widget
-   - `.[browser]` for browser-use integrations
-   - `.[windows]` for Windows-only control integrations
+    Optional feature extras:
+    - `.[voice]` for local STT/TTS dependencies
+    - `.[ui]` for the PySide6 desktop widget
+    - `.[browser]` for browser-use integrations
+    - `.[windows]` for Windows-only control integrations
+    - React dashboard dependencies are installed via `npm` in `ui/dashboard` (see UI section below)
 
 3. **Set up API Keys:**
    Copy the example environment file and configure your keys.
@@ -190,6 +209,7 @@ The non-cognitive layer that mutates the world.
 4. **Configure Routing & Models:**
    * Adjust routing policies in `config/routing.yaml`.
    * Configure specific LLMs for specific roles in `config/models.yaml`.
+   * Tune execution and runtime behavior in `config/execution.yaml`, `config/browser.yaml`, and `config/skills.yaml`.
 
 5. **Run MERLIN:**
    ```bash
@@ -198,9 +218,175 @@ The non-cognitive layer that mutates the world.
    python main.py --voice  # Voice-only mode
    python main.py --hybrid # Text + voice
    ```
-   *Note: Ensure your virtual environment is active and all dependencies are installed before running.*
+    *Note: Ensure your virtual environment is active and all dependencies are installed before running.*
 
-   When using `--ui`, the dashboard is available at `http://localhost:8420` and API docs at `http://localhost:8420/docs`.
+    When using `--ui`, the dashboard is available at `http://localhost:8420` and API docs at `http://localhost:8420/docs`.
+
+### UI Frontend Development (Optional)
+
+If you are developing the React dashboard, install frontend dependencies separately:
+
+```bash
+cd ui/dashboard
+npm install
+npm run dev    # http://localhost:5173 (proxied to API on :8420)
+npm run build  # production build
+```
+
+### Environment Variables (Quick Reference)
+
+Copy `.env.example` to `.env`, then set at least one provider key.
+
+Required (at least one provider key):
+- `OPENROUTER_API_KEY`
+- `GEMINI_API_KEY`
+
+Common optional variables:
+- `OLLAMA_HOST` (default: `http://localhost:11434`)
+- `LOG_LEVEL` (default: `INFO`)
+- `STT_ENGINE` / `TTS_ENGINE` (defaults: `whisper` / `pyttsx3`)
+- `BROWSER_HEADLESS` (default: `false`)
+
+### Configuration Quick Reference
+
+Key files in `config/`:
+
+| File | Purpose |
+|------|---------|
+| `models.yaml` | Role-based LLM provider/model routing |
+| `routing.yaml` | BrainCore and escalation routing rules |
+| `skills.yaml` | Skill registry metadata/configuration |
+| `execution.yaml` | Executor concurrency, timeout, retries |
+| `browser.yaml` | Browser headless/security/timeout settings |
+| `paths.yaml` | Filesystem alias mapping |
+| `app_aliases.yaml` | App name alias normalization |
+| `app_capabilities.yaml` | Per-app media capability flags |
+
+### 🧪 Running Tests
+
+```bash
+# Run default test suite
+python -m pytest -q
+
+# Run tests marked as slow (live infra/network dependent)
+python -m pytest -m slow
+```
+
+`@pytest.mark.slow` tests are excluded by default unless you explicitly run `-m slow`.
+
+### 🌐 API & Frontend Surface (Quick Reference)
+
+MERLIN exposes versioned endpoints under `/api/v1` when running with `--ui`:
+
+| Area | Example Endpoints |
+|------|-------------------|
+| Chat | `POST /api/v1/chat`, `POST /api/v1/chat/stream`, `GET /api/v1/chat/history` |
+| Runtime state | `GET /api/v1/system`, `GET /api/v1/world`, `GET /api/v1/logs` |
+| Missions/jobs | `GET /api/v1/missions`, `GET /api/v1/jobs`, `PATCH /api/v1/jobs/{id}` |
+| Config | `GET /api/v1/config`, `PATCH /api/v1/config` |
+| Health | `GET /api/v1/health` |
+
+WebSocket channels:
+- `/ws/logs` for real-time logs
+- `/ws/events` for system/job/mission updates
+
+### 🔌 UI ↔ API ↔ Core Bridge (Execution Path)
+
+When UI clients issue commands, MERLIN uses a decoupled, filesystem-backed command queue:
+
+```mermaid
+sequenceDiagram
+    participant UI as Dashboard / Widget
+    participant API as FastAPI (:8420)
+    participant Q as state/api/command_queue
+    participant B as MerlinBridge Thread
+    participant M as MERLIN Core
+    participant R as state/api/responses
+
+    UI->>API: POST /api/v1/chat (or job/config command)
+    API->>Q: write cmd_*.json
+    B->>Q: poll + consume command
+    B->>M: execute via live conductor
+    M-->>B: result / error
+    B->>R: write response JSON
+    API->>R: poll response by cmd_id
+    API-->>UI: HTTP/SSE/WS response
+```
+
+This allows the API server and frontends to remain process-isolated from core internals while still supporting exactly-once command handling.
+
+### 🧰 Skill Inventory Snapshot
+
+MERLIN currently ships with 34 registered skills (per `docs/skills/overview.md`, as of March 2026; inventory may evolve):
+- `system`: 20
+- `browser`: 7
+- `fs`: 3
+- `memory`: 4
+- `reasoning`: 1
+
+### 📊 Dashboard Pages (What You Can Inspect)
+
+The React dashboard provides 8 focused views:
+
+| Route | Purpose |
+|-------|---------|
+| `/` | System overview (CPU/RAM/Disk/battery + mission state) |
+| `/chat` | Chat with streaming responses + session controls |
+| `/scheduler` | Job lifecycle controls (pause/resume/cancel) |
+| `/memory` | User knowledge domains (preferences, facts, traits, policies, relationships) |
+| `/logs` | Live logs via WebSocket with filtering/search |
+| `/config` | Editable configuration forms with validation/masking |
+| `/missions` | Mission history + DAG node inspector |
+| `/world` | World state tree snapshot |
+
+### 🧾 Mission IR Snapshot
+
+Complex instructions are compiled to a validated MissionPlan DAG (IR v1). Minimal shape:
+
+```json
+{
+  "id": "mission_123",
+  "nodes": [
+    {
+      "id": "n1",
+      "skill": "fs.read_file",
+      "inputs": { "path": "/tmp/example.txt" },
+      "depends_on": [],
+      "mode": "foreground"
+    }
+  ],
+  "metadata": { "ir_version": "1.0" }
+}
+```
+
+See full schema and constraints in `docs/ir/mission-ir.md`.
+
+### 🧠 Model Provider Routing (Role-Based)
+
+MERLIN routes different cognitive roles to different model providers via `config/models.yaml`.
+
+| Provider | Best For | Notes |
+|----------|----------|-------|
+| OpenRouter | Flexible multi-model access | Good default for trying multiple model families |
+| Gemini | Direct Google Gemini access | Often used for coordinator/compiler roles |
+| Ollama | Local/offline-ish inference | Requires local Ollama server (`OLLAMA_HOST`) |
+| HuggingFace | Inference API workflows | Set `HUGGINGFACE_API_KEY` when used |
+
+### 🛠️ Troubleshooting
+
+| Symptom | Likely Cause | What to Check |
+|---------|--------------|---------------|
+| `python -m pytest` fails to start | Dev deps not installed | `python -m pip install -e ".[dev]"` |
+| `--ui` starts but dashboard is unavailable | API server failed / port conflict | Check `http://localhost:8420/health` and logs |
+| Voice mode does nothing | Missing voice dependencies or mic permissions | Install `.[voice]`; verify `STT_ENGINE` / `TTS_ENGINE` |
+| Browser actions fail | Missing browser integrations/config | Install `.[browser]`; review `config/browser.yaml` |
+| LLM calls fail | Missing/invalid provider keys | Verify `.env` keys and provider selection in `config/models.yaml` |
+
+### 🖥️ Platform Notes
+
+- `.[windows]` extra is only for Windows-native control integrations.
+- On non-Windows platforms, avoid installing `.[windows]`.
+- The React dashboard is platform-agnostic, but requires Node.js for local development.
 
 ---
 
@@ -245,4 +431,13 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 
 * System overview and doc index: `docs/overview.md`
 * Architectural laws: `ARCHITECTURE.md`
+* Cognitive request flow: `docs/architecture/cognitive-pipeline.md`
+* World-state model: `docs/architecture/world-state.md`
+* Interface/API layer: `docs/subsystems/interface.md`
+* UI dashboard and widget internals: `docs/subsystems/ui.md`
+* Model routing and provider adapters: `docs/subsystems/models.md`
+* Skills reference index: `docs/skills/overview.md`
+* Environment variable reference: `docs/configuration/environment.md`
+* YAML configuration reference: `docs/configuration/config-files.md`
+* Mission IR specification: `docs/ir/mission-ir.md`
 * Autonomous readiness analysis report: `docs/analysis-report.md`
