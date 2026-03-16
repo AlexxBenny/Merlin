@@ -66,7 +66,7 @@ Readiness scale: **Excellent / Good / Partial / Missing**
 
 | Scenario | Expected MERLIN behavior | Readiness | Notes |
 |---|---|---|---|
-| “Mute audio, lower brightness, open Spotify” | Routed through reflex + system skills with low latency | Good | Likely robust due deterministic routing + system skill coverage |
+| “Mute audio, lower brightness, open Spotify” | Routed through reflex + system skills with low latency | Good | Likely robust due to deterministic routing + system skill coverage |
 | “Open the latest build log, summarize critical errors, create a reminder in 10 min” | Multi-step mission compilation + filesystem + reasoning + scheduler | Good | Strong DAG orchestration; quality depends on model config |
 | “Every weekday at 9am open Jira dashboard and tell me top blockers” | Recurring schedule + browser automation + reporting | Partial | Scheduling exists; external SaaS depth and auth workflows may limit reliability |
 | “When battery drops below 20%, enable battery saver and notify me only once per hour” | Event-triggered reflex/policy + state tracking + throttled notification | Partial | Event infrastructure exists; guardrails/rate-control behavior needs explicit policy depth |
