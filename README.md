@@ -172,6 +172,7 @@ The non-cognitive layer that mutates the world.
    ```bash
    python -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -r requirements.txt
    ```
+   `requirements.txt` mirrors the union of core + optional dependencies for pip-only workflows.
 
    Optional feature extras:
    - `.[voice]` for local STT/TTS dependencies
