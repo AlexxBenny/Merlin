@@ -147,7 +147,7 @@ The non-cognitive layer that mutates the world.
 
 ---
 
-## � Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 * Python 3.10+
