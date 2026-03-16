@@ -221,3 +221,9 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 ├── ui/widget/              # PySide6 floating orb with chat
 └── config/                 # YAML configurations for models, routing, and skills
 ```
+
+## 📚 Deep-Dive Documentation
+
+* System overview and doc index: `docs/overview.md`
+* Architectural laws: `ARCHITECTURE.md`
+* Autonomous readiness analysis report: `docs/analysis-report.md`
