@@ -166,6 +166,7 @@ The non-cognitive layer that mutates the world.
    python -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
    ```
    This installs the canonical Python dependency set from `pyproject.toml`.
+   On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`.
 
    If you prefer `requirements.txt`:
    ```bash
