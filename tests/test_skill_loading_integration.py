@@ -83,6 +83,17 @@ def production_deps():
     browser_controller = MagicMock()
     browser_controller.is_alive.return_value = False
 
+    # email_client: mock — required by email skills
+    email_client = MagicMock()
+    email_client.create_draft.return_value = {
+        "id": "d-test", "to": "", "subject": "", "body": "",
+        "created_at": "", "updated_at": "",
+    }
+    email_client.list_drafts.return_value = []
+    email_client.get_config.return_value = {
+        "from_address": "test@test.com", "signature": "",
+    }
+
     # location_config: None is fine — fs skills will be skipped
     # We test separately that skipped skills are accounted for
     deps = {
@@ -95,6 +106,7 @@ def production_deps():
         "app_registry": MagicMock(),
         "browser_adapter": browser_adapter,
         "browser_controller": browser_controller,
+        "email_client": email_client,
     }
     yield deps
     os.unlink(tmp.name)

@@ -90,9 +90,11 @@ class SearchEmailSkill(Skill):
         output_style="rich",
     )
 
-    def __init__(self, content_llm: LLMClient, email_client: EmailClient):
+    def __init__(self, content_llm: LLMClient, email_client: EmailClient,
+                 user_knowledge=None):
         self._llm = content_llm
         self._email_client = email_client
+        self._user_knowledge = user_knowledge
 
     def execute(
         self,

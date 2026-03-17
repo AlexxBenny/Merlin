@@ -515,6 +515,13 @@ def main(args=None):
     else:
         logger.info("Email disabled in config")
 
+    # ── User Knowledge Store (moved up — zero dependencies, safe to create early) ──
+    # Created before skill_deps so ALL skills (email, reasoning, etc.) can
+    # receive user_knowledge via DI. Previously only memory skills had access.
+    from memory.user_knowledge import UserKnowledgeStore
+    user_knowledge = UserKnowledgeStore(persist_path="state/user_knowledge.json")
+    logger.info("UserKnowledgeStore initialized (early — for skill DI)")
+
     skill_deps = {
         "location_config": location_config,
         "system_controller": system_controller,
@@ -525,10 +532,7 @@ def main(args=None):
         "browser_adapter": browser_adapter,
         "browser_controller": browser_controller,
         "email_client": email_client,
-        # NOTE: user_knowledge is NOT included here.
-        # Memory skills require UserKnowledgeStore which hasn't been
-        # created yet. They are registered in a separate late-load pass
-        # after UKS initialization (see below).
+        "user_knowledge": user_knowledge,
     }
     load_skills(registry, skills_config, deps=skill_deps)
 
@@ -750,9 +754,8 @@ def main(args=None):
     merlin.orchestrator._supervisor = supervisor
     logger.info("ExecutionSupervisor wired to MissionOrchestrator")
 
-    # ── User Knowledge Store (semantic memory — preferences, facts, policies) ──
-    from memory.user_knowledge import UserKnowledgeStore
-    user_knowledge = UserKnowledgeStore(persist_path="state/user_knowledge.json")
+    # ── User Knowledge Store — already created above (before skill_deps) ──
+    # Reuse the same instance for PreferenceResolver, event loop, etc.
 
     # ── Preference Resolver (delegates to UserKnowledgeStore) ──
     from cortex.preference_resolver import PreferenceResolver, PreferenceMemory
@@ -763,6 +766,7 @@ def main(args=None):
     pref_resolver = PreferenceResolver(memory=pref_memory)
     merlin.orchestrator._pref_resolver = pref_resolver
     merlin._user_knowledge = user_knowledge
+    merlin.orchestrator._user_knowledge = user_knowledge  # for per-mission SkillContext
     logger.info("PreferenceResolver + UserKnowledgeStore wired")
 
     # ── Entity Resolver post-wiring (needs SkillRegistry from the executor) ──

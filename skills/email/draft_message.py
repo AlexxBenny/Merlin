@@ -78,9 +78,11 @@ class DraftMessageSkill(Skill):
         output_style="rich",
     )
 
-    def __init__(self, content_llm: LLMClient, email_client: EmailClient):
+    def __init__(self, content_llm: LLMClient, email_client: EmailClient,
+                 user_knowledge=None):
         self._llm = content_llm
         self._email_client = email_client
+        self._user_knowledge = user_knowledge
 
     def execute(
         self,
@@ -98,11 +100,24 @@ class DraftMessageSkill(Skill):
             recipient, prompt[:80],
         )
 
+        # Build user context from structured memory (allow-listed + sanitized)
+        user_context = ""
+        if self._user_knowledge:
+            user_context = self._user_knowledge.format_profile_for_prompt()
+
         # Build LLM prompt for email generation
         system = (
             "You are MERLIN, an intelligent desktop automation assistant. "
-            "Generate a professional email based on the user's request. "
-            "Return the email in this exact format:\n"
+            "Generate a professional email based on the user's request.\n"
+        )
+        if user_context:
+            system += (
+                f"\nUser identity:\n{user_context}\n"
+                "Use this information to personalize the email "
+                "(e.g., sign with the user's name, use correct dates).\n"
+            )
+        system += (
+            "\nReturn the email in this exact format:\n"
             "SUBJECT: <subject line>\n"
             "BODY:\n<email body>\n\n"
             "Do not add meta-commentary. Just produce the email."

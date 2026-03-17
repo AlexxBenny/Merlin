@@ -391,6 +391,104 @@ class UserKnowledgeStore:
                 return entry.value
         return None
 
+    # ── Structured Profile Extraction (for skill LLM prompts) ──
+
+    # Allow-listed keys safe for prompt injection.
+    # Only these are exposed via get_user_profile().
+    # Prevents accidental leak of sensitive facts (passwords, API keys, etc.)
+    _IDENTITY_FACT_KEYS = {
+        "name", "email", "timezone", "location", "job_title",
+        "company", "language", "phone", "title", "department",
+        "preferred_name", "nickname",
+    }
+    _IDENTITY_PREF_KEYS = {
+        "tone", "theme", "language",
+    }
+    _IDENTITY_TRAIT_KEYS = {
+        "communication_style", "technical_level", "formality",
+    }
+    _IDENTITY_REL_KEYS = {
+        "assistant_name",
+    }
+
+    @staticmethod
+    def _sanitize(value: Any) -> str:
+        """Sanitize a value for safe LLM prompt injection.
+
+        Strips newlines (prompt injection vector) and limits length.
+        """
+        s = str(value).replace("\n", " ").replace("\r", " ").strip()
+        return s[:200]  # Hard cap per value
+
+    def get_user_profile(self) -> Dict[str, Any]:
+        """Extract structured, allow-listed user identity from memory.
+
+        Returns a flat dict of identity-relevant fields only.
+        Keys are filtered through allow-lists to prevent leaking
+        sensitive data (passwords, API keys, etc.) into LLM prompts.
+
+        This is the SINGLE extraction point for user identity.
+        Skills never parse raw memory domains.
+        """
+        profile: Dict[str, Any] = {}
+
+        # Facts — only identity-relevant keys
+        for key, entry in self._facts.items():
+            if key in self._IDENTITY_FACT_KEYS:
+                profile[key] = self._sanitize(entry.value)
+
+        # Preferences — communication-relevant subset
+        for key, entry in self._preferences.items():
+            if key in self._IDENTITY_PREF_KEYS:
+                profile[f"pref_{key}"] = self._sanitize(entry.value)
+
+        # Traits — user characteristic subset
+        for key, entry in self._traits.items():
+            if key in self._IDENTITY_TRAIT_KEYS:
+                profile[f"trait_{key}"] = self._sanitize(entry.value)
+
+        # Relationships — minimal context
+        for key, entry in self._relationships.items():
+            if key in self._IDENTITY_REL_KEYS:
+                profile[f"rel_{key}"] = self._sanitize(entry.value)
+
+        return profile
+
+    def format_profile_for_prompt(self, max_lines: int = 15) -> str:
+        """Format user profile for deterministic LLM prompt injection.
+
+        Returns a compact, sorted, sanitized string like:
+            - Name: Alex
+            - Timezone: IST
+            - Preferred Tone: formal
+
+        Guarantees:
+        - Deterministic ordering (sorted keys)
+        - Sanitized values (no newlines → no prompt injection)
+        - Bounded output (max_lines)
+        - Allow-list filtered (no sensitive data)
+        """
+        profile = self.get_user_profile()
+        if not profile:
+            return ""
+
+        lines = []
+        for key in sorted(profile.keys()):
+            value = profile[key]
+            # Format key for readability
+            display_key = (
+                key.replace("pref_", "preferred ")
+                .replace("trait_", "")
+                .replace("rel_", "")
+                .replace("_", " ")
+                .title()
+            )
+            lines.append(f"- {display_key}: {value}")
+            if len(lines) >= max_lines:
+                break
+
+        return "\n".join(lines)
+
     # ── Memory Context Retrieval (LLM prompt injection seam) ──
 
     def retrieve_memory_context(
@@ -434,6 +532,7 @@ class UserKnowledgeStore:
             lines = lines[:max_entries]
             lines.append(f"  ... ({total} total entries, truncated)")
         return "\n".join(lines) if lines else "  (no stored knowledge)"
+
 
     # ── Persistence (atomic writes) ──
 

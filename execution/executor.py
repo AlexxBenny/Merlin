@@ -33,6 +33,12 @@ from skills.skill_result import SkillResult
 from world.timeline import WorldTimeline
 from world.snapshot import WorldSnapshot
 
+# Optional — SkillContext may not exist in minimal deployments
+try:
+    from execution.skill_context import SkillContext
+except ImportError:
+    SkillContext = None  # type: ignore
+
 # Optional: COM threading support (Windows)
 _HAS_COMTYPES = False
 try:
@@ -149,6 +155,14 @@ class MissionExecutor:
         self.timeline = timeline
         self.max_workers = max_workers
         self.node_timeout = node_timeout  # seconds, None = no timeout
+        self._skill_context = None  # Optional[SkillContext] — set per-mission
+
+    def set_context(self, context) -> None:
+        """Set the cross-cutting execution context.
+
+        Called per-mission (not once at startup) to keep time fresh.
+        """
+        self._skill_context = context
 
     def _resolve_input(
         self,
@@ -387,7 +401,20 @@ class MissionExecutor:
 
         # 3. Execute skill with contract-aware failure semantics
         try:
-            raw_result = skill.execute(inputs_for_skill, self.timeline, world_snapshot)
+            # Pass context only if skill's execute() accepts it (backward compat).
+            # Old skills define execute(self, inputs, world, snapshot=None) — 4 params.
+            # New skills add context=None. inspect overhead is negligible vs LLM calls.
+            import inspect
+            _sig = inspect.signature(skill.execute)
+            if 'context' in _sig.parameters:
+                raw_result = skill.execute(
+                    inputs_for_skill, self.timeline, world_snapshot,
+                    context=self._skill_context,
+                )
+            else:
+                raw_result = skill.execute(
+                    inputs_for_skill, self.timeline, world_snapshot,
+                )
             if not isinstance(raw_result, SkillResult):
                 raise RuntimeError(
                     f"Skill '{skill.name}' returned {type(raw_result).__name__} "

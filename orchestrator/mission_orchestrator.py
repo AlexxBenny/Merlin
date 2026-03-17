@@ -849,6 +849,25 @@ class MissionOrchestrator:
         Used by handle_user_input() and available for testing.
         """
 
+        # ── Build fresh SkillContext per mission (not per-startup) ──
+        # Keeps time accurate and user profile up-to-date.
+        try:
+            from execution.skill_context import SkillContext, UserProfile
+            from datetime import datetime
+
+            user_knowledge = getattr(self, '_user_knowledge', None)
+            if user_knowledge is not None:
+                profile = UserProfile.from_profile_dict(
+                    user_knowledge.get_user_profile()
+                )
+            else:
+                profile = UserProfile()
+
+            context = SkillContext(user=profile, time=datetime.now())
+            self.executor.set_context(context)
+        except Exception as e:
+            logger.debug("SkillContext build failed (non-fatal): %s", e)
+
         # Route through supervisor (guard enforcement) or executor (direct)
         runner = (
             self._supervisor.run if self._supervisor is not None

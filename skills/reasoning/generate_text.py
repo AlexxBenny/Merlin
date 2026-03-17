@@ -82,8 +82,9 @@ class GenerateTextSkill(Skill):
         output_style="terse",
     )
 
-    def __init__(self, content_llm: LLMClient):
+    def __init__(self, content_llm: LLMClient, user_knowledge=None):
         self._llm = content_llm
+        self._user_knowledge = user_knowledge
 
     def execute(
         self,
@@ -108,6 +109,21 @@ class GenerateTextSkill(Skill):
         )
         if style:
             system += f" Write in a {style} style."
+
+        # Conditional personalization — only for personal/communication content
+        # Not for code, technical explanations, or neutral summaries
+        _PERSONAL_HINTS = {"letter", "email", "message", "note", "memo",
+                           "introduction", "bio", "about me", "cover"}
+        prompt_lower = prompt.lower()
+        is_personal = any(h in prompt_lower for h in _PERSONAL_HINTS)
+
+        if is_personal and self._user_knowledge:
+            user_context = self._user_knowledge.format_profile_for_prompt()
+            if user_context:
+                system += (
+                    f"\n\nUser identity:\n{user_context}\n"
+                    "Use this to personalize the content where appropriate."
+                )
 
         full_prompt = f"{system}\n\nUser request: {prompt}"
         text = self._llm.complete(full_prompt)
