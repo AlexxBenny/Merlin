@@ -11,7 +11,7 @@ Every capability in MERLIN is a **Skill** — a deterministic, isolated, testabl
 ```python
 class Skill:
     contract: SkillContract    # Static metadata
-    def execute(inputs, world, snapshot) -> SkillResult
+    def execute(inputs, world, snapshot=None, context=None) -> SkillResult
 ```
 
 Skills:
@@ -57,17 +57,21 @@ class SkillResult:
 ## Registration
 
 Skills are registered in `main.py` via `SkillRegistry.register()`. The registry enforces:
-- Unique action namespace (34 skills, 34 unique actions)
+- Idempotent registration (duplicates silently skip, first instance preserved)
+- Unique action namespace (44 skills, 44 unique actions)
 - Contract validation at registration time
 
-## Skill Inventory (34 skills)
+Skills can opt into receiving `SkillContext` (frozen per-mission `user` + `time`) by accepting a `context` parameter. Backward-compatible: existing skills without `context` continue to work.
+
+## Skill Inventory (44 skills)
 
 | Domain | Skills |
 |--------|--------|
-| `system` | 20 — media, volume, brightness, apps, jobs, time, battery |
-| `browser` | 7 — click, fill, scroll, navigate, go_back, go_forward, autonomous_task |
-| `fs` | 3 — read_file, write_file, create_folder |
+| `system` | 19 — media, volume, brightness, apps, jobs, time, battery |
+| `browser` | 12 — click, fill, scroll, navigate, go_back, go_forward, autonomous_task, + 5 more |
+| `email` | 5 — read_inbox, draft_message, modify_draft, send_message, search_email |
 | `memory` | 4 — get_preference, set_preference, set_fact, add_policy |
+| `fs` | 3 — read_file, write_file, create_folder |
 | `reasoning` | 1 — generate_text |
 
 See domain-specific docs for details on each skill.

@@ -47,15 +47,16 @@ Intermediate reasoning layer. Decides whether skills are needed.
 
 Verb/keyword-based skill discovery. Maintains an inverted index:
 - 98 verb entries
-- 120 keyword entries
-- 34 skills indexed
+- 120+ keyword entries (including plural forms)
+- 44 skills indexed
 
 ### ScoredDiscovery (`cortex/scored_discovery.py`)
 
-Phase 1 filtering with TF-IDF scoring. Scores candidates by:
-- Verb match weight
-- Keyword overlap
-- Domain affinity
+Phase 1 filtering with intent scoring. Scores candidates by:
+- Verb match weight (+2.0 per match)
+- Keyword overlap (+1.0 per match)
+- Simple plural normalization (`emails` → also matches `email`)
+- Domain expansion for chaining safety (bounded sibling inclusion)
 
 ### EntityResolver (`cortex/entity_resolver.py`)
 

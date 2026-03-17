@@ -70,7 +70,7 @@ Transforms user intent into a static Mission DAG.
 | `MissionCortex` | LLM-based plan compilation with action templates |
 | `CognitiveCoordinator` | Intermediate reasoning, direct answers, computed variables |
 | `IntentEngine` | Verb/keyword-based skill discovery |
-| `ScoredDiscovery` | TF-IDF scored skill matching for Phase 1 filtering |
+| `ScoredDiscovery` | TF-IDF scored skill matching with plural normalization |
 | `EntityResolver` | App + browser entity resolution (cosine similarity) |
 | `ParameterResolver` | Semantic type resolution for skill inputs |
 | `PreferenceResolver` | User preference injection into skill parameters |
@@ -89,14 +89,15 @@ Transforms user intent into a static Mission DAG.
 
 ### 3.4 Skill Layer (`skills/`)
 
-Deterministic, testable capabilities. 34 registered skills across 7 domains:
+Deterministic, testable capabilities. 44 registered skills across 6 domains:
 
 | Domain | Count | Examples |
 |--------|-------|---------|
-| `system.*` | 20 | media control, volume, brightness, apps, jobs, time, battery |
-| `browser.*` | 7 | click, fill, scroll, navigate, go_back, go_forward, autonomous_task |
-| `fs.*` | 3 | read_file, write_file, create_folder |
+| `system.*` | 19 | media control, volume, brightness, apps, jobs, time, battery |
+| `browser.*` | 12 | click, fill, scroll, navigate, go_back, go_forward, autonomous_task |
+| `email.*` | 5 | read_inbox, draft_message, modify_draft, send_message, search_email |
 | `memory.*` | 4 | get_preference, set_preference, set_fact, add_policy |
+| `fs.*` | 3 | read_file, write_file, create_folder |
 | `reasoning.*` | 1 | generate_text |
 
 Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types, execution mode, failure policy, domain, and narration template.
@@ -114,7 +115,8 @@ Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types
 | `MissionExecutor` | DAG walker — enforces order, runs skills, manages parallelism |
 | `ExecutionSupervisor` | Step-level guard: pre/post validation, repair actions |
 | `MetaCognitionEngine` | Outcome analysis — success/failure/partial classification |
-| `SkillRegistry` | O(1) skill lookup, action namespace audit |
+| `SkillRegistry` | O(1) skill lookup, idempotent registration, action namespace audit |
+| `SkillContext` | Frozen per-mission context (`user` profile + `time`) passed to skills |
 | `SchedulerBridge` | Persistent job submission after mission success |
 
 **Forbidden**: Replanning, semantic interpretation, implicit context passing.
@@ -196,6 +198,8 @@ The single source of truth for all environmental state.
 | `MemoryStore` | Key-value persistent storage backend |
 
 Memory is injected as first-class context into the coordinator's LLM prompt. Memory skills (`memory.set_preference`, `memory.set_fact`, `memory.add_policy`, `memory.get_preference`) allow the user to teach MERLIN.
+
+**Memory Injection Pipeline**: `UserKnowledgeStore.get_user_profile()` extracts identity-relevant facts via an allow-list filter (prevents sensitive data exposure). `format_profile_for_prompt()` sanitizes and sorts the profile for deterministic LLM prompt injection. A typed `UserProfile` dataclass feeds into `SkillContext` for per-mission identity propagation to skills.
 
 ---
 
@@ -381,6 +385,7 @@ MERLIN/
 │   ├── executor.py           # Mission executor
 │   ├── supervisor.py         # Step-level guard
 │   ├── metacognition.py      # Outcome analysis
+│   ├── skill_context.py      # Frozen per-mission SkillContext + UserProfile
 │   ├── registry.py           # Skill registry
 │   └── scheduler.py          # Scheduler bridge
 │
@@ -426,8 +431,9 @@ MERLIN/
 ├── skills/                   # Layer 4: Capabilities
 │   ├── base.py               # Skill base class
 │   ├── contract.py           # SkillContract definition
-│   ├── browser/              # 7 browser skills
-│   ├── system/               # 20 system skills
+│   ├── browser/              # 12 browser skills
+│   ├── system/               # 19 system skills
+│   ├── email/                # 5 email skills
 │   ├── fs/                   # 3 file system skills
 │   ├── memory/               # 4 memory skills
 │   └── reasoning/            # 1 reasoning skill
@@ -465,6 +471,7 @@ MERLIN/
 │   ├── execution.yaml        # Execution limits + policies
 │   ├── paths.yaml            # OS path aliases
 │   ├── browser.yaml          # Browser configuration
+│   ├── email.yaml            # Email provider configuration
 │   ├── app_aliases.yaml      # Application name aliases
 │   └── app_capabilities.yaml # Per-app media capabilities
 │
@@ -498,4 +505,4 @@ MERLIN/
 │   ├── collect_compiler_baseline.py
 │   └── measure_phase3*.py
 │
-└── tests/                    # Test suite (1498+ tests)
+└── tests/                    # Test suite (1517+ tests)

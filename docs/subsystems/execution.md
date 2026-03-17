@@ -50,9 +50,18 @@ Generates structured `OutcomeAnalysis` for the ReportBuilder.
 ### SkillRegistry (`execution/registry.py`)
 
 O(1) skill lookup by name. Enforces:
-- Action namespace uniqueness (34 skills, 34 unique actions)
+- Idempotent registration (duplicate registrations silently skip, preserving first instance)
+- Action namespace uniqueness (44 skills, 44 unique actions)
 - Contract validation at registration
 - Domain-based grouping
+
+### SkillContext (`execution/skill_context.py`)
+
+Frozen per-mission context passed to skills that opt-in via `context` parameter:
+- `user`: Typed `UserProfile` (name, email, timezone) from `UserKnowledgeStore`
+- `time`: Current `datetime` at mission start
+
+Built fresh per-mission by `MissionOrchestrator.run()`. Backward-compatible via `inspect.signature` check — existing skills without `context` parameter continue to work unchanged.
 
 ### SchedulerBridge (`execution/scheduler.py`)
 

@@ -22,8 +22,20 @@ Structured user knowledge with typed categories:
 
 **Integration points**:
 - **Coordinator prompt**: Injected as structured context for reasoning
+- **SkillContext**: `UserProfile` extracted via `get_user_profile()` and propagated per-mission
+- **Draft personalization**: Identity injected into email and text skills for natural signatures
 - **PreferenceResolver**: Preferences applied to skill parameters
 - **Proactive policy eval**: Policies evaluated by RuntimeEventLoop
+
+### Memory Injection Pipeline
+
+`get_user_profile()` → `format_profile_for_prompt()` → LLM prompt
+
+| Stage | What It Does |
+|-------|--------------|
+| `get_user_profile()` | Allow-list filter: only identity-relevant facts (name, email, timezone, etc.) are exposed. Sensitive data (passwords, API keys) excluded. Values capped at 200 chars. |
+| `format_profile_for_prompt()` | Sanitizes (strips newlines), sorts keys (deterministic), and bounds output to max N lines. |
+| `UserProfile` dataclass | Typed extraction: `name`, `email`, `timezone` as optional fields. Fed into `SkillContext` for per-mission identity propagation. |
 
 ### MemoryStore (`memory/store.py`)
 
