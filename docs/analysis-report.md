@@ -13,7 +13,7 @@ At platform level, MERLIN remains strong in deterministic execution, guard-based
 
 ## Validation Snapshot (Observed During Analysis)
 
-- Baseline test run (`python -m pytest -q`) before doc changes: **1494 passed, 2 skipped, 3 failed**.
+- Baseline test run (`python -m pytest -q`) before this documentation update (no code changes in this pass): **1494 passed, 2 skipped, 3 failed**.
 - Relevant failures:
   - Email skills not loaded in production-loading test (`tests/test_skill_loading_integration.py`)
   - Semantic email types flagged as unused (consequence of non-loaded email skills)
