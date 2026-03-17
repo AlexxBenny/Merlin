@@ -309,5 +309,100 @@ class TestExecutorContextPropagation(unittest.TestCase):
         self.assertIsNone(received_contexts[0])
 
 
+class TestRegistryIdempotency(unittest.TestCase):
+    """Test that SkillRegistry.register() is idempotent."""
+
+    def test_duplicate_register_no_error(self):
+        """Registering the same skill twice must not raise."""
+        from execution.registry import SkillRegistry
+        from skills.base import Skill
+        from skills.contract import SkillContract, FailurePolicy
+        from skills.skill_result import SkillResult
+        from ir.mission import ExecutionMode
+
+        class DummySkill(Skill):
+            contract = SkillContract(
+                name="test.idempotent",
+                action="idempotent",
+                target_type="test",
+                description="Test idempotent skill",
+                inputs={"val": "test"},
+                outputs={"result": "test"},
+                allowed_modes={ExecutionMode.foreground},
+                failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+                emits_events=[],
+                mutates_world=False,
+            )
+
+            def execute(self, inputs, world, snapshot=None):
+                return SkillResult(outputs={"result": "ok"}, metadata={})
+
+        registry = SkillRegistry()
+        skill = DummySkill()
+
+        # First registration — should work
+        registry.register(skill, validate_types=False)
+        self.assertIn("test.idempotent", registry.all_names())
+
+        # Second registration — should NOT raise, should skip silently
+        registry.register(skill, validate_types=False)
+
+        # Still only one skill registered
+        count = sum(1 for n in registry.all_names() if n == "test.idempotent")
+        self.assertEqual(count, 1)
+
+    def test_idempotent_preserves_first_instance(self):
+        """Second registration doesn't overwrite the first instance."""
+        from execution.registry import SkillRegistry
+        from skills.base import Skill
+        from skills.contract import SkillContract, FailurePolicy
+        from skills.skill_result import SkillResult
+        from ir.mission import ExecutionMode
+
+        class SkillV1(Skill):
+            contract = SkillContract(
+                name="test.versioned",
+                action="versioned",
+                target_type="test",
+                description="Versioned test skill",
+                inputs={"val": "test"},
+                outputs={"result": "test"},
+                allowed_modes={ExecutionMode.foreground},
+                failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+                emits_events=[],
+                mutates_world=False,
+            )
+            version = "v1"
+
+            def execute(self, inputs, world, snapshot=None):
+                return SkillResult(outputs={"result": "v1"}, metadata={})
+
+        class SkillV2(Skill):
+            contract = SkillContract(
+                name="test.versioned",
+                action="versioned",
+                target_type="test",
+                description="Versioned test skill",
+                inputs={"val": "test"},
+                outputs={"result": "test"},
+                allowed_modes={ExecutionMode.foreground},
+                failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+                emits_events=[],
+                mutates_world=False,
+            )
+            version = "v2"
+
+            def execute(self, inputs, world, snapshot=None):
+                return SkillResult(outputs={"result": "v2"}, metadata={})
+
+        registry = SkillRegistry()
+        registry.register(SkillV1(), validate_types=False)
+        registry.register(SkillV2(), validate_types=False)  # should be ignored
+
+        # V1 should be preserved
+        registered = registry.get("test.versioned")
+        self.assertEqual(registered.version, "v1")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -167,14 +167,16 @@ class TestGenerateTextRegistry(unittest.TestCase):
         assert "reasoning.generate_text" in registry.all_names()
 
     def test_action_uniqueness(self):
-        """Cannot register two skills with the same action."""
+        """Registering same skill twice is idempotent — first wins."""
         llm = MagicMock()
         skill1 = GenerateTextSkill(content_llm=llm)
         skill2 = GenerateTextSkill(content_llm=llm)
         registry = SkillRegistry()
         registry.register(skill1)
-        with self.assertRaises(ValueError):
-            registry.register(skill2)
+        # Should NOT raise — idempotent skip
+        registry.register(skill2)
+        # First instance preserved
+        self.assertIs(registry.get("reasoning.generate_text"), skill1)
 
 
 class TestLoadSkillsFailFast(unittest.TestCase):

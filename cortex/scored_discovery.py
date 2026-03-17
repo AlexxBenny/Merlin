@@ -129,6 +129,13 @@ class DomainScoredDiscovery(SkillDiscovery):
         Uses word tokenization of the query (lowercased).
         """
         query_words = set(re.findall(r'\b[a-z]+\b', query.lower()))
+        # Simple plural normalization: 'emails' → also match 'email'
+        # Prevents singular/plural mismatch across all skills.
+        depluralized = set()
+        for w in query_words:
+            if len(w) > 3 and w.endswith('s') and not w.endswith('ss'):
+                depluralized.add(w[:-1])
+        query_words |= depluralized
         scores: Dict[str, float] = {}
 
         for name in registry.all_names():

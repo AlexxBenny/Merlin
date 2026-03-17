@@ -1038,6 +1038,27 @@ User: "list the running apps and open the second one"
   ]
 }}
 
+User: "what are my latest emails"
+{{
+  "nodes": [
+    {{"skill": "email.read_inbox", "inputs": {{}}, "outputs": {{"emails": {{"name": "email.read_inbox.emails", "type": "email_list"}}}}, "depends_on": [], "mode": "foreground"}}
+  ]
+}}
+
+User: "draft an email to john@example.com about the project deadline"
+{{
+  "nodes": [
+    {{"skill": "email.draft_message", "inputs": {{"to": "john@example.com", "subject": "Project Deadline", "prompt": "Draft a professional email about the project deadline"}}, "outputs": {{"draft_id": {{"name": "email.draft_message.draft_id", "type": "draft_identifier"}}}}, "depends_on": [], "mode": "foreground"}}
+  ]
+}}
+
+User: "search my emails for messages from Alex"
+{{
+  "nodes": [
+    {{"skill": "email.search_email", "inputs": {{"query": "from:Alex"}}, "outputs": {{"results": {{"name": "email.search_email.results", "type": "email_list"}}}}, "depends_on": [], "mode": "foreground"}}
+  ]
+}}
+
 Before producing JSON, verify:
 1. All anchor values are symbolic names from the Available Location Anchors list.
 2. No raw filesystem paths appear anywhere in inputs.

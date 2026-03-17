@@ -14,7 +14,11 @@ class SkillRegistry:
 
     def register(self, skill: Skill, *, validate_types: bool = True) -> None:
         if skill.name in self._skills:
-            raise ValueError(f"Duplicate skill '{skill.name}'")
+            logger.debug(
+                "Skill '%s' already registered — skipping (idempotent)",
+                skill.name,
+            )
+            return
         # Fail loudly if skill declares a type not in SEMANTIC_TYPES
         if validate_types:
             assert_types_registered(

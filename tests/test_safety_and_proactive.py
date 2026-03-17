@@ -786,7 +786,7 @@ class TestLateRegistrationIntegrity:
             os.unlink(path)
 
     def test_no_double_registration(self):
-        """Registering a skill twice raises ValueError (SkillRegistry invariant)."""
+        """Registering a skill twice is idempotent (skip, not error)."""
         from execution.registry import SkillRegistry
         from skills.memory.memory_skills import GetPreferenceSkill
 
@@ -797,8 +797,11 @@ class TestLateRegistrationIntegrity:
         registry.register(skill1)
 
         skill2 = GetPreferenceSkill(user_knowledge=store)
-        with pytest.raises(ValueError, match="Duplicate skill"):
-            registry.register(skill2)
+        # Should NOT raise — idempotent skip
+        registry.register(skill2)
+
+        # First instance preserved, only one registered
+        assert registry.get("memory.get_preference") is skill1
 
 
 # ──────────────────────────────────────────────────────────────
