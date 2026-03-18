@@ -393,6 +393,8 @@ class MerlinOrb(QWidget):
         self._panel_widget.setGeometry(0, 0, PANEL_WIDTH, PANEL_HEIGHT)
         self._panel_widget.show()
         self._input_field.setFocus()
+        # Install global event filter to detect clicks outside
+        QApplication.instance().installEventFilter(self)
         self.update()
 
     def _collapse(self):
@@ -402,6 +404,10 @@ class MerlinOrb(QWidget):
 
         self._expanded = False
         self._panel_widget.hide()
+        # Remove global event filter
+        app = QApplication.instance()
+        if app:
+            app.removeEventFilter(self)
         self.setFixedSize(ORB_SIZE, ORB_SIZE)
         self._position_window()
         self.update()
@@ -438,11 +444,15 @@ class MerlinOrb(QWidget):
             self._collapse()
         super().keyPressEvent(event)
 
-    def changeEvent(self, event):
-        """Collapse panel when user clicks outside the widget."""
-        if event.type() == QEvent.Type.WindowDeactivate and self._expanded:
+    def eventFilter(self, obj, event):
+        """Catch global mouse clicks — collapse if click is outside this widget."""
+        if (
+            self._expanded
+            and event.type() == QEvent.Type.MouseButtonPress
+            and not self.geometry().contains(QCursor.pos())
+        ):
             self._collapse()
-        super().changeEvent(event)
+        return super().eventFilter(obj, event)
 
     # ─── Chat ───────────────────────────────────────────────
 
