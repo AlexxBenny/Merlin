@@ -36,7 +36,7 @@ try:
     )
     from PySide6.QtCore import (
         Qt, QTimer, QPropertyAnimation, QEasingCurve,
-        QPoint, QSize, Signal, QThread, QUrl,
+        QPoint, QSize, Signal, QThread, QUrl, QEvent,
     )
     from PySide6.QtGui import (
         QColor, QPainter, QBrush, QPen, QFont, QFontMetrics,
@@ -406,17 +406,43 @@ class MerlinOrb(QWidget):
         self._position_window()
         self.update()
 
-    # ─── Mouse events ──────────────────────────────────────
+    # ─── Mouse events (drag-to-move + click-to-expand) ─────
 
     def mousePressEvent(self, event):
-        if not self._expanded and event.button() == Qt.MouseButton.LeftButton:
-            self._expand()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.globalPosition().toPoint()
+            self._drag_origin = self.pos()
+            self._dragging = False
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if hasattr(self, '_drag_start_pos') and self._drag_start_pos is not None:
+            delta = event.globalPosition().toPoint() - self._drag_start_pos
+            # Start dragging only after moving > 5px (avoids accidental drags)
+            if not self._dragging and (abs(delta.x()) > 5 or abs(delta.y()) > 5):
+                self._dragging = True
+            if self._dragging:
+                self.move(self._drag_origin + delta)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._dragging and not self._expanded:
+                self._expand()
+            self._drag_start_pos = None
+            self._dragging = False
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self._collapse()
         super().keyPressEvent(event)
+
+    def changeEvent(self, event):
+        """Collapse panel when user clicks outside the widget."""
+        if event.type() == QEvent.Type.WindowDeactivate and self._expanded:
+            self._collapse()
+        super().changeEvent(event)
 
     # ─── Chat ───────────────────────────────────────────────
 
