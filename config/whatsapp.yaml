@@ -1,7 +1,7 @@
 whatsapp:
-  enabled: false                    # Opt-in. Default off.
+  enabled: true                    # Opt-in. Default off.
   session_name: "merlin_whatsapp"
-  database_path: "state/whatsapp/neonize.db"
+  database_path: "state/whatsapp/merlin_whatsapp"
   messages_dir: "state/whatsapp/messages"
   rate_limit:
     max_messages: 10

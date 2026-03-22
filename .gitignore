@@ -18,3 +18,9 @@ state
 .agents
 
 skills-lock.json
+
+# WhatsApp/neonize session DB (contains encryption keys + contacts)
+merlin_whatsapp
+neonize_sigs.txt
+test_results.txt
+test_failures.txt

@@ -149,6 +149,7 @@ class WhatsAppSendFileSkill(Skill):
                     "domain": "whatsapp",
                     "reason": "ambiguous_input",
                     "message": e.user_message,
+                    "matches": e.candidates,
                     "options": [
                         f"  {i+1}. {c['name']} ({c['phone']})"
                         for i, c in enumerate(e.candidates)

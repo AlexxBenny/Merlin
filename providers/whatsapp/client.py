@@ -122,6 +122,11 @@ class WhatsAppClient:
 
         # Persist message record
         self._persist_message(msg)
+
+        # Stage 4: Learning — cache successful resolution
+        if msg.status == "sent":
+            self._resolver.learn_contact(contact, phone, source="send")
+
         return msg
 
     def send_file(
@@ -169,6 +174,11 @@ class WhatsAppClient:
         )
 
         self._persist_message(msg)
+
+        # Stage 4: Learning — cache successful resolution
+        if msg.status == "sent":
+            self._resolver.learn_contact(contact, phone, source="send")
+
         return msg
 
     def _persist_message(self, msg: ChannelMessage) -> None:

@@ -82,7 +82,7 @@ class WhatsAppConnectionManager:
             from neonize.events import (
                 ConnectedEv,
                 DisconnectedEv,
-                QREvent,
+                QREv,
             )
         except ImportError:
             logger.error(
@@ -95,11 +95,8 @@ class WhatsAppConnectionManager:
         db_path = Path(self._database_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create client
-        self._client = NewClient(
-            self._session_name,
-            database=str(db_path),
-        )
+        # Create client — name param IS the SQLite file path
+        self._client = NewClient(str(db_path))
 
         # Register event handlers
         @self._client.event(ConnectedEv)
@@ -120,7 +117,7 @@ class WhatsAppConnectionManager:
             if not self._shutdown_event.is_set():
                 self._attempt_reconnect()
 
-        @self._client.event(QREvent)
+        @self._client.event(QREv)
         def on_qr(_client, event):
             # Log QR code data for terminal scanning.
             # In future, this can be displayed in the dashboard.

@@ -554,7 +554,10 @@ def main(args=None):
                 rate_limiter=wa_rate_limiter,
             )
 
-            wa_contact_resolver = ContactResolver(user_knowledge)
+            wa_contact_resolver = ContactResolver(
+                user_knowledge,
+                connection_manager=wa_conn_manager,
+            )
 
             whatsapp_client = WhatsAppClient(
                 provider=wa_provider,

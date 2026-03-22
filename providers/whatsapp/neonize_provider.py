@@ -195,20 +195,18 @@ class NeonizeProvider(CommunicationChannel):
             # Select the correct message builder based on MIME type
             if mime_type.startswith("image/"):
                 msg = client.build_image_message(
-                    file_data, caption=caption or "", mime=mime_type,
+                    file_data, caption=caption or "",
                 )
             elif mime_type.startswith("video/"):
                 msg = client.build_video_message(
-                    file_data, caption=caption or "", mime=mime_type,
+                    file_data, caption=caption or "",
                 )
             elif mime_type.startswith("audio/"):
-                msg = client.build_audio_message(
-                    file_data, mime=mime_type,
-                )
+                msg = client.build_audio_message(file_data)
             else:
                 msg = client.build_document_message(
                     file_data, filename=filename,
-                    caption=caption or "", mime=mime_type,
+                    caption=caption or "", mimetype=mime_type,
                 )
 
             result = client.send_message(jid, msg)
