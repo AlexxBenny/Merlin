@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Brain, RefreshCw, Database } from 'lucide-react'
+import { RefreshCw, Database } from 'lucide-react'
 import { api, type Memory } from '../lib/api'
 
 const DOMAINS: { key: string; label: string; color: string }[] = [

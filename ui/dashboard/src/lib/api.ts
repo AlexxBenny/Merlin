@@ -104,6 +104,27 @@ export interface Draft {
   updated_at: number;
 }
 
+export interface WhatsAppStatus {
+  connected: boolean;
+  messages_sent_today: number;
+  total_messages: number;
+  rate_limit_remaining: number;
+}
+
+export interface WhatsAppMessage {
+  id: string;
+  channel: string;
+  recipient_id: string;
+  contact_name: string;
+  direction: string;
+  content_type: string;
+  content: string;
+  status: string;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+  error?: string;
+}
+
 export interface DraftUpdate {
   recipient?: string;
   cc?: string;
@@ -173,6 +194,11 @@ export const api = {
   updateDraft: (id: string, updates: DraftUpdate) => patch<{ status: string; response: string }>(`/drafts/${id}`, updates),
   deleteDraft: (id: string) => del<{ status: string; response: string }>(`/drafts/${id}`),
   sendDraft: (id: string) => post<{ status: string; response: string }>(`/drafts/${id}/send`, {}),
+
+  // ── WhatsApp ─────────────────────────────────────────────
+  getWhatsAppStatus: () => get<WhatsAppStatus>('/whatsapp/status'),
+  getWhatsAppMessages: () => get<WhatsAppMessage[]>('/whatsapp/messages'),
+  sendWhatsApp: (contact: string, text: string) => post<{ status: string; response: string }>('/whatsapp/send', { contact, text }),
 };
 
 // ── WebSocket helper ────────────────────────────────────

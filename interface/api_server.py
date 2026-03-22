@@ -415,6 +415,13 @@ async def get_config():
             email_config = yaml.safe_load(f) or {}
         config["email"] = _mask_secrets(email_config.get("email", email_config))
 
+    # Load whatsapp.yaml if exists
+    wa_path = _CONFIG_DIR / "whatsapp.yaml"
+    if wa_path.exists():
+        with open(wa_path, "r", encoding="utf-8") as f:
+            wa_config = yaml.safe_load(f) or {}
+        config["whatsapp"] = _mask_secrets(wa_config.get("whatsapp", wa_config))
+
     # Load field metadata for dashboard display
     from interface.config_schema import CONFIG_FIELD_METADATA
     config["_field_metadata"] = CONFIG_FIELD_METADATA

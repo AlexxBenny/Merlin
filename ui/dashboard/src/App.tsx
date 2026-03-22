@@ -9,6 +9,7 @@ import Config from './pages/Config'
 import Missions from './pages/Missions'
 import WorldState from './pages/WorldState'
 import Mail from './pages/Mail'
+import WhatsApp from './pages/WhatsApp'
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/missions" element={<Missions />} />
         <Route path="/world" element={<WorldState />} />
         <Route path="/mail" element={<Mail />} />
+        <Route path="/whatsapp" element={<WhatsApp />} />
       </Route>
     </Routes>
   )
