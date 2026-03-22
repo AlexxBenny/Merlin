@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Cpu, HardDrive, MemoryStick, Clock, Zap, Battery, Activity, Wifi,
-  TrendingUp, Play, Pause, RotateCcw, Terminal, Rocket, Shield,
+  TrendingUp,
 } from 'lucide-react'
 import { api, type SystemState } from '../lib/api'
 
@@ -227,38 +227,6 @@ function ActivityChart({ cpuPercent }: { cpuPercent: number }) {
   )
 }
 
-/* ═══ Quick Actions ═══ */
-const ACTIONS = [
-  { icon: Play,       label: 'Start',   color: '#10b981' },
-  { icon: Pause,      label: 'Pause',   color: '#f59e0b' },
-  { icon: RotateCcw,  label: 'Restart', color: '#00d2ff' },
-  { icon: Terminal,   label: 'Console', color: '#8b5cf6' },
-  { icon: Rocket,     label: 'Deploy',  color: '#00d2ff' },
-  { icon: Shield,     label: 'Secure',  color: '#10b981' },
-]
-
-function QuickActions() {
-  return (
-    <div className="card" style={{ padding: 18, width: 200 }}>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-3)', letterSpacing: '0.10em', marginBottom: 10 }}>Quick Actions</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        {ACTIONS.map(({ icon: Icon, label, color }) => (
-          <button key={label} style={{
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
-            padding: '10px 6px', borderRadius: 9, border: `1px solid ${color}25`,
-            background: `${color}0d`, color, cursor: 'pointer', transition: 'all 0.15s',
-          }}
-            onMouseEnter={e => { e.currentTarget.style.background = `${color}22`; e.currentTarget.style.transform = 'scale(1.04)' }}
-            onMouseLeave={e => { e.currentTarget.style.background = `${color}0d`; e.currentTarget.style.transform = 'scale(1)' }}
-          >
-            <Icon size={15} />
-            <span style={{ fontSize: 10, fontWeight: 500 }}>{label}</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 /* ═══ Overview Page ═══ */
 export default function Overview() {
@@ -307,10 +275,9 @@ export default function Overview() {
         <ApiServerCard missionState={sys.mission_state} />
       </div>
 
-      {/* Row 3: Chart + Quick Actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: 12 }}>
+      {/* Row 3: Chart */}
+      <div>
         <ActivityChart cpuPercent={sys.cpu_percent} />
-        <QuickActions />
       </div>
     </div>
   )
