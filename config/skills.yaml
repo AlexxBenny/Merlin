@@ -40,6 +40,7 @@ domain_state_mapping:
     - "system.session"
   reasoning: []  # Pure generation — no world state needed
   email: []       # Email skills — no world state needed
+  whatsapp: []    # WhatsApp skills — no world state needed
 
 
 skills:
@@ -240,3 +241,13 @@ skills:
   - name: "email.search_email"
     module: "skills.email.search_email"
     class: "SearchEmailSkill"
+
+  # ── WhatsApp domain ────────────────────────────────────────
+
+  - name: "whatsapp.send_message"
+    module: "skills.whatsapp.send_message"
+    class: "WhatsAppSendMessageSkill"
+
+  - name: "whatsapp.send_file"
+    module: "skills.whatsapp.send_file"
+    class: "WhatsAppSendFileSkill"

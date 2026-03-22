@@ -522,6 +522,58 @@ def main(args=None):
     user_knowledge = UserKnowledgeStore(persist_path="state/user_knowledge.json")
     logger.info("UserKnowledgeStore initialized (early — for skill DI)")
 
+    # ── WhatsApp Provider (pluggable — v1: Neonize/Whatsmeow) ──
+    wa_config = load_yaml("whatsapp.yaml")
+    whatsapp_client = None
+    if wa_config.get("whatsapp", {}).get("enabled", False):
+        try:
+            from providers.whatsapp.connection_manager import WhatsAppConnectionManager
+            from providers.whatsapp.rate_limiter import WhatsAppRateLimiter
+            from providers.whatsapp.neonize_provider import NeonizeProvider
+            from providers.whatsapp.contact_resolver import ContactResolver
+            from providers.whatsapp.client import WhatsAppClient
+
+            wa_settings = wa_config["whatsapp"]
+            rate_cfg = wa_settings.get("rate_limit", {})
+
+            wa_conn_manager = WhatsAppConnectionManager(
+                session_name=wa_settings.get("session_name", "merlin_whatsapp"),
+                database_path=wa_settings.get(
+                    "database_path", "state/whatsapp/neonize.db",
+                ),
+            )
+            wa_conn_manager.start()
+
+            wa_rate_limiter = WhatsAppRateLimiter(
+                max_messages=rate_cfg.get("max_messages", 10),
+                window_seconds=rate_cfg.get("window_seconds", 60),
+            )
+
+            wa_provider = NeonizeProvider(
+                connection_manager=wa_conn_manager,
+                rate_limiter=wa_rate_limiter,
+            )
+
+            wa_contact_resolver = ContactResolver(user_knowledge)
+
+            whatsapp_client = WhatsAppClient(
+                provider=wa_provider,
+                contact_resolver=wa_contact_resolver,
+                messages_dir=wa_settings.get(
+                    "messages_dir", "state/whatsapp/messages",
+                ),
+            )
+            logger.info(
+                "WhatsAppClient initialized (session=%s)",
+                wa_settings.get("session_name", "merlin_whatsapp"),
+            )
+        except Exception as e:
+            logger.warning(
+                "WhatsAppClient init failed — WhatsApp skills disabled: %s", e,
+            )
+    else:
+        logger.info("WhatsApp disabled in config")
+
     # FileIndex — lazy-built file search index across anchors
     from world.file_index import FileIndex
     file_index = FileIndex()
@@ -537,6 +589,7 @@ def main(args=None):
         "browser_adapter": browser_adapter,
         "browser_controller": browser_controller,
         "email_client": email_client,
+        "whatsapp_client": whatsapp_client,
         "user_knowledge": user_knowledge,
         "file_index": file_index,
     }

@@ -172,6 +172,7 @@ class MerlinBridge:
                 self._export_missions()
                 self._export_logs()
                 self._export_drafts()
+                self._export_whatsapp()
             except Exception as e:
                 logger.debug("[BRIDGE] Export error: %s", e)
 
@@ -438,6 +439,8 @@ class MerlinBridge:
             return self._handle_discard_draft(cmd)
         elif cmd_type == "send_draft":
             return self._handle_send_draft(cmd)
+        elif cmd_type == "wa_send":
+            return self._handle_wa_send(cmd)
         else:
             return f"Unknown command type: {cmd_type}"
 
@@ -690,6 +693,105 @@ class MerlinBridge:
             return f"Email sent to {draft.get('recipient', 'unknown')}. Message ID: {result.get('message_id', 'N/A')}"
         except Exception as e:
             return f"Send failed: {e}"
+
+    # ─────────────────────────────────────────────────────────
+    # WhatsApp command handlers
+    # ─────────────────────────────────────────────────────────
+
+    def _export_whatsapp(self) -> None:
+        """Export WhatsApp status + message history to API-readable JSON."""
+        messages_dir = self._base_path / "state" / "whatsapp" / "messages"
+
+        # Export message history summary
+        messages = []
+        if messages_dir.exists():
+            for f in sorted(messages_dir.glob("wa-*.json"), reverse=True):
+                data = _safe_read_json(str(f))
+                if data:
+                    messages.append(data)
+        # Cap at 200 most recent
+        messages = messages[:200]
+        _atomic_write_json(
+            str(self._state_dir / "whatsapp_messages.json"), messages,
+        )
+
+        # Export connection status
+        wa_client = self._get_whatsapp_client()
+        if wa_client:
+            status = wa_client.get_status()
+        else:
+            status = {
+                "connected": False,
+                "messages_sent_today": 0,
+                "total_messages": len(messages),
+                "rate_limit_remaining": 0,
+            }
+        _atomic_write_json(
+            str(self._state_dir / "whatsapp_status.json"), status,
+        )
+
+    def _handle_wa_send(self, cmd: Dict[str, Any]) -> str:
+        """Send a WhatsApp message from the dashboard.
+
+        Includes dedup check via state/whatsapp/sent_commands/{cmd_id}.json.
+        """
+        import time as _time
+
+        cmd_id = cmd.get("id", "")
+        payload = cmd.get("payload", {})
+        contact = payload.get("contact")
+        text = payload.get("text", "")
+
+        if not contact:
+            return "Missing contact"
+        if not text:
+            return "Missing message text"
+
+        # Dedup check
+        dedup_dir = self._base_path / "state" / "whatsapp" / "sent_commands"
+        dedup_dir.mkdir(parents=True, exist_ok=True)
+        dedup_path = dedup_dir / f"{cmd_id}.json"
+        if dedup_path.exists():
+            return f"Duplicate command {cmd_id} — already processed"
+
+        # Get WhatsApp client
+        wa_client = self._get_whatsapp_client()
+        if wa_client is None:
+            return "WhatsApp client not available — WhatsApp is disabled in config"
+
+        try:
+            msg = wa_client.send_text(contact, text)
+
+            # Record successful processing for dedup
+            _atomic_write_json(str(dedup_path), {
+                "cmd_id": cmd_id,
+                "processed_at": _time.time(),
+                "status": msg.status,
+                "message_id": msg.id,
+            })
+
+            if msg.status == "sent":
+                return f"WhatsApp message sent to {msg.contact_name}"
+            else:
+                return f"WhatsApp send failed: {msg.error}"
+        except Exception as e:
+            return f"WhatsApp send failed: {e}"
+
+    def _get_whatsapp_client(self):
+        """Get WhatsAppClient from skill registry (same pattern as email)."""
+        try:
+            if hasattr(self._merlin, "executor") and hasattr(
+                self._merlin.executor, "registry"
+            ):
+                for skill in self._merlin.executor.registry._skills.values():
+                    if hasattr(skill, "_client") and hasattr(
+                        skill._client, "is_connected"
+                    ):
+                        # Found a WhatsApp skill with a client
+                        return skill._client
+        except Exception:
+            pass
+        return None
 
     # ─────────────────────────────────────────────────────────
     # Helpers

@@ -625,6 +625,54 @@ async def send_draft(draft_id: str):
 
 
 # ─────────────────────────────────────────────────────────────
+# WhatsApp endpoints
+# ─────────────────────────────────────────────────────────────
+
+_WA_STATUS_FILE = _STATE_DIR / "whatsapp_status.json"
+_WA_MESSAGES_FILE = _STATE_DIR / "whatsapp_messages.json"
+
+
+class WhatsAppSendRequest(BaseModel):
+    """Pydantic model for WhatsApp send requests."""
+    contact: str
+    text: str
+
+
+@app.get("/api/v1/whatsapp/status")
+async def whatsapp_status():
+    """Get WhatsApp connection status."""
+    data = _read_json(_WA_STATUS_FILE)
+    if data is None:
+        return {
+            "connected": False,
+            "messages_sent_today": 0,
+            "total_messages": 0,
+            "rate_limit_remaining": 0,
+        }
+    return data
+
+
+@app.get("/api/v1/whatsapp/messages")
+async def whatsapp_messages():
+    """Get WhatsApp message history."""
+    data = _read_json(_WA_MESSAGES_FILE)
+    if data is None:
+        return []
+    return data
+
+
+@app.post("/api/v1/whatsapp/send")
+async def whatsapp_send(request: WhatsAppSendRequest):
+    """Send a WhatsApp message via bridge command."""
+    cmd_id = _submit_command("wa_send", {
+        "contact": request.contact,
+        "text": request.text,
+    })
+    response = await _wait_for_response(cmd_id, timeout=30.0)
+    return response
+
+
+# ─────────────────────────────────────────────────────────────
 # Module entrypoint
 # ─────────────────────────────────────────────────────────────
 

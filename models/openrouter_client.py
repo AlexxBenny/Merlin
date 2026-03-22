@@ -64,8 +64,8 @@ class OpenRouterClient(LLMClient):
         # Pool metadata for 429 retry with key rotation
         self._pool_provider = _pool_provider
         self._pool_role = _pool_role
-        # Credit-aware budget tracking
-        self._credit_budget: Optional[int] = None
+        # Credit-aware budget tracking (per-key)
+        self._credit_budgets: Dict[str, int] = {}
 
     def complete(
         self,
@@ -148,7 +148,9 @@ class OpenRouterClient(LLMClient):
           1. per_call override (if not None)
           2. constructor default (self.max_tokens)
 
-        Then capped against last known credit budget (if available).
+        Then capped against last known credit budget for the CURRENT key
+        (if available). Budgets are per-key so a depleted key's limit
+        doesn't throttle a healthy key after failover.
         """
         requested = (
             per_call if per_call is not None
@@ -157,15 +159,16 @@ class OpenRouterClient(LLMClient):
         if requested is None:
             return None
 
-        # Cap against credit budget if known
-        if self._credit_budget is not None:
-            cap = max(self._credit_budget - _CREDIT_SAFETY_MARGIN, 1)
+        # Cap against credit budget if known for this key
+        key_budget = self._credit_budgets.get(self.api_key)
+        if key_budget is not None:
+            cap = max(key_budget - _CREDIT_SAFETY_MARGIN, 1)
             if requested > cap:
                 logger.info(
                     "[TOKEN_BUDGET] Capping max_tokens %d → %d "
                     "(credit budget=%d, margin=%d)",
                     requested, cap,
-                    self._credit_budget, _CREDIT_SAFETY_MARGIN,
+                    key_budget, _CREDIT_SAFETY_MARGIN,
                 )
                 return cap
 
@@ -175,14 +178,16 @@ class OpenRouterClient(LLMClient):
         """Extract credit budget from 402 error body.
 
         Looks for: "can only afford N" in the error message.
-        Stores the value for future request capping.
+        Stores the value per-key for future request capping.
         """
         match = re.search(r"can only afford (\d+)", error_body)
         if match:
             budget = int(match.group(1))
-            self._credit_budget = budget
+            self._credit_budgets[self.api_key] = budget
             logger.info(
-                "[TOKEN_BUDGET] Learned credit budget: %d tokens", budget,
+                "[TOKEN_BUDGET] Learned credit budget: %d tokens "
+                "(key …%s)",
+                budget, self.api_key[-4:] if self.api_key else "????",
             )
 
     def _do_request(

@@ -27,6 +27,9 @@ mission_indicators:
   - "once"
   - "when done"
   - "followed by"
+  # WhatsApp routing — ensures multi-step send goes through orchestrator
+  - "whatsapp"
+  - "send whatsapp"
 
 
 # ─────────────────────────────────────────────────────────────
