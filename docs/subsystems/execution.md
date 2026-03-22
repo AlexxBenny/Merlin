@@ -63,14 +63,14 @@ Frozen per-mission context passed to skills that opt-in via `context` parameter:
 
 Built fresh per-mission by `MissionOrchestrator.run()`. Backward-compatible via `inspect.signature` check — existing skills without `context` parameter continue to work unchanged.
 
-### SchedulerBridge (`execution/scheduler.py`)
+### DAGScheduler (`execution/scheduler.py`)
 
-Submits persistent jobs to `TickSchedulerManager` after successful mission completion.
+Topological planner that groups mission nodes into dependency-safe layers.
 
 **Invariants**:
-- Jobs submitted only if immediate mission COMPLETED
-- Jobs must be fully grounded (no unresolved references)
-- No cross-domain OutputReference allowed
+- Cycles are rejected immediately
+- Ordering inside each layer is deterministic
+- Produces planning layers only (no execution side effects)
 
 ## Design Rules
 

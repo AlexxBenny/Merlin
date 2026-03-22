@@ -5,9 +5,8 @@ The full lifecycle of a user request through MERLIN.
 ## Entry Point
 
 Every interaction starts in `merlin.py` — the Conductor. It:
-1. Receives input via `process_input()` (text) or `process_percept()` (any modality)
-2. Wraps input in a `Percept` object
-3. Routes through the cognitive pipeline
+1. Receives a `Percept` from perception/or input adapters
+2. Routes through the cognitive pipeline via `handle_percept()`
 
 ## Path 1: Reflex (< 100ms)
 
@@ -29,8 +28,8 @@ Percept → ReflexEngine.match(text)
 
 ```
 Percept
-  → BrainCore.route(percept, world_snapshot)
-    → CognitiveRoute: REFLEX | DIRECT | MISSION
+  → BrainCore.route(percept)
+    → CognitiveRoute: REFLEX | MULTI_REFLEX | MISSION | REFUSE
   
   → EscalationPolicy.classify(tier)
     → CognitiveTier: SIMPLE | MODERATE | COMPLEX
@@ -86,10 +85,9 @@ When the system needs more information:
 For time-deferred commands ("remind me in 5 minutes"):
 
 ```
-  → MissionCortex decomposes → immediate + scheduled intents
+  → MissionCortex decomposes → executable/scheduled/informational/vague intents
   → TemporalResolver → absolute timestamps
-  → Immediate plan executes first
-  → On success: SchedulerBridge submits persistent job
+  → Scheduled clauses route to TickSchedulerManager via merlin.py
   → TickSchedulerManager executes at scheduled time
   → Job stored in JsonTaskStore (survives restart)
 ```

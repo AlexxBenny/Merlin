@@ -12,24 +12,25 @@ Routes incoming percepts to the correct cognitive path.
 
 ```python
 class BrainCore:
-    def route(percept: Percept, snapshot: WorldSnapshot) -> CognitiveRoute
+    def route(percept: Percept) -> CognitiveRoute
 ```
 
 **Routes**:
 | Route | When | Handler |
 |-------|------|---------|
 | `REFLEX` | Simple unambiguous command | ReflexEngine (no LLM) |
-| `DIRECT` | Conversational/knowledge query | CognitiveCoordinator |
-| `MISSION` | Action requiring skill execution | Full cognitive pipeline |
+| `MULTI_REFLEX` | Multiple deterministic commands in one utterance | ReflexEngine (multi-clause fast path) |
+| `MISSION` | Any query requiring planning/reasoning/coordination | Full cognitive pipeline |
+| `REFUSE` | Safety gate / disallowed intent | Immediate refusal path |
 
 **Percept model**:
 ```python
 @dataclass
 class Percept:
-    text: str
-    modality: str  # "text", "speech", "system"
+    modality: str  # "text", "speech", "vision"
+    payload: str
+    confidence: float
     timestamp: float
-    metadata: Dict[str, Any]
 ```
 
 ### EscalationPolicy (`brain/escalation_policy.py`)
