@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-03-18T18:06:29.024896+00:00",
+  "total_tests": 6,
+  "passed": 6,
+  "failed": 0,
+  "pass_rate_pct": 100.0,
+  "scoring_weights": {
+    "cost": 0.15,
+    "distance": 0.3,
+    "uncertainty": 0.15,
+    "exploration": 0.1,
+    "penalty": 0.1,
+    "commitment": 0.05,
+    "future": 0.15
+  },
+  "cost_map": {
+    "low": 0.5,
+    "medium": 1.5,
+    "high": 3.0
+  },
+  "budget_limits": {
+    "max_total_steps": 30,
+    "max_recovery_depth": 3,
+    "max_dynamic_queue": 10
+  },
+  "thresholds": {
+    "scoring_bounded": true,
+    "weight_sum": 1.0,
+    "heuristic_coverage_min_pct": 20.0,
+    "decide_avg_ms_max": 50.0
+  },
+  "passes_thresholds": true
+}

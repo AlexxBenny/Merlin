@@ -110,6 +110,7 @@ class QueryFeatures:
                 SpeechActType.POLICY,
                 SpeechActType.CORRECTION,
                 SpeechActType.DECLARATION,
+                SpeechActType.QUESTION,
             )
         )
 

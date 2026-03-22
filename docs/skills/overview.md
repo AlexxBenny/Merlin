@@ -44,6 +44,9 @@ Static metadata that describes a skill:
 | `emits_events` | List[str] | WorldTimeline event types emitted |
 | `mutates_world` | bool | Modifies external state? |
 | `output_style` | str | "terse", "normal", "verbose" |
+| `requires` | List[str] | Preconditions (state that must exist before execution) |
+| `produces` | List[str] | Postconditions (state created/maintained on success) |
+| `effect_type` | str | How skill relates to state: "create", "maintain", "destroy", "reveal" |
 
 ### SkillResult (`skills/skill_result.py`)
 
@@ -58,12 +61,12 @@ class SkillResult:
 
 Skills are registered in `main.py` via `SkillRegistry.register()`. The registry enforces:
 - Idempotent registration (duplicates silently skip, first instance preserved)
-- Unique action namespace (44 skills, 44 unique actions)
+- Unique action namespace (46 skills, 46 unique actions)
 - Contract validation at registration time
 
 Skills can opt into receiving `SkillContext` (frozen per-mission `user` + `time`) by accepting a `context` parameter. Backward-compatible: existing skills without `context` continue to work.
 
-## Skill Inventory (44 skills)
+## Skill Inventory (46 skills)
 
 | Domain | Skills |
 |--------|--------|
@@ -71,7 +74,7 @@ Skills can opt into receiving `SkillContext` (frozen per-mission `user` + `time`
 | `browser` | 12 — click, fill, scroll, navigate, go_back, go_forward, autonomous_task, + 5 more |
 | `email` | 5 — read_inbox, draft_message, modify_draft, send_message, search_email |
 | `memory` | 4 — get_preference, set_preference, set_fact, add_policy |
-| `fs` | 3 — read_file, write_file, create_folder |
+| `fs` | 5 — read_file, write_file, create_folder, search_file, list_directory |
 | `reasoning` | 1 — generate_text |
 
 See domain-specific docs for details on each skill.

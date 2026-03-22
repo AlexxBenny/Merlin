@@ -110,12 +110,16 @@ class OpenRouterClient(LLMClient):
             # Failover: rotate key after a failed attempt
             if self._pool_provider and self._pool_role and attempt > 0:
                 from models.key_pool import resolve_api_key
+                failed_key = self.api_key
                 self.api_key = resolve_api_key(
                     self._pool_provider, self._pool_role,
                 )
                 logger.info(
-                    "[KEY_FAILOVER] Rotated to next key "
-                    "(attempt %d/%d)", attempt + 1, max_attempts,
+                    "[KEY_FAILOVER] Key …%s failed, rotated to …%s "
+                    "(attempt %d/%d)",
+                    failed_key[-4:] if failed_key else "????",
+                    self.api_key[-4:] if self.api_key else "????",
+                    attempt + 1, max_attempts,
                 )
 
             try:
@@ -250,24 +254,30 @@ class OpenRouterClient(LLMClient):
             if e.code == 402:
                 self._parse_credit_budget(body_text)
 
+            key_hint = self.api_key[-4:] if self.api_key else "????"
             logger.error(
-                "OpenRouter API error %d: %s", e.code, body_text[:500]
+                "OpenRouter API error %d (key …%s): %s",
+                e.code, key_hint, body_text[:500],
             )
             raise RuntimeError(
                 f"OpenRouter API error {e.code}: {body_text[:200]}"
             ) from e
 
         except error.URLError as e:
+            key_hint = self.api_key[-4:] if self.api_key else "????"
             logger.error(
-                "OpenRouter unreachable at %s: %s", self.base_url, e
+                "OpenRouter unreachable at %s (key …%s): %s",
+                self.base_url, key_hint, e,
             )
             raise ConnectionError(
                 f"Cannot reach OpenRouter at {self.base_url}"
             ) from e
 
         except (TimeoutError, OSError) as e:
+            key_hint = self.api_key[-4:] if self.api_key else "????"
             logger.error(
-                "OpenRouter timed out at %s: %s", self.base_url, e
+                "OpenRouter timed out at %s (key …%s): %s",
+                self.base_url, key_hint, e,
             )
             raise ConnectionError(
                 f"OpenRouter timed out at {self.base_url} "
@@ -275,7 +285,8 @@ class OpenRouterClient(LLMClient):
             ) from e
 
         except Exception as e:
-            logger.error("OpenRouter API error: %s", e)
+            key_hint = self.api_key[-4:] if self.api_key else "????"
+            logger.error("OpenRouter API error (key …%s): %s", key_hint, e)
             raise RuntimeError(f"OpenRouter API error: {e}") from e
 
     def is_available(self) -> bool:

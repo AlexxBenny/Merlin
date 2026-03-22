@@ -26,6 +26,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _entity_item_label(item: dict) -> str:
+    """Extract a human-readable label from a structured entity dict.
+
+    Supports FileRef, search results, and any dict with 'name' or 'title'.
+    O(1) per item — fixed key lookups. Generalizes to any entity type.
+    """
+    name = item.get("name") or item.get("title") or ""
+    if not name:
+        return ""
+    parts = [f'"{ name }"']
+    anchor = item.get("anchor")
+    path = item.get("relative_path") or item.get("path") or ""
+    if anchor and path:
+        parts.append(f"(anchor: {anchor}, path: {path})")
+    elif path:
+        parts.append(f"(path: {path})")
+    elif anchor:
+        parts.append(f"(anchor: {anchor})")
+    return " ".join(parts)
+
+
 # ─────────────────────────────────────────────────────────────
 # Token estimation
 # ─────────────────────────────────────────────────────────────
@@ -62,6 +83,13 @@ class ContextProvider(ABC):
         Must be bounded in size. Must never inject raw lists.
         """
         ...
+
+    def build_from_cognitive(self, ctx) -> str:
+        """Inject filtered CognitiveContext into LLM prompt.
+
+        Default: no-op. Override in subclasses that support it.
+        """
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -142,9 +170,17 @@ class SimpleContextProvider(ContextProvider):
             entity_lines = []
             for key, record in list(conversation.entity_registry.items())[:10]:
                 if isinstance(record.value, list):
+                    items = record.value
                     entity_lines.append(
-                        f"  {key} ({record.type}): {len(record.value)} items"
+                        f"  {key} ({record.type}): {len(items)} items"
                     )
+                    # Surface structured details for list-of-dict entities
+                    # (FileRefs, search results, etc.) — max 5 items
+                    for item in items[:5]:
+                        if isinstance(item, dict):
+                            label = _entity_item_label(item)
+                            if label:
+                                entity_lines.append(f"    → {label}")
                 else:
                     entity_lines.append(
                         f"  {key} ({record.type}): {str(record.value)[:100]}"
@@ -178,11 +214,17 @@ class SimpleContextProvider(ContextProvider):
 
             first = items[0]
             if isinstance(first, dict):
-                for k, v in first.items():
-                    sample = f'{k}="{v}"'
-                    break
+                # Prefer human-readable fields over arbitrary keys
+                if "name" in first:
+                    sample = f'name="{first["name"]}"'
+                elif "title" in first:
+                    sample = f'title="{first["title"]}"'
                 else:
-                    sample = str(first)[:50]
+                    for k, v in first.items():
+                        sample = f'{k}="{v}"'
+                        break
+                    else:
+                        sample = str(first)[:50]
             else:
                 sample = str(first)[:50]
 
@@ -660,3 +702,65 @@ class RetrievalContextProvider(ContextProvider):
         if not lines:
             return ""
         return header + "\n" + "\n".join(lines)
+
+    def build_from_cognitive(self, ctx) -> str:
+        """Inject filtered CognitiveContext into LLM prompt for recovery.
+
+        Only passes what improves Tier 3 reasoning:
+        - Pending outcomes (what's left to achieve)
+        - Recent attempts (what was already tried + results)
+        - Active commitments (decisions currently in effect)
+
+        Token-bounded: < 200 tokens (~800 chars).
+        """
+        sections: List[str] = []
+
+        # Pending outcomes
+        try:
+            pending = ctx.goal.pending_outcomes
+            if pending:
+                sections.append(
+                    f"Pending: {', '.join(pending[:5])}"
+                )
+        except Exception:
+            pass
+
+        # Recent attempts (last 3)
+        try:
+            history = ctx.execution.attempt_history
+            if history:
+                recent = history[-3:]
+                attempt_lines = [
+                    f"  - {a['skill']}: {a['result']}"
+                    for a in recent
+                ]
+                sections.append(
+                    "Recent attempts:\n" + "\n".join(attempt_lines)
+                )
+        except Exception:
+            pass
+
+        # Active commitments (brief)
+        try:
+            commitments = ctx.execution.commitments
+            if commitments:
+                commit_lines = [
+                    f"  - {k}: {v.value}"
+                    for k, v in list(commitments.items())[:3]
+                ]
+                sections.append(
+                    "Commitments:\n" + "\n".join(commit_lines)
+                )
+        except Exception:
+            pass
+
+        if not sections:
+            return ""
+
+        result = "Execution State:\n" + "\n".join(sections)
+
+        # Hard cap: 800 chars (~200 tokens)
+        if len(result) > 800:
+            result = result[:800]
+
+        return result

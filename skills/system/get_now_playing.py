@@ -49,6 +49,7 @@ class GetNowPlayingSkill(Skill):
         mutates_world=False,
         idempotent=True,
         output_style="templated",
+        requires=["media_session_active"],
     )
 
     def execute(self, inputs: Dict[str, Any], world: WorldTimeline, snapshot=None) -> SkillResult:

@@ -46,6 +46,9 @@ class FocusAppSkill(Skill):
         emits_events=["app_focused"],
         mutates_world=True,
         output_style="terse",
+        requires=["app_running"],
+        produces=["app_focused"],
+        effect_type="create",
     )
 
     def __init__(self, system_controller: SystemController,

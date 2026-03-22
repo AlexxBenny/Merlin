@@ -17,10 +17,46 @@ class MissionValidationError(Exception):
 logger = logging.getLogger(__name__)
 
 
+def _fuzzy_match_key(bad_key: str, allowed: set) -> Optional[str]:
+    """Try to match a near-miss input key to an allowed key.
+
+    Handles the most common LLM key-naming errors:
+    - singular/plural: attachment → attachments, emails → email
+    - underscore variants: draft_id vs draftId (snake-case normalization)
+
+    Returns the corrected key name, or None if no match found.
+    """
+    # 1. Exact match after lowercase normalization
+    lower = bad_key.lower()
+    for key in allowed:
+        if key.lower() == lower:
+            return key
+
+    # 2. Singular → plural (add 's')
+    for key in allowed:
+        if key == bad_key + "s":
+            return key
+
+    # 3. Plural → singular (strip 's')
+    if bad_key.endswith("s") and len(bad_key) > 2:
+        singular = bad_key[:-1]
+        if singular in allowed:
+            return singular
+
+    # 4. Underscore vs no underscore: draft_id ↔ draftid
+    normalized = bad_key.replace("_", "").lower()
+    for key in allowed:
+        if key.replace("_", "").lower() == normalized:
+            return key
+
+    return None
+
+
 def validate_mission_plan(
     plan: MissionPlan,
     available_skills: Set[str],
     registry=None,
+    entity_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Hard validation gate for MissionPlan.
@@ -182,6 +218,22 @@ def validate_mission_plan(
             allowed = required | optional
             provided = set(node.inputs.keys())
 
+            # 7b. Input key normalization (singular/plural near-miss fix)
+            # LLMs commonly use "attachment" instead of "attachments", etc.
+            # Rename in-place before validation to avoid false rejections.
+            unexpected = provided - allowed
+            if unexpected:
+                for bad_key in list(unexpected):
+                    corrected = _fuzzy_match_key(bad_key, allowed)
+                    if corrected and corrected not in node.inputs:
+                        node.inputs[corrected] = node.inputs.pop(bad_key)
+                        logger.info(
+                            "Normalized input key '%s' → '%s' in node '%s'",
+                            bad_key, corrected, node.id,
+                        )
+                # Recompute after normalization
+                provided = set(node.inputs.keys())
+
             # 8. Missing required inputs
             missing = required - provided
             if missing:
@@ -208,6 +260,114 @@ def validate_mission_plan(
                         f"provided"
                     )
 
+            # 12. Container semantics warning
+            # When OutputReference uses index AND target is a _list type,
+            # the executor will auto-wrap the single item. Log it here
+            # for compile-time visibility.
+            if registry:
+                for key, raw_val in node.inputs.items():
+                    if isinstance(raw_val, OutputReference) and raw_val.index is not None:
+                        target_type = (
+                            contract.inputs.get(key, "")
+                            or contract.optional_inputs.get(key, "")
+                        )
+                        if target_type and target_type.endswith("_list"):
+                            logger.warning(
+                                "[VALIDATOR] Node '%s' input '%s': "
+                                "OutputReference with index=%d feeds into "
+                                "_list type '%s' — executor will auto-wrap",
+                                node.id, key, raw_val.index, target_type,
+                            )
+
+        # ── Check 11: Entity grounding validation ──
+        # Runs only when entity references were resolved pre-compile.
+        if entity_context:
+            _validate_entity_grounding(plan, registry, entity_context)
+
+
+# ──────────────────────────────────────────────────────────────
+# Entity Grounding Validation (Check 11)
+#
+# Verifies that resolved entity references have data-producing
+# nodes in the compiled plan. Uses entity_type from
+# ResolvedReference (set at binding time from semantic output
+# types) — no duck-typing, no field guessing.
+# ──────────────────────────────────────────────────────────────
+
+# entity_type (semantic output type) → required contract.produces values
+# If a resolved entity has this type, the plan must contain
+# a node whose contract.produces intersects these values.
+_ENTITY_TYPE_GROUNDING: Dict[str, Set[str]] = {
+    "file_ref_list": {"file_content", "file_reference"},
+    "file_content": {"file_content"},
+    "email_list": {"email_draft", "email_list"},
+    "email_draft": {"email_draft"},
+}
+
+
+def _validate_entity_grounding(
+    plan: MissionPlan,
+    registry: Any,
+    entity_context: Dict[str, Any],
+) -> None:
+    """Verify that resolved entity references have data-producing nodes.
+
+    If WorldResolver resolved "the one in Gen AI Resume" to a FileRef
+    (entity_type="file_ref_list"), and the plan has reasoning.generate_text
+    but NO fs.read_file, then the plan is likely ungrounded.
+
+    Uses entity_type directly — no dict field inspection.
+    Only warns in phase 1 (plan proceeds).
+    """
+    resolved = entity_context.get("resolved", [])
+    if not resolved:
+        return
+
+    if registry is None:
+        return
+
+    # Collect what the plan produces (from contract.produces + outputs)
+    plan_produces: Set[str] = set()
+    plan_output_types: Set[str] = set()
+    for node in plan.nodes:
+        skill = registry.get(node.skill)
+        if skill is None:
+            continue
+        plan_produces.update(skill.contract.produces)
+        plan_output_types.update(skill.contract.outputs.values())
+
+    # Check if any node has OutputReference wiring (explicit $ref)
+    has_ref_wiring = any(
+        any(isinstance(v, OutputReference) for v in node.inputs.values())
+        for node in plan.nodes
+    )
+    if has_ref_wiring:
+        return  # Plan has explicit data wiring — grounding is present
+
+    # Check each resolved entity
+    for ref in resolved:
+        entity_type = ref.get("entity_type")
+        if not entity_type:
+            continue
+
+        required_produces = _ENTITY_TYPE_GROUNDING.get(entity_type, set())
+        if not required_produces:
+            continue
+
+        # Does the plan produce any of the required types?
+        grounded = bool(
+            (plan_produces & required_produces) or
+            (plan_output_types & required_produces)
+        )
+
+        if not grounded:
+            logger.warning(
+                "[GROUNDING] Resolved entity (type=%s) but plan produces %s "
+                "— no data-retrieving node found. "
+                "Plan may contain ungrounded data dependency.",
+                entity_type,
+                sorted(plan_produces | plan_output_types),
+            )
 
 # ──────────────────────────────────────────────────────────────
 # Intent Coverage Verification (Phase 5A)

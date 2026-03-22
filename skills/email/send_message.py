@@ -64,6 +64,9 @@ class SendMessageSkill(Skill):
         idempotent=False,
         data_freshness="snapshot",
         output_style="terse",
+        requires=["email_draft"],
+        produces=["email_sent"],
+        effect_type="create",
     )
 
     def __init__(self, email_client: EmailClient):

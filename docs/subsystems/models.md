@@ -25,6 +25,7 @@ Role-based model selection. Maps cognitive roles to specific models via `config/
 | `cognitive_coordinator` | Reasoning, direct answers | gemini-2.5-flash |
 | `mission_compiler` | Plan compilation | gemini-2.5-flash |
 | `report_builder` | Result narration | gemini-2.5-flash |
+| `recovery_reasoner` | Tier 2 failure diagnosis (DecisionEngine) | gemini-2.5-flash |
 | `fallback` | Graceful degradation | gemini-2.5-flash |
 
 ### LLM Clients

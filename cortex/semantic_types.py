@@ -306,6 +306,18 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="Text content of a file (read or to be written).",
         direction="both",
     ),
+    "file_ref_list": SemanticType(
+        description=(
+            "List of FileRef objects (structured file references). "
+            "Each entry has ref_id, name, anchor, relative_path, "
+            "size_bytes, and confidence."
+        ),
+        direction="both",
+    ),
+    "file_ref_id": SemanticType(
+        description="Reference ID of a resolved file (from search results).",
+        direction="output",
+    ),
 
     # ── Scheduler domain ──
     # Domain entity: Job
@@ -498,6 +510,26 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         description="Natural language search query for emails.",
         direction="input",
     ),
+
+    # ── File system domain (additional) ────────────────────────
+    "file_search_query": SemanticType(
+        description="Search query for file name/pattern matching.",
+        direction="input",
+    ),
+    "directory_contents": SemanticType(
+        description="Structured listing of files and subdirectories.",
+        direction="output",
+    ),
+
+    # ── App entity resolution ──────────────────────────────────
+    "canonical_entity_id": SemanticType(
+        description=(
+            "Canonical entity ID resolved from natural language "
+            "(e.g., 'spotify' → 'com.spotify.client'). "
+            "Used for deterministic app matching."
+        ),
+        direction="both",
+    ),
 }
 
 
@@ -509,19 +541,24 @@ def assert_types_registered(
     skill_name: str,
     declared_inputs: Dict[str, str],
     declared_outputs: Dict[str, str],
+    declared_optional_inputs: Optional[Dict[str, str]] = None,
 ) -> None:
     """Fail loudly if a skill declares a semantic type not in the registry.
 
     Also validates direction constraints:
     - input-only types must not appear in outputs
-    - output-only types must not appear in inputs
+    - output-only types must not appear in inputs or optional_inputs
 
     Called at skill registration time, not at runtime.
 
     Raises:
         ValueError: If an unregistered or misused type is found.
     """
-    for key, stype in declared_inputs.items():
+    all_inputs = dict(declared_inputs)
+    if declared_optional_inputs:
+        all_inputs.update(declared_optional_inputs)
+
+    for key, stype in all_inputs.items():
         if stype not in SEMANTIC_TYPES:
             raise ValueError(
                 f"Skill '{skill_name}' declares input '{key}' with "

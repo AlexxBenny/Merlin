@@ -54,7 +54,7 @@ User speaks/types
 | Skills are isolated | No inter-skill calls; no DAG modification |
 | One LLM call per compilation | MissionCortex compiles once; no loops |
 | Infrastructure ≠ Intelligence | Cortex cannot access OS, browser, or filesystem directly |
-| Failures are explicit | No silent retries; partial results with clear attribution |
+| Failures are bounded and explicit | Inline recovery max 2 per node; Tier 3 limited to 1 recompile |
 
 ## Documentation Index
 
@@ -65,7 +65,7 @@ User speaks/types
 | [Three-Tier Browser](architecture/three-tier-browser.md) | Deterministic → entity → autonomous |
 | [Brain](subsystems/brain.md) | Percept routing, escalation, classification |
 | [Cortex](subsystems/cortex.md) | Compiler, coordinator, resolvers |
-| [Execution](subsystems/execution.md) | Executor, supervisor, metacognition |
+| [Execution](subsystems/execution.md) | Executor, supervisor, DecisionEngine, CognitiveContext, inline recovery |
 | [Orchestrator](subsystems/orchestrator.md) | Recovery, replanning, entity resolution |
 | [Runtime](subsystems/runtime.md) | Event loop, reflex, scheduler, task store |
 | [Memory](subsystems/memory.md) | User knowledge, preferences, facts |
@@ -77,7 +77,7 @@ User speaks/types
 | [Skills Overview](skills/overview.md) | Contracts, base class, registration |
 | [Browser Skills](skills/browser-skills.md) | All 7 browser skills |
 | [System Skills](skills/system-skills.md) | All 20 system skills |
-| [File Skills](skills/file-skills.md) | read, write, create_folder |
+| [File Skills](skills/file-skills.md) | read, write, create_folder, search_file, list_directory |
 | [Memory Skills](skills/memory-skills.md) | Preference, fact, policy management |
 | [Reasoning Skills](skills/reasoning-skills.md) | generate_text |
 | [Environment](configuration/environment.md) | .env variables, API keys |

@@ -76,6 +76,7 @@ class PendingMission:
     tier: Optional[CognitiveTier] = None
     valid_intents: Optional[List[Dict[str, Any]]] = None
     unsupported_intents: Optional[List[Dict[str, Any]]] = None
+    clarification_context: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=time.time)
 
 
@@ -688,6 +689,12 @@ class Merlin:
                         )
                     except EntityResolutionError as ere:
                         response = ere.user_message()
+                        self._pending_mission = PendingMission(
+                            kind="clarification",
+                            original_percept=percept,
+                            snapshot=snapshot,
+                            question=response,
+                        )
                         self.output_channel.send(response)
                         self.conversation.append_turn("assistant", response)
                         return response
@@ -995,18 +1002,157 @@ class Merlin:
             self.conversation.append_turn("assistant", response)
             return response
 
+    @staticmethod
+    def _parse_user_selection(
+        user_answer: str,
+        options: list,
+        matches: list,
+    ) -> Optional[int]:
+        """Parse user's selection from a numbered list.
+
+        Supports:
+        - Numeric: "3" → index 2
+        - Ordinal: "third" → index 2 (via WorldResolver.ORDINAL_MAP)
+        - Keyword: "the one in gen ai" → fuzzy match against match fields
+
+        Returns 0-based index, or None if unparseable.
+        """
+        answer = user_answer.strip()
+
+        # 1. Numeric: "3" → index 2
+        try:
+            num = int(answer)
+            if 1 <= num <= len(matches):
+                return num - 1
+        except ValueError:
+            pass
+
+        # 2. Ordinal: "third" → index 2
+        from world.resolver import WorldResolver
+        answer_lower = answer.lower()
+        for word, idx in WorldResolver.ORDINAL_MAP.items():
+            if word in answer_lower and idx < len(matches):
+                return idx
+
+        # 3. Keyword: fuzzy match against match fields
+        # Use the same MATCH_FIELDS as WorldResolver._resolve_implicit_entity
+        match_fields = ("name", "title", "relative_path", "path", "anchor")
+        best_idx = None
+        best_score = 0.0
+
+        for i, match in enumerate(matches):
+            # Handle both dict and object-style matches
+            for field_name in match_fields:
+                if isinstance(match, dict):
+                    field_val = match.get(field_name, "")
+                else:
+                    field_val = getattr(match, field_name, "")
+                if not field_val or not isinstance(field_val, str):
+                    continue
+                field_lower = field_val.lower()
+                if len(field_lower) < 3:
+                    continue
+
+                # For paths, check each segment individually
+                # "gen ai" should match "Gen AI Resume" segment
+                import re
+                segments = re.split(r"[/\\]", field_lower)
+                candidates = [field_lower] + segments
+
+                for candidate in candidates:
+                    if not candidate or len(candidate) < 3:
+                        continue
+                    if answer_lower in candidate or candidate in answer_lower:
+                        score = len(answer_lower) / max(len(candidate), 1)
+                        if score > best_score:
+                            best_score = score
+                            best_idx = i
+
+        if best_idx is not None and best_score >= 0.3:
+            return best_idx
+
+        return None
+
     def _resume_from_clarification(
         self, pending: PendingMission, user_answer: str,
     ) -> Optional[str]:
         """Resume mission after user answers a clarification question.
 
-        Merges the original query with the user's clarification answer
-        and re-enters the mission pipeline with the ORIGINAL snapshot.
-
-        The conversation history already contains the clarification exchange
-        (question + answer), so the compiler LLM sees full context.
+        Two paths:
+        - ambiguous_input: TRUE RESUME — inject user's selection as
+          override output for the ambiguous node, resume execution
+          from downstream nodes.  No LLM, no recompile.
+        - other: fallback to query merge + recompile (existing behavior).
         """
-        # Merge original query + clarification answer
+        ctx = pending.clarification_context
+
+        # ── True resume for ambiguous_input ──
+        if (ctx and isinstance(ctx, dict)
+                and ctx.get("context", {}).get("source") == "ambiguous_input"):
+            inner = ctx["context"]
+            node_id = inner.get("node_id")
+            plan = inner.get("plan")
+            node_results = inner.get("node_results", {})
+
+            if node_id and plan and node_id in node_results:
+                matches = node_results[node_id].get("matches", [])
+                options = ctx.get("options", [])
+
+                selected_idx = self._parse_user_selection(
+                    user_answer, options, matches,
+                )
+
+                if selected_idx is None:
+                    # Could not parse — re-ask
+                    logger.info(
+                        "[RESUME] Could not parse selection '%s' — re-asking",
+                        user_answer[:50],
+                    )
+                    self._pending_mission = pending  # Re-store for retry
+                    question = (
+                        "I didn't understand your selection. "
+                        + ctx.get("question", "Could you clarify?")
+                    )
+                    self.output_channel.send(question)
+                    self.conversation.append_turn("assistant", question)
+                    return question
+
+                # Bounds check (invariant)
+                if selected_idx >= len(matches):
+                    logger.warning(
+                        "[RESUME] Selection index %d out of bounds (%d matches)",
+                        selected_idx, len(matches),
+                    )
+                    self._pending_mission = pending
+                    question = (
+                        f"Please select a number between 1 and {len(matches)}. "
+                        + ctx.get("question", "")
+                    )
+                    self.output_channel.send(question)
+                    self.conversation.append_turn("assistant", question)
+                    return question
+
+                selected_match = matches[selected_idx]
+                logger.info(
+                    "[RESUME] User selected index %d → %s",
+                    selected_idx,
+                    str(selected_match)[:100],
+                )
+
+                # Build override: replace ambiguous list with single selection
+                override_outputs = {
+                    node_id: {"matches": [selected_match]},
+                }
+
+                # Resume via orchestrator — no LLM, same plan
+                return self._execute_resumed_plan(
+                    plan=plan,
+                    snapshot=pending.snapshot,
+                    override_outputs=override_outputs,
+                    pending=pending,
+                )
+
+        # ── Fallback: merge + recompile (non-ambiguity clarifications) ──
         merged_query = f"{pending.original_percept.payload} ({user_answer})"
 
         merged_percept = Percept(
@@ -1022,8 +1168,51 @@ class Merlin:
             merged_query[:80],
         )
 
-        # Re-enter mission pipeline with original snapshot
         return self._handle_mission(merged_percept, pending.snapshot)
+
+    def _execute_resumed_plan(
+        self,
+        plan,
+        snapshot: WorldSnapshot,
+        override_outputs: Dict[str, Dict[str, Any]],
+        pending: PendingMission,
+    ) -> Optional[str]:
+        """Execute a plan with pre-seeded outputs (clarification resume).
+
+        Uses handle_prebuilt_plan-like flow:
+        - Skips LLM compilation
+        - Pre-seeds override outputs via orchestrator.run()
+        - Builds outcome + report
+        - Updates conversation state
+
+        No recompile. No token cost. Deterministic.
+        """
+        try:
+            result = self.orchestrator.handle_resumed_plan(
+                plan=plan,
+                user_text=pending.original_percept.payload,
+                conversation=self.conversation,
+                override_outputs=override_outputs,
+            )
+
+            if result:
+                self.conversation.append_turn(
+                    "assistant", result,
+                    mission_id=self.conversation.last_mission_id,
+                )
+            return result
+
+        except Exception as e:
+            if self.attention_manager:
+                self.attention_manager.set_mission_state(MissionState.IDLE)
+            logger.error(
+                "Resumed plan failed for '%s': %s",
+                pending.original_percept.payload[:80], e, exc_info=True,
+            )
+            response = f"I couldn't complete that request. Error: {e}"
+            self.output_channel.send(response)
+            self.conversation.append_turn("assistant", response)
+            return response
 
     # ─────────────────────────────────────────────────────────
     # Clarification handler (now stores context for resume)
@@ -1378,6 +1567,26 @@ class Merlin:
                 computed_variables=computed_vars,
             )
 
+            # ── Clarification signal from recovery loop ──
+            # Orchestrator returns a dict when AmbiguityDecision or
+            # EscalationLevel.USER fires. Create PendingMission so
+            # the user's reply resumes via _resume_from_clarification.
+            if isinstance(result, dict) and "question" in result:
+                if self.attention_manager:
+                    self.attention_manager.set_mission_state(MissionState.IDLE)
+                question = result["question"]
+                self._pending_mission = PendingMission(
+                    kind="clarification",
+                    original_percept=percept,
+                    snapshot=snapshot,
+                    question=question,
+                    tier=tier,
+                    clarification_context=result,
+                )
+                self.output_channel.send(question)
+                self.conversation.append_turn("assistant", question)
+                return question
+
             # Orchestrator handles EXECUTING → REPORTING → IDLE lifecycle.
             # No IDLE set here — the orchestrator owns it now.
 
@@ -1629,6 +1838,8 @@ class Merlin:
                         "index": ref.index,
                         "list_key": ref.list_key,
                         "entity_hint": ref.entity_hint,
+                        "entity_type": ref.entity_type,
+                        "resolution_source": ref.resolution_source,
                         "value": ref.resolved_value,
                     }
                     for ref in query_ctx.resolved_references

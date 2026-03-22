@@ -48,6 +48,7 @@ class ReadFileSkill(Skill):
         emits_events=["file_read"],
         mutates_world=False,
         output_style="terse",
+        requires=["file_exists"],
     )
 
     def __init__(self, location_config: LocationConfig):

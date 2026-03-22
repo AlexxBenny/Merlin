@@ -60,7 +60,7 @@ Phase 1 filtering with intent scoring. Scores candidates by:
 
 ### EntityResolver (`cortex/entity_resolver.py`)
 
-Two-phase entity resolution:
+Three-phase entity resolution:
 
 **Phase 9C — App entities**:
 - Registry lookup → name index → alias table → fuzzy match
@@ -70,6 +70,14 @@ Two-phase entity resolution:
 - Cosine similarity on tokenized entity text
 - Resolution: `entity_ref` → `entity_index` + `_resolved_entity_text`
 - Thresholds: < 0.55 = NOT_FOUND, second > 0.8 × top = AMBIGUOUS
+
+**Phase 9E — File entities**:
+- `FileIndex.search()` for bare filename lookup
+- Resolution: `file_path_input` → `relative_path` + `anchor` + `_resolved_file_ref_id`
+- 0 matches → `not_found_file` violation
+- 1 match → replace path + set anchor
+- N matches → `ambiguous_file` violation with structured options
+- Skips explicit paths (containing `/` or `\`) and `IRReference` values
 
 ### ParameterResolver (`cortex/parameter_resolver.py`)
 

@@ -22,6 +22,10 @@ roles:
     provider: openrouter
     model: google/gemini-2.5-flash
     temperature: 0.4
+  recovery_reasoner:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    temperature: 0.2
 ```
 
 ## `skills.yaml`

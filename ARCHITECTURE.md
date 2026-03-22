@@ -71,7 +71,7 @@ Transforms user intent into a static Mission DAG.
 | `CognitiveCoordinator` | Intermediate reasoning, direct answers, computed variables |
 | `IntentEngine` | Verb/keyword-based skill discovery |
 | `ScoredDiscovery` | TF-IDF scored skill matching with plural normalization |
-| `EntityResolver` | App + browser entity resolution (cosine similarity) |
+| `EntityResolver` | App + browser + file entity resolution (9C/9D/9E) |
 | `ParameterResolver` | Semantic type resolution for skill inputs |
 | `PreferenceResolver` | User preference injection into skill parameters |
 | `Normalizer` | Query normalization and canonicalization |
@@ -89,7 +89,7 @@ Transforms user intent into a static Mission DAG.
 
 ### 3.4 Skill Layer (`skills/`)
 
-Deterministic, testable capabilities. 44 registered skills across 6 domains:
+Deterministic, testable capabilities. 46 registered skills across 6 domains:
 
 | Domain | Count | Examples |
 |--------|-------|---------|
@@ -97,10 +97,10 @@ Deterministic, testable capabilities. 44 registered skills across 6 domains:
 | `browser.*` | 12 | click, fill, scroll, navigate, go_back, go_forward, autonomous_task |
 | `email.*` | 5 | read_inbox, draft_message, modify_draft, send_message, search_email |
 | `memory.*` | 4 | get_preference, set_preference, set_fact, add_policy |
-| `fs.*` | 3 | read_file, write_file, create_folder |
+| `fs.*` | 5 | read_file, write_file, create_folder, search_file, list_directory |
 | `reasoning.*` | 1 | generate_text |
 
-Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types, execution mode, failure policy, domain, and narration template.
+Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types, execution mode, failure policy, domain, narration template, `requires` (preconditions), `produces` (postconditions), and `effect_type` (create/maintain/destroy/reveal).
 
 **Forbidden**: Calling other skills, modifying the DAG, reasoning about intent.
 
@@ -112,12 +112,16 @@ Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types
 
 | Component | Purpose |
 |-----------|---------|
-| `MissionExecutor` | DAG walker — enforces order, runs skills, manages parallelism |
-| `ExecutionSupervisor` | Step-level guard: pre/post validation, repair actions |
-| `MetaCognitionEngine` | Outcome analysis — success/failure/partial classification |
+| `MissionExecutor` | DAG walker — 10-step contract enforcement, runs skills, manages parallelism |
+| `ExecutionSupervisor` | Step-level guard: pre/post validation, assumption gate, **inline recovery** |
+| `DecisionEngine` | Effect-driven recovery: contract chain → lookahead → expected-value scoring |
+| `MetaCognitionEngine` | 2-axis failure classification (cause × scope) + outcome analysis |
+| `CognitiveContext` | Single shared context: `GoalState`, `ExecutionState`, `DecisionSnapshot` |
 | `SkillRegistry` | O(1) skill lookup, idempotent registration, action namespace audit |
 | `SkillContext` | Frozen per-mission context (`user` profile + `time`) passed to skills |
 | `SchedulerBridge` | Persistent job submission after mission success |
+
+**Key files**: `executor.py`, `supervisor.py`, `metacognition.py`, `cognitive_context.py`, `registry.py`, `skill_context.py`, `scheduler.py`
 
 **Forbidden**: Replanning, semantic interpretation, implicit context passing.
 
@@ -302,11 +306,13 @@ A single query may produce units in both domains. Domain is a property of execut
 
 ## 15. Failure Semantics
 
-Failures are **loud**, **explicit**, and **final**.
+Failures are **loud**, **explicit**, and **bounded**.
 
-- **Forbidden**: Silent retries beyond declared limits, automatic replanning, hidden fallbacks
+- **Tier 1 — Inline recovery**: DecisionEngine at point of failure, bounded (max 2), deduped, safety-gated (reveal/create/maintain only), same executor pipeline
+- **Tier 2 — Post-execution**: DecisionEngine on accumulated verdicts, causal graph linked
+- **Tier 3 — Cortex recompile**: Limited to 1 attempt. Compiler receives `execution_failures` context
 - **Produces**: Partial results, clear error attribution, deterministic report
-- **Recovery recompile**: Limited to 1 attempt for browser entity failures. Compiler receives `execution_failures` context.
+- **Forbidden**: Silent retries beyond declared limits, hidden fallbacks, DAG mutation during recovery
 
 ---
 
@@ -382,9 +388,10 @@ MERLIN/
 │   └── synonyms.py           # Action synonym mapping
 │
 ├── execution/                # DAG execution engine
-│   ├── executor.py           # Mission executor
-│   ├── supervisor.py         # Step-level guard
-│   ├── metacognition.py      # Outcome analysis
+│   ├── executor.py           # Mission executor (10-step contract enforcement)
+│   ├── supervisor.py         # Step-level guard + inline recovery loop
+│   ├── metacognition.py      # DecisionEngine + MetaCognition (2-axis classification)
+│   ├── cognitive_context.py  # CognitiveContext, ExecutionState, DecisionSnapshot
 │   ├── skill_context.py      # Frozen per-mission SkillContext + UserProfile
 │   ├── registry.py           # Skill registry
 │   └── scheduler.py          # Scheduler bridge
@@ -505,4 +512,4 @@ MERLIN/
 │   ├── collect_compiler_baseline.py
 │   └── measure_phase3*.py
 │
-└── tests/                    # Test suite (1517+ tests)
+└── tests/                    # Test suite (1736 tests)

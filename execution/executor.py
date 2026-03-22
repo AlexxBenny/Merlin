@@ -106,7 +106,7 @@ class ExecutionResult:
         "results", "metadata", "node_statuses",
         "completed", "skipped", "failed",
         "meta_verdicts", "outcome_verdicts",
-        "recovery_explanation",
+        "recovery_explanation", "clarification_needed",
     )
 
     def __init__(self):
@@ -119,6 +119,7 @@ class ExecutionResult:
         self.meta_verdicts: list = []   # FailureVerdict objects from MetaCognitionEngine
         self.outcome_verdicts: list = [] # OutcomeAnalyzer verdicts (soft/hard failures)
         self.recovery_explanation: str | None = None  # Explanation from recovery replan
+        self.clarification_needed: dict | None = None  # {question, options, context}
 
     def record(
         self,
@@ -168,13 +169,21 @@ class MissionExecutor:
         self,
         raw_value: Any,
         results: Dict[str, Dict[str, Any]],
-    ) -> Tuple[bool, Any, str]:
+        semantic_type: str = "",
+    ) -> Tuple[bool, Any, str, str]:
         """
         Resolve an individual input value.
 
         Only two legal forms:
         - OutputReference -> resolved from prior node results
         - Literal value -> passed through unchanged
+
+        Returns (ok, value, error_message, failure_class).
+        failure_class is one of:
+        - ""              — success
+        - "MISSING_DATA"  — upstream produced empty/insufficient output
+        - "INVALID_REFERENCE" — bad node/output reference (DAG corruption)
+        - "TYPE_MISMATCH" — incompatible type (planner error)
 
         $-string rejection: enforcement point 2 of 2 (defense-in-depth).
         """
@@ -187,6 +196,7 @@ class MissionExecutor:
                 None,
                 f"Banned $-prefixed string '{raw_value}' "
                 f"reached executor. Use OutputReference.",
+                "INVALID_REFERENCE",
             )
 
         # OutputReference resolution
@@ -200,6 +210,7 @@ class MissionExecutor:
                     None,
                     f"Referenced node '{node_id}' has not "
                     f"produced outputs yet",
+                    "INVALID_REFERENCE",
                 )
 
             node_outputs = results[node_id]
@@ -209,6 +220,7 @@ class MissionExecutor:
                     None,
                     f"Referenced output '{out_key}' missing "
                     f"on node '{node_id}'",
+                    "INVALID_REFERENCE",
                 )
 
             value = node_outputs[out_key]
@@ -222,6 +234,7 @@ class MissionExecutor:
                         f"OutputReference index={raw_value.index} on "
                         f"'{node_id}.{out_key}' but value is "
                         f"{type(value).__name__}, not list",
+                        "TYPE_MISMATCH",
                     )
                 if raw_value.index >= len(value):
                     return (
@@ -230,6 +243,7 @@ class MissionExecutor:
                         f"OutputReference index={raw_value.index} out of "
                         f"bounds for '{node_id}.{out_key}' "
                         f"(length={len(value)})",
+                        "MISSING_DATA",
                     )
                 value = value[raw_value.index]
 
@@ -242,6 +256,7 @@ class MissionExecutor:
                         f"OutputReference field='{raw_value.field}' on "
                         f"'{node_id}.{out_key}' but value is "
                         f"{type(value).__name__}, not dict",
+                        "TYPE_MISMATCH",
                     )
                 if raw_value.field not in value:
                     return (
@@ -250,13 +265,25 @@ class MissionExecutor:
                         f"OutputReference field='{raw_value.field}' not "
                         f"found in '{node_id}.{out_key}' "
                         f"(keys={sorted(value.keys())})",
+                        "TYPE_MISMATCH",
                     )
                 value = value[raw_value.field]
 
-            return True, value, ""
+            # Container coercion: if the target semantic type is a _list type
+            # and the resolved value is NOT already a list, wrap it.
+            # This handles OutputReference(index=N) which extracts a single
+            # item from a list — violating the _list contract.
+            if semantic_type.endswith("_list") and not isinstance(value, list):
+                logger.info(
+                    "[COERCE] Wrapping single %s in list for _list type '%s'",
+                    type(value).__name__, semantic_type,
+                )
+                value = [value]
+
+            return True, value, "", ""
 
         # Literal value — pass through
-        return True, raw_value, ""
+        return True, raw_value, "", ""
 
     def _evaluate_condition(
         self,
@@ -352,12 +379,52 @@ class MissionExecutor:
 
         # Resolve inputs
         inputs_for_skill: Dict[str, Any] = {}
+
+        # Look up skill contract for semantic type metadata (container coercion)
+        try:
+            _skill_for_types = self.registry.get(node.skill)
+        except KeyError:
+            _skill_for_types = None
+
         for key, raw_val in node.inputs.items():
-            ok, resolved, err = self._resolve_input(raw_val, exec_result.results)
-            if not ok:
-                raise RuntimeError(
-                    f"Node '{node.id}' input resolution failed: {key}: {err}"
+            # Determine the target semantic type for container coercion
+            sem_type = ""
+            if _skill_for_types and hasattr(_skill_for_types, 'contract'):
+                sem_type = (
+                    _skill_for_types.contract.inputs.get(key, "")
+                    or _skill_for_types.contract.optional_inputs.get(key, "")
                 )
+
+            ok, resolved, err, failure_class = self._resolve_input(
+                raw_val, exec_result.results,
+                semantic_type=sem_type,
+            )
+            if not ok:
+                reason = f"input_resolution:{key}: {err}"
+                meta = {
+                    "reason": reason,
+                    "failure_class": failure_class,
+                    "failed_input": key,
+                }
+                logger.warning(
+                    "Node '%s' input resolution failed: %s: %s [%s]",
+                    node.id, key, err, failure_class,
+                )
+                # Check failure policy: FAIL → raise (executor contract),
+                # CONTINUE/IGNORE → return structured failure (supervisor recovery)
+                try:
+                    skill = self.registry.get(node.skill)
+                    policy = skill.contract.failure_policy.get(
+                        node.mode, FailurePolicy.FAIL,
+                    )
+                except KeyError:
+                    policy = FailurePolicy.FAIL
+                if policy == FailurePolicy.FAIL:
+                    raise RuntimeError(
+                        f"Node '{node.id}' input resolution failed "
+                        f"(policy=FAIL): {key}: {err}"
+                    )
+                return (node.id, NodeStatus.FAILED, {}, meta)
             inputs_for_skill[key] = resolved
 
         logger.info(
@@ -497,13 +564,11 @@ class MissionExecutor:
             )
 
         # ── Derive semantic status ──────────────────────────
-        # If the skill reports no change AND provides a reason,
-        # this is a semantic no-op (e.g. already_playing,
-        # no_media_session).  Classified here — the single
-        # place where execution semantics are determined.
-        #
-        # Future: skills may signal semantic_status explicitly
-        # via SkillResult, replacing this inference.
+        # Skills can signal semantic_status explicitly via
+        # SkillResult.status (e.g. "no_op" for ambiguity).
+        # Falls back to inference from outputs for backward compat.
+        if raw_result.status == "no_op":
+            return node.id, NodeStatus.NO_OP, outputs, metadata
         if outputs.get("changed") is False and metadata.get("reason"):
             return node.id, NodeStatus.NO_OP, outputs, metadata
 

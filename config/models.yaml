@@ -4,6 +4,8 @@
 # Invariant:
 # - LLMs are used ONLY for language + structure generation
 # - Never for routing, tool selection, or execution decisions
+# - Exception: recovery_reasoner diagnoses failure state (constrained
+#   to GuardType enum, validated against WorldState — not planning)
 #
 # Supported providers: ollama | openrouter | gemini | huggingface
 #
@@ -77,6 +79,7 @@ content_generator:
   model: google/gemini-2.5-flash
   temperature: 0.7
   max_tokens: 4096  # User content: varies, keep high
+  timeout: 30
 
 speech_act_classifier:
   # Lightweight classifier — runs before routing on mission-eligible queries.
@@ -94,4 +97,14 @@ browser_agent:
   # The BrowserUseAdapter reads model name from here and creates
   # ChatGoogle directly, bypassing ModelRouter.
   model: gemini-2.5-flash
+
+recovery_reasoner:
+  # Constrained diagnostic for DecisionEngine (Step 2).
+  # Output: {"state_type": "<GuardType>", "entity": "...", "cause": "..."}
+  # NOT a planner — only identifies missing state conditions.
+  # Output validated by _normalize_diagnosis() + WorldState check.
+  provider: openrouter
+  model: google/gemini-2.5-flash
+  temperature: 0.0
+  max_tokens: 128  # Single JSON object
 

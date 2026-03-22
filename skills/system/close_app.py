@@ -46,6 +46,8 @@ class CloseAppSkill(Skill):
         emits_events=["app_closed"],
         mutates_world=True,
         output_style="terse",
+        requires=["app_running"],
+        effect_type="destroy",
     )
 
     def __init__(self, system_controller: SystemController,

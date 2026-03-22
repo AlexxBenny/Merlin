@@ -412,3 +412,165 @@ class TestErrorMessages:
         s = str(exc_info.value)
         assert "xyzabc" in s
         assert "not found" in s.lower() or "not_found" in s.lower()
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase 9E: File entity resolution
+# ─────────────────────────────────────────────────────────────
+
+class StubReadFileSkill(Skill):
+    """Stub for fs.read_file — has file_path_input semantic type."""
+    contract = SkillContract(
+        name="fs.read_file",
+        action="read_file",
+        target_type="file",
+        description="Read a file",
+        inputs={"path": "file_path_input"},
+        optional_inputs={"anchor": "anchor_name"},
+        outputs={"content": "file_content"},
+        allowed_modes={ExecutionMode.foreground},
+        failure_policy={ExecutionMode.foreground: FailurePolicy.FAIL},
+    )
+    def execute(self, inputs, world, snapshot=None):
+        return SkillResult(outputs={"content": ""})
+
+
+def _read_node(path, node_id="node_0"):
+    return MissionNode(id=node_id, skill="fs.read_file", inputs={"path": path})
+
+
+def _make_file_resolver(file_index=None, location_config=None):
+    """Build a resolver with file entity resolution support."""
+    app_reg = ApplicationRegistry()
+    skill_reg = SkillRegistry()
+    skill_reg.register(StubReadFileSkill())
+    skill_reg.register(StubOpenAppSkill())
+    return EntityResolver(
+        registry=app_reg,
+        skill_registry=skill_reg,
+        file_index=file_index,
+        location_config=location_config,
+    )
+
+
+def _mock_file_index(matches):
+    """Build a mock FileIndex that returns given matches."""
+    from world.file_ref import FileRef
+    idx = MagicMock()
+    idx.__bool__ = lambda self: True
+    refs = [
+        FileRef(
+            ref_id=m["ref_id"],
+            name=m["name"],
+            anchor=m.get("anchor", "WORKSPACE"),
+            relative_path=m["relative_path"],
+            size_bytes=m.get("size_bytes", 1024),
+            confidence=m.get("confidence", 1.0),
+        )
+        for m in matches
+    ]
+    idx.search.return_value = refs
+    return idx
+
+
+class TestFileEntityResolution:
+    """Phase 9E: bare file names → anchor-qualified paths via FileIndex."""
+
+    def test_single_match_replaces_path(self):
+        """1 match → path replaced with relative_path, metadata stored."""
+        fi = _mock_file_index([{
+            "ref_id": "fref_abc123",
+            "name": "resume.pdf",
+            "anchor": "WORKSPACE",
+            "relative_path": "documents/resume.pdf",
+            "confidence": 1.0,
+        }])
+        resolver = _make_file_resolver(file_index=fi)
+        plan = _make_plan(_read_node("resume"))
+        resolved = resolver.resolve_plan(plan)
+        inputs = resolved.nodes[0].inputs
+        assert inputs["path"] == "documents/resume.pdf"
+        assert inputs["_resolved_file_ref_id"] == "fref_abc123"
+        assert inputs["_resolved_file_ref"]["name"] == "resume.pdf"
+
+    def test_single_match_sets_anchor(self):
+        """Non-WORKSPACE anchor → anchor set in inputs."""
+        fi = _mock_file_index([{
+            "ref_id": "fref_desk01",
+            "name": "report.docx",
+            "anchor": "DESKTOP",
+            "relative_path": "report.docx",
+            "confidence": 1.0,
+        }])
+        resolver = _make_file_resolver(file_index=fi)
+        plan = _make_plan(_read_node("report"))
+        resolved = resolver.resolve_plan(plan)
+        inputs = resolved.nodes[0].inputs
+        assert inputs["path"] == "report.docx"
+        assert inputs["anchor"] == "DESKTOP"
+
+    def test_ambiguous_raises_with_options(self):
+        """N matches with close confidence → EntityResolutionError with options."""
+        fi = _mock_file_index([
+            {"ref_id": "fref_a", "name": "notes.txt", "relative_path": "a/notes.txt", "confidence": 0.8},
+            {"ref_id": "fref_b", "name": "notes.md", "relative_path": "b/notes.md", "confidence": 0.8},
+        ])
+        resolver = _make_file_resolver(file_index=fi)
+        plan = _make_plan(_read_node("notes"))
+        with pytest.raises(EntityResolutionError) as exc_info:
+            resolver.resolve_plan(plan)
+        violations = exc_info.value.violations
+        assert len(violations) == 1
+        assert violations[0].resolution_type == "ambiguous_file"
+        assert len(violations[0].options) == 2
+        assert violations[0].options[0]["ref_id"] == "fref_a"
+        # User message includes file options
+        msg = exc_info.value.user_message()
+        assert "notes" in msg.lower()
+
+    def test_not_found_raises(self):
+        """0 matches → EntityResolutionError with not_found_file."""
+        fi = _mock_file_index([])
+        resolver = _make_file_resolver(file_index=fi)
+        plan = _make_plan(_read_node("nonexistent"))
+        with pytest.raises(EntityResolutionError) as exc_info:
+            resolver.resolve_plan(plan)
+        v = exc_info.value.violations[0]
+        assert v.resolution_type == "not_found_file"
+        assert v.raw_value == "nonexistent"
+        msg = exc_info.value.user_message()
+        assert "nonexistent" in msg
+
+    def test_explicit_path_skipped(self):
+        """Values with / or \\ pass through unchanged (explicit paths)."""
+        fi = _mock_file_index([])
+        resolver = _make_file_resolver(file_index=fi)
+        plan = _make_plan(_read_node("docs/report.txt"))
+        resolved = resolver.resolve_plan(plan)
+        # Should NOT call file_index.search — path has separator
+        assert resolved.nodes[0].inputs["path"] == "docs/report.txt"
+        fi.search.assert_not_called()
+
+    def test_ir_reference_skipped(self):
+        """IRReference values pass through unchanged (runtime pipes)."""
+        fi = _mock_file_index([])
+        resolver = _make_file_resolver(file_index=fi)
+        ref = OutputReference(node="search_1", output="matches", index=0, field="relative_path")
+        node = MissionNode(
+            id="node_0",
+            skill="fs.read_file",
+            inputs={"path": ref},
+            depends_on=["search_1"],
+        )
+        plan = _make_plan(node)
+        resolved = resolver.resolve_plan(plan)
+        assert isinstance(resolved.nodes[0].inputs["path"], OutputReference)
+        fi.search.assert_not_called()
+
+    def test_no_file_index_defers(self):
+        """No file_index → Phase 9E is a no-op (defers to recovery)."""
+        resolver = _make_file_resolver(file_index=None)
+        plan = _make_plan(_read_node("resume"))
+        resolved = resolver.resolve_plan(plan)
+        # Should pass through unchanged — no violations
+        assert resolved.nodes[0].inputs["path"] == "resume"

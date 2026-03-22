@@ -118,7 +118,7 @@ class TestExecutorOutputResolution:
     def test_flat_reference_returns_entire_value(self, executor, list_results):
         """Flat ref (no index/field) returns the entire output value."""
         ref = OutputReference(node="node_0", output="apps")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert ok
         assert len(value) == 3
         assert value[0]["name"] == "Chrome"
@@ -126,7 +126,7 @@ class TestExecutorOutputResolution:
     def test_index_on_list(self, executor, list_results):
         """Index on list returns correct element."""
         ref = OutputReference(node="node_0", output="apps", index=1)
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert ok
         assert value == {"name": "VSCode", "pid": 5678, "title": "Visual Studio Code"}
 
@@ -135,42 +135,42 @@ class TestExecutorOutputResolution:
         # count is an int, so test on a dict output
         results = {"node_0": {"info": {"status": "active", "count": 3}}}
         ref = OutputReference(node="node_0", output="info", field="status")
-        ok, value, err = executor._resolve_input(ref, results)
+        ok, value, err, _ = executor._resolve_input(ref, results)
         assert ok
         assert value == "active"
 
     def test_index_plus_field(self, executor, list_results):
         """Index + field returns specific field from list element."""
         ref = OutputReference(node="node_0", output="apps", index=1, field="name")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert ok
         assert value == "VSCode"
 
     def test_index_zero(self, executor, list_results):
         """Index 0 returns first element."""
         ref = OutputReference(node="node_0", output="apps", index=0, field="name")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert ok
         assert value == "Chrome"
 
     def test_index_last_element(self, executor, list_results):
         """Index 2 (last) returns last element."""
         ref = OutputReference(node="node_0", output="apps", index=2, field="pid")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert ok
         assert value == 9012
 
     def test_index_on_non_list_fails(self, executor, list_results):
         """Index on non-list value → deterministic error."""
         ref = OutputReference(node="node_0", output="count", index=0)
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert not ok
         assert "not list" in err
 
     def test_index_out_of_bounds_fails(self, executor, list_results):
         """Index beyond list length → deterministic error with length info."""
         ref = OutputReference(node="node_0", output="apps", index=10)
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert not ok
         assert "out of bounds" in err
         assert "length=3" in err
@@ -178,14 +178,14 @@ class TestExecutorOutputResolution:
     def test_field_on_non_dict_fails(self, executor, list_results):
         """Field on non-dict value → deterministic error."""
         ref = OutputReference(node="node_0", output="count", field="name")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert not ok
         assert "not dict" in err
 
     def test_missing_field_fails(self, executor, list_results):
         """Field not found in dict → deterministic error with available keys."""
         ref = OutputReference(node="node_0", output="apps", index=0, field="email")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert not ok
         assert "email" in err
         assert "name" in err  # available keys listed
@@ -193,14 +193,14 @@ class TestExecutorOutputResolution:
     def test_missing_node_fails(self, executor):
         """Reference to non-existent node → error."""
         ref = OutputReference(node="node_99", output="apps")
-        ok, value, err = executor._resolve_input(ref, {})
+        ok, value, err, _ = executor._resolve_input(ref, {})
         assert not ok
         assert "not produced outputs" in err
 
     def test_missing_output_key_fails(self, executor, list_results):
         """Reference to non-existent output key → error."""
         ref = OutputReference(node="node_0", output="nonexistent")
-        ok, value, err = executor._resolve_input(ref, list_results)
+        ok, value, err, _ = executor._resolve_input(ref, list_results)
         assert not ok
         assert "missing" in err
 

@@ -51,6 +51,8 @@ class MediaPlaySkill(Skill):
         mutates_world=False,
         idempotent=True,
         output_style="terse",
+        requires=["media_session_active"],
+        produces=["media_session_active"],
     )
 
     def __init__(self, system_controller: SystemController):

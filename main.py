@@ -522,6 +522,11 @@ def main(args=None):
     user_knowledge = UserKnowledgeStore(persist_path="state/user_knowledge.json")
     logger.info("UserKnowledgeStore initialized (early — for skill DI)")
 
+    # FileIndex — lazy-built file search index across anchors
+    from world.file_index import FileIndex
+    file_index = FileIndex()
+    logger.info("FileIndex initialized (lazy — builds on first search)")
+
     skill_deps = {
         "location_config": location_config,
         "system_controller": system_controller,
@@ -533,6 +538,7 @@ def main(args=None):
         "browser_controller": browser_controller,
         "email_client": email_client,
         "user_knowledge": user_knowledge,
+        "file_index": file_index,
     }
     load_skills(registry, skills_config, deps=skill_deps)
 
@@ -771,8 +777,10 @@ def main(args=None):
 
     # ── Entity Resolver post-wiring (needs SkillRegistry from the executor) ──
     entity_resolver._skill_registry = merlin.executor.registry
+    entity_resolver._file_index = file_index
+    entity_resolver._location_config = location_config
     merlin.orchestrator._entity_resolver = entity_resolver
-    logger.info("EntityResolver wired to MissionOrchestrator (Phase 9C)")
+    logger.info("EntityResolver wired to MissionOrchestrator (Phase 9C/9D/9E)")
 
     # ── Late-register memory skills (require UserKnowledgeStore) ──
     # Memory skills (memory.get_preference, memory.set_preference, etc.) require

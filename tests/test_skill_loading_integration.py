@@ -135,6 +135,8 @@ class TestProductionSkillLoading:
         "fs.create_folder",
         "fs.write_file",
         "fs.read_file",
+        "fs.search_file",
+        "fs.list_directory",
     }
 
     def test_all_non_skipped_skills_loaded(
@@ -215,6 +217,8 @@ class TestSemanticTypeHygiene:
         fs_types = {
             "anchor_name", "relative_path", "folder_name",
             "filesystem_path", "file_path_input", "file_content",
+            "file_search_query", "file_ref_list", "file_ref_id",
+            "directory_contents",
         }
         used_types.update(fs_types)
 

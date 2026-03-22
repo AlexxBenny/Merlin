@@ -13,7 +13,7 @@ At platform level, MERLIN remains strong in deterministic execution, guard-based
 
 ## Validation Snapshot (Observed During Analysis)
 
-- Latest test run (`python -m pytest -q`): **1517 passed, 1 skipped, 0 failed**.
+- Latest test run (`python -m pytest -q`): **1736 passed, 1 skipped, 0 failed**.
 - Email skills fully loaded and discoverable at runtime.
 - Compiler correctly generates `email.read_inbox` plan for queries like "what are my latest emails".
 - Scored discovery handles plural/singular normalization (`emails` → `email`).

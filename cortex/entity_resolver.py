@@ -3,14 +3,15 @@
 """
 EntityResolver — Post-compilation entity normalization.
 
-Sits in the MissionOrchestrator transform chain as Phase 9C/9D:
+Sits in the MissionOrchestrator transform chain as Phase 9C/9D/9E:
 
     Compiler → ParameterResolver (9A) → PreferenceResolver (9B)
-            → EntityResolver (9C: app entities, 9D: browser entities) → Executor
+            → EntityResolver (9C: app, 9D: browser, 9E: file entities) → Executor
 
 Responsibilities:
 - Phase 9C: Resolve app entity_params to canonical app_id via ApplicationRegistry
 - Phase 9D: Resolve browser entity_ref to entity_index via WorldState entities
+- Phase 9E: Resolve bare file names to anchor-qualified paths via FileIndex
 - Add app_id / entity_index alongside original params (never overwrite)
 - Return structured outcomes (resolved/ambiguous/not_found)
 - Raise EntityResolutionError for ambiguous or not_found (user clarification)
@@ -82,8 +83,9 @@ class EntityViolation:
     skill: str
     param_key: str
     raw_value: str
-    resolution_type: str   # "ambiguous" or "not_found"
+    resolution_type: str   # "ambiguous", "not_found", "ambiguous_file", "not_found_file"
     candidates: List[str] = field(default_factory=list)
+    options: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -131,6 +133,19 @@ class EntityResolutionError(Exception):
                     parts.append(
                         f"I can't find \"{v.raw_value}\" on this page."
                     )
+            elif v.resolution_type == "ambiguous_file":
+                options_str = "\n".join(
+                    f"  {i+1}. {o['name']} ({o['anchor']}/{o['relative_path']})"
+                    for i, o in enumerate(v.options[:5])
+                )
+                parts.append(
+                    f"Multiple files match \"{v.raw_value}\":\n{options_str}"
+                )
+            elif v.resolution_type == "not_found_file":
+                parts.append(
+                    f"I couldn't find a file named "
+                    f"\"{v.raw_value}\"."
+                )
             else:
                 if v.candidates:
                     suggestion = v.candidates[0]
@@ -173,9 +188,13 @@ class EntityResolver:
         registry: ApplicationRegistry,
         skill_registry: "SkillRegistry",
         alias_map: Optional[Dict[str, str]] = None,
+        file_index=None,
+        location_config=None,
     ):
         self._registry = registry
         self._skill_registry = skill_registry
+        self._file_index = file_index
+        self._location_config = location_config
         self._aliases: Dict[str, str] = {}
 
         if alias_map:
@@ -232,6 +251,11 @@ class EntityResolver:
                     node, ref_text, browser_entities,
                 )
                 violations.extend(browser_violations)
+
+        # ── Phase 9E: File entity resolution ──
+        for node in resolved_nodes:
+            file_violations = self._resolve_file_entities(node)
+            violations.extend(file_violations)
 
         if violations:
             raise EntityResolutionError(violations=violations)
@@ -554,6 +578,118 @@ class EntityResolver:
         node.inputs["_resolved_entity_text"] = resolved_text
         del node.inputs["entity_ref"]
         return []
+
+    # ─────────────────────────────────────────────────────────
+    # File entity resolution (Phase 9E)
+    # ─────────────────────────────────────────────────────────
+
+    def _resolve_file_entities(
+        self,
+        node: MissionNode,
+    ) -> List[EntityViolation]:
+        """Resolve bare file names to anchor-qualified paths.
+
+        Uses Phase 9D (replace) pattern:
+        - Replaces bare name with resolved relative_path + anchor
+        - Stores _resolved_file_ref (dict) + _resolved_file_ref_id (str) for tracing
+        - Skips explicit paths (contain / or \\), IRReferences, non-file params
+
+        If no FileIndex is available, defers to execution-time recovery
+        (DecisionEngine → _find_revealers → search_file).
+        """
+        if not self._file_index:
+            return []
+
+        if not self._skill_registry:
+            return []
+
+        try:
+            skill = self._skill_registry.get(node.skill)
+        except (KeyError, AttributeError):
+            return []
+
+        contract = skill.contract
+        all_inputs = {}
+        all_inputs.update(getattr(contract, 'inputs', {}) or {})
+        all_inputs.update(getattr(contract, 'optional_inputs', {}) or {})
+
+        violations: List[EntityViolation] = []
+
+        for param_key, semantic_type in all_inputs.items():
+            if semantic_type != "file_path_input":
+                continue
+
+            if param_key not in node.inputs:
+                continue
+
+            raw_value = node.inputs[param_key]
+
+            # Skip IRReference values — runtime-resolved pipes
+            if isinstance(raw_value, IRReference):
+                continue
+
+            # Skip non-string values
+            if not isinstance(raw_value, str):
+                continue
+
+            # Skip explicit paths (contain path separators)
+            if "/" in raw_value or "\\" in raw_value:
+                continue
+
+            # Skip empty values
+            if not raw_value.strip():
+                continue
+
+            # Search FileIndex
+            matches = self._file_index.search(
+                raw_value,
+                location_config=self._location_config,
+            )
+
+            if not matches:
+                # 0 results → NOT_FOUND
+                violations.append(EntityViolation(
+                    node_id=node.id,
+                    skill=node.skill,
+                    param_key=param_key,
+                    raw_value=raw_value,
+                    resolution_type="not_found_file",
+                ))
+                continue
+
+            if len(matches) == 1 or (
+                len(matches) >= 2
+                and matches[0].confidence > matches[1].confidence * 1.2
+            ):
+                # 1 clear match → REPLACE (Phase 9D pattern)
+                best = matches[0]
+                node.inputs[param_key] = best.relative_path
+                if best.anchor != "WORKSPACE":
+                    node.inputs["anchor"] = best.anchor
+                # Tracing: full ref dict + cheap ref_id for identity lookup
+                node.inputs["_resolved_file_ref"] = best.to_output_dict()
+                node.inputs["_resolved_file_ref_id"] = best.ref_id
+                logger.info(
+                    "[ENTITY-FILE] %s.%s: '%s' → '%s' (anchor=%s, score=%.2f)",
+                    node.id, param_key, raw_value,
+                    best.relative_path, best.anchor, best.confidence,
+                )
+                continue
+
+            # N ambiguous matches → violation with structured options
+            option_dicts = [m.to_output_dict() for m in matches[:5]]
+            candidate_names = [m.name for m in matches[:5]]
+            violations.append(EntityViolation(
+                node_id=node.id,
+                skill=node.skill,
+                param_key=param_key,
+                raw_value=raw_value,
+                resolution_type="ambiguous_file",
+                candidates=candidate_names,
+                options=option_dicts,
+            ))
+
+        return violations
 
     @staticmethod
     def _tokenize(text: str) -> List[str]:

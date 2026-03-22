@@ -55,6 +55,14 @@ skills:
     module: "skills.fs.read_file"
     class: "ReadFileSkill"
 
+  - name: "fs.search_file"
+    module: "skills.fs.search_file"
+    class: "SearchFileSkill"
+
+  - name: "fs.list_directory"
+    module: "skills.fs.list_directory"
+    class: "ListDirectorySkill"
+
   - name: "system.open_app"
     module: "skills.system.open_app"
     class: "OpenAppSkill"

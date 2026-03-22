@@ -65,6 +65,9 @@ class ReadInboxSkill(Skill):
         idempotent=True,
         data_freshness="live",
         output_style="rich",
+        requires=[],
+        produces=["email_list"],
+        effect_type="reveal",
     )
 
     def __init__(self, email_client: EmailClient):

@@ -39,6 +39,7 @@ class MediaPreviousSkill(Skill):
         mutates_world=False,
         idempotent=False,
         output_style="terse",
+        requires=["media_session_active"],
     )
 
     def __init__(self, system_controller: SystemController):

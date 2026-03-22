@@ -42,7 +42,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ir.mission import MissionPlan, MissionNode
+from ir.mission import MissionPlan, MissionNode, ExecutionMode
 from execution.executor import MissionExecutor, ExecutionResult, NodeStatus
 from execution.scheduler import DAGScheduler
 from execution.metacognition import (
@@ -69,8 +69,10 @@ class GuardType(str, Enum):
     APP_FOCUSED = "app_focused"
     WINDOW_VISIBLE = "window_visible"
     FILE_EXISTS = "file_exists"
+    FILE_REFERENCE = "file_reference"      # File identity known (path resolved via search/list)
     ELEMENT_VISIBLE = "element_visible"
     REQUIRES_CONFIRMATION = "requires_confirmation"  # Safety gate for destructive actions
+    MEDIA_SESSION_ACTIVE = "media_session_active"     # Active media session exists
     # For future browser automation
 
 
@@ -166,6 +168,8 @@ class ExecutionSupervisor:
         self._metacognition = MetaCognitionEngine()
         self._outcome_analyzer = OutcomeAnalyzer()
         self._verdicts: List[FailureVerdict] = []
+        self._cognitive_ctx = None       # Set per-run via run()
+        self._decision_engine = None     # Set per-run via run()
 
     @property
     def verdicts(self) -> List[FailureVerdict]:
@@ -183,13 +187,24 @@ class ExecutionSupervisor:
         world_snapshot: Optional[WorldSnapshot] = None,
         on_layer_start: Optional[Callable] = None,
         on_layer_complete: Optional[Callable] = None,
+        cognitive_ctx=None,
+        decision_engine=None,
+        override_outputs=None,
     ) -> ExecutionResult:
         """Execute a mission plan with guard enforcement.
 
         Walks DAG layer by layer, executing nodes individually.
         Replaces executor.run() when supervisor is active.
 
-        Same signature as MissionExecutor.run() for drop-in replacement.
+        Args:
+            cognitive_ctx: Optional CognitiveContext for assumption
+                gating and uncertainty tracking. When None, all
+                existing behavior is preserved unchanged.
+            override_outputs: Optional dict of {node_id: outputs} for
+                pre-completed nodes. Used for clarification resume:
+                the user selected a match, so we inject it as the
+                node's output and skip re-execution.  Downstream
+                nodes resolve OutputReferences normally.
         """
 
         # ── IR version gate (same as executor) ──
@@ -207,12 +222,32 @@ class ExecutionSupervisor:
                 f"got {type(world_snapshot).__name__}."
             )
 
+        # Store cognitive context for this run (None = backward-compat)
+        self._cognitive_ctx = cognitive_ctx
+        # DecisionEngine for inline recovery (None = disabled)
+        self._decision_engine = decision_engine
+
         # Plan execution layers
         layers = DAGScheduler.plan(plan)
         node_index = DAGScheduler.get_node_index(plan)
 
         exec_result = ExecutionResult()
         self._verdicts = []  # Reset for new run
+
+        # ── Pre-seed override outputs (clarification resume) ──
+        # Nodes whose outputs are already known (e.g. user selected
+        # a match from an ambiguous list) are recorded as COMPLETED
+        # so downstream OutputReference resolution works normally.
+        if override_outputs:
+            for node_id, outputs in override_outputs.items():
+                exec_result.record(
+                    node_id, NodeStatus.COMPLETED, outputs,
+                    metadata={"source": "clarification_resume"},
+                )
+                logger.info(
+                    "[RESUME] Pre-seeded node '%s' with override outputs",
+                    node_id,
+                )
 
         for layer_idx, layer in enumerate(layers):
             # Layer-start callback (narration hook — fire-and-forget)
@@ -276,6 +311,12 @@ class ExecutionSupervisor:
         parallel_nodes = []
 
         for nid in layer:
+            # Skip nodes already completed via override_outputs
+            if nid in exec_result.completed:
+                logger.info(
+                    "[RESUME] Skipping pre-completed node '%s'", nid,
+                )
+                continue
             node = node_index[nid]
             if (self._executor._needs_focus(node) or
                     self._executor._has_conflicts(node, layer, node_index)):
@@ -308,6 +349,20 @@ class ExecutionSupervisor:
                             nid, node.skill, status, severity.value,
                         )
 
+                        # ── Ambiguity: block dependent nodes ──
+                        # When a node signals ambiguous_input, its outputs
+                        # are NOT safe for downstream consumption.  Mark it
+                        # as failed so the executor's cascade-skip (line 356)
+                        # prevents dependents from executing with bad data.
+                        # The orchestrator's recovery loop will convert the
+                        # SOFT_FAILURE → EscalationDecision(USER) → ask-back.
+                        if meta.get("reason") == "ambiguous_input":
+                            exec_result.failed.add(nid)
+                            logger.info(
+                                "[OUTCOME] Node '%s' blocked dependents "
+                                "(ambiguous_input)", nid,
+                            )
+
         # Phase 2: Execute focus/conflicting nodes with guard enforcement
         for nid in focus_nodes:
             node = node_index[nid]
@@ -323,10 +378,14 @@ class ExecutionSupervisor:
     ) -> None:
         """Execute a single node with pre/postcondition enforcement.
 
-        1. Evaluate preconditions
-        2. Execute via executor.execute_node()
-        3. Evaluate postconditions
-        4. On failure: repair + retry
+        Order: Guard → Repair → Assumption → Execute → Postcondition
+
+        1. Evaluate preconditions (existing StepGuard flow)
+        2. Assumption gate (if CognitiveContext active)
+        3. Execute via executor.execute_node()
+        4. Evaluate postconditions
+        5. On failure: repair + retry
+        6. Uncertainty update (if CognitiveContext active)
         """
         # ── Get guard definitions from contract extension ──
         preconditions = self._get_guards(node, "preconditions")
@@ -349,12 +408,31 @@ class ExecutionSupervisor:
                         failed_guards=[guard.type.value],
                         retries_exhausted=True,
                     )
+                    # ── Inline recovery: try before giving up ──
+                    if self._attempt_inline_recovery(
+                        node, verdict, exec_result, world_snapshot,
+                    ):
+                        return self._execute_guarded_node(
+                            node, exec_result, world_snapshot,
+                        )
                     self._verdicts.append(verdict)
                     logger.info(
                         "[META] Node '%s' classified: %s → %s",
                         node.id, verdict.category.value, verdict.action.value,
                     )
                     return
+
+        # ── Assumption gate (after preconditions, before execution) ──
+        if self._cognitive_ctx:
+            exec_state = self._cognitive_ctx.execution
+            assumptions = exec_state.node_assumptions.get(node.id, [])
+            if assumptions and not self._should_still_execute(node, assumptions):
+                logger.info(
+                    "[ASSUMPTION] Node '%s' skipped — assumption invalid",
+                    node.id,
+                )
+                exec_result.record(node.id, NodeStatus.SKIPPED, {})
+                return
 
         # ── Execute node (with retry on failure) ──
         max_retries = max(
@@ -375,6 +453,36 @@ class ExecutionSupervisor:
                 )
                 exec_result.record(node_id, status, outputs, meta)
 
+                # ── Input resolution failure: skip retries, route to recovery ──
+                # Retrying is pointless — upstream output won't change.
+                if (status == NodeStatus.FAILED
+                        and meta and "failure_class" in meta):
+                    failure_class = meta["failure_class"]
+                    logger.info(
+                        "[INPUT] Node '%s' input resolution failed: %s",
+                        node.id, failure_class,
+                    )
+                    verdict = self._metacognition.classify(
+                        node_id=node.id,
+                        skill_name=node.skill,
+                        error_message=meta.get("reason", ""),
+                        failure_class=failure_class,
+                        retries_exhausted=True,
+                    )
+                    if self._attempt_inline_recovery(
+                        node, verdict, exec_result, world_snapshot,
+                    ):
+                        return self._execute_guarded_node(
+                            node, exec_result, world_snapshot,
+                        )
+                    self._verdicts.append(verdict)
+                    logger.info(
+                        "[META] Node '%s' input resolution: %s → %s (%s)",
+                        node.id, verdict.category.value,
+                        verdict.action.value, verdict.reason,
+                    )
+                    return
+
                 # ── Outcome classification (every node) ──
                 severity = self._outcome_analyzer.classify(
                     status, meta,
@@ -391,6 +499,32 @@ class ExecutionSupervisor:
                         "[OUTCOME] Node '%s' (%s): %s → %s",
                         node_id, node.skill, status, severity.value,
                     )
+
+                    # ── Ambiguity: block dependent nodes ──
+                    if (meta or {}).get("reason") == "ambiguous_input":
+                        exec_result.failed.add(node_id)
+                        logger.info(
+                            "[OUTCOME] Node '%s' blocked dependents "
+                            "(ambiguous_input)", node_id,
+                        )
+
+                # ── Uncertainty update (after every node) ──
+                if self._cognitive_ctx:
+                    domain = self._get_skill_domain(node.skill)
+                    if status == NodeStatus.COMPLETED:
+                        self._cognitive_ctx.execution.update_uncertainty(
+                            "outcome_achieved", domain,
+                        )
+                    elif status == NodeStatus.FAILED:
+                        error_str = (meta or {}).get("reason", "")
+                        if "not found" in error_str.lower():
+                            self._cognitive_ctx.execution.update_uncertainty(
+                                "file_not_found", domain,
+                            )
+                        elif "multiple" in error_str.lower():
+                            self._cognitive_ctx.execution.update_uncertainty(
+                                "multiple_matches", domain,
+                            )
 
                 # ── Evaluate postconditions ──
                 if status in (NodeStatus.COMPLETED, NodeStatus.NO_OP):
@@ -417,6 +551,43 @@ class ExecutionSupervisor:
 
             except Exception as e:
                 last_error = e
+                err_str = str(e)
+
+                # Input resolution failures are deterministic — retrying won't help
+                # because the upstream output hasn't changed.
+                if "input_resolution" in err_str.lower():
+                    logger.info(
+                        "[INPUT] Node '%s' input resolution error: %s",
+                        node.id, err_str,
+                    )
+                    exec_result.record(node.id, NodeStatus.FAILED, {})
+                    # Extract failure_class from error context
+                    fc = None
+                    for cls in ("MISSING_DATA", "INVALID_REFERENCE", "TYPE_MISMATCH"):
+                        if cls in err_str:
+                            fc = cls
+                            break
+                    verdict = self._metacognition.classify(
+                        node_id=node.id,
+                        skill_name=node.skill,
+                        error_message=err_str,
+                        failure_class=fc,
+                        retries_exhausted=True,
+                    )
+                    if self._attempt_inline_recovery(
+                        node, verdict, exec_result, world_snapshot,
+                    ):
+                        return self._execute_guarded_node(
+                            node, exec_result, world_snapshot,
+                        )
+                    self._verdicts.append(verdict)
+                    logger.info(
+                        "[META] Node '%s' input resolution: %s → %s (%s)",
+                        node.id, verdict.category.value,
+                        verdict.action.value, verdict.reason,
+                    )
+                    return
+
                 if attempt < max_retries:
                     logger.info(
                         "Node '%s' failed (attempt %d/%d): %s — retrying",
@@ -438,6 +609,13 @@ class ExecutionSupervisor:
             error_message=str(last_error) if last_error else None,
             retries_exhausted=True,
         )
+        # ── Inline recovery: try before giving up ──
+        if self._attempt_inline_recovery(
+            node, verdict, exec_result, world_snapshot,
+        ):
+            return self._execute_guarded_node(
+                node, exec_result, world_snapshot,
+            )
         self._verdicts.append(verdict)
         logger.info(
             "[META] Node '%s' exhausted retries — classified: %s → %s (%s)",
@@ -609,6 +787,16 @@ class ExecutionSupervisor:
                 )
                 return True
 
+            elif guard.type == GuardType.MEDIA_SESSION_ACTIVE:
+                if timeline is not None:
+                    from world.state import WorldState
+                    ws = WorldState.from_events(timeline.all_events())
+                    media = ws.media
+                    return bool(
+                        media and (media.platform or media.title)
+                    )
+                return False
+
             else:
                 logger.warning("Unknown GuardType: %s", guard.type)
                 return True
@@ -665,3 +853,198 @@ class ExecutionSupervisor:
                 )
 
         return False
+
+    # ─────────────────────────────────────────────────────────
+    # Inline recovery via DecisionEngine
+    # ─────────────────────────────────────────────────────────
+
+    MAX_INLINE_RECOVERY = 2
+    _SAFE_INLINE_EFFECTS = frozenset({"reveal", "create", "maintain"})
+
+    def _attempt_inline_recovery(
+        self,
+        node: MissionNode,
+        verdict: FailureVerdict,
+        exec_result: ExecutionResult,
+        world_snapshot: Optional[WorldSnapshot],
+    ) -> bool:
+        """Attempt inline recovery at point of failure.
+
+        Builds a MissionNode from the ActionDecision and routes it
+        through executor.execute_node() — the SAME pipeline as normal
+        nodes (contract enforcement, timeline tracking, context injection).
+
+        Returns True if recovery succeeded AND caller should retry
+        the original node (via _execute_guarded_node re-entry, which
+        re-evaluates ALL preconditions before execution).
+
+        Constraints:
+        - Bounded: MAX_INLINE_RECOVERY per node
+        - Deduped: same (skill, inputs) never tried twice for same node
+        - Safety: only effect_type in _SAFE_INLINE_EFFECTS
+        - Causal graph: recorded via record_decision_with_causal_link()
+        - No DAG mutation: recovery node is ephemeral (not in plan)
+        """
+        if not self._decision_engine or not self._cognitive_ctx:
+            return False
+
+        # Per-node budget check
+        exec_state = self._cognitive_ctx.execution
+        count = exec_state.inline_recovery_count.get(node.id, 0)
+        if count >= self.MAX_INLINE_RECOVERY:
+            logger.info(
+                "[INLINE] Max recovery attempts (%d) for node '%s'",
+                self.MAX_INLINE_RECOVERY, node.id,
+            )
+            return False
+
+        # Fresh snapshot (re-snapshot every iteration)
+        snapshot = self._cognitive_ctx.snapshot_for_decision()
+
+        # Lazy import to avoid circular
+        from execution.cognitive_context import ActionDecision
+
+        decision = self._decision_engine.decide(verdict, snapshot)
+
+        if not isinstance(decision, ActionDecision):
+            return False
+
+        # Dedup: have we already tried this exact (skill, inputs) for this node?
+        import hashlib, json
+        try:
+            inputs_str = json.dumps(decision.inputs, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            inputs_str = str(sorted(decision.inputs.items()))
+        dedup_key = f"{decision.skill}:{hashlib.md5(inputs_str.encode()).hexdigest()}"
+
+        seen = exec_state.inline_recovery_seen.setdefault(node.id, set())
+        if dedup_key in seen:
+            logger.info(
+                "[INLINE] Skipping duplicate recovery '%s' for node '%s'",
+                decision.skill, node.id,
+            )
+            return False
+
+        # Safety gate: check effect_type
+        try:
+            skill = self._executor.registry.get(decision.skill)
+            effect = getattr(skill.contract, 'effect_type', 'maintain')
+            if effect not in self._SAFE_INLINE_EFFECTS:
+                logger.info(
+                    "[INLINE] Skipping unsafe recovery: %s (effect=%s)",
+                    decision.skill, effect,
+                )
+                return False
+        except KeyError:
+            return False
+
+        # Record in causal graph
+        from execution.metacognition import DecisionEngine
+        DecisionEngine.record_decision_with_causal_link(
+            exec_state,
+            skill_name=decision.skill,
+            inputs=decision.inputs,
+            caused_by_node=node.id,
+            strategy_source=decision.strategy_source,
+        )
+
+        # Build ephemeral recovery node + route through executor
+        recovery_node = MissionNode(
+            id=f"recovery_{node.id}_{count}",
+            skill=decision.skill,
+            inputs=decision.inputs,
+            mode=ExecutionMode.foreground,
+        )
+
+        logger.info(
+            "[INLINE] Executing recovery '%s' for node '%s' (attempt %d)",
+            decision.skill, node.id, count + 1,
+        )
+
+        try:
+            nid, status, outputs, meta = self._executor.execute_node(
+                recovery_node, exec_result, world_snapshot,
+            )
+            exec_result.record(nid, status, outputs, meta)
+
+            exec_state.record_attempt(
+                skill=decision.skill,
+                inputs=decision.inputs,
+                result=str(status),
+            )
+            exec_state.inline_recovery_count[node.id] = count + 1
+            seen.add(dedup_key)
+
+            if status in (NodeStatus.COMPLETED, NodeStatus.NO_OP):
+                logger.info(
+                    "[INLINE] Recovery '%s' succeeded for node '%s'",
+                    decision.skill, node.id,
+                )
+                return True  # caller retries original node
+
+            logger.warning(
+                "[INLINE] Recovery '%s' failed for node '%s': status=%s",
+                decision.skill, node.id, status,
+            )
+            return False
+
+        except Exception as e:
+            exec_state.record_attempt(
+                skill=decision.skill,
+                inputs=decision.inputs,
+                result="failed",
+                error=str(e),
+            )
+            exec_state.inline_recovery_count[node.id] = count + 1
+            seen.add(dedup_key)
+            logger.warning(
+                "[INLINE] Recovery '%s' threw for node '%s': %s",
+                decision.skill, node.id, e,
+            )
+            return False
+
+    # ─────────────────────────────────────────────────────────
+    # Assumption validation + uncertainty helpers
+    # ─────────────────────────────────────────────────────────
+
+    def _should_still_execute(
+        self, node: MissionNode, assumptions: list,
+    ) -> bool:
+        """Check if assumptions for a dynamic recovery node still hold.
+
+        Maps each Assumption to an existing GuardType, evaluates via
+        _evaluate_guard(), and respects the 'invert' flag.
+
+        No new evaluation logic — all checks route through guards.
+        """
+        for assumption in assumptions:
+            if not assumption.guard_mapping:
+                continue  # No guard mapping → assumption not checkable
+            try:
+                guard_type = GuardType(assumption.guard_mapping)
+            except ValueError:
+                logger.debug(
+                    "Unknown guard mapping '%s' for assumption on node '%s'",
+                    assumption.guard_mapping, node.id,
+                )
+                continue
+            guard = StepGuard(type=guard_type, params=assumption.params)
+            result = self._evaluate_guard(guard)
+            if assumption.invert:
+                result = not result
+            if not result:
+                logger.info(
+                    "[ASSUMPTION] Assumption '%s' (guard: %s, invert: %s) "
+                    "failed for node '%s'",
+                    assumption.type, assumption.guard_mapping,
+                    assumption.invert, node.id,
+                )
+                return False
+        return True
+
+    def _get_skill_domain(self, skill_name: str) -> str:
+        """Get authoritative domain from SkillContract via registry."""
+        try:
+            return self._executor.registry.get(skill_name).contract.domain
+        except Exception:
+            return "general"

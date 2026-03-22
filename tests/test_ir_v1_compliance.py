@@ -364,9 +364,10 @@ class TestExecutorRejectsDollarStrings:
     def test_dollar_string_rejected_at_runtime(self):
         executor, _ = _make_executor(DummySkill())
 
-        ok, _, err = executor._resolve_input("$node.output", {})
+        ok, _, err, failure_class = executor._resolve_input("$node.output", {})
         assert not ok
         assert "Banned $-prefixed string" in err
+        assert failure_class == "INVALID_REFERENCE"
 
 
 class TestExecutorResolvesOutputReference:
@@ -378,7 +379,7 @@ class TestExecutorResolvesOutputReference:
         results = {"node_a": {"result": "hello"}}
         ref = OutputReference(node="node_a", output="result")
 
-        ok, value, err = executor._resolve_input(ref, results)
+        ok, value, err, _ = executor._resolve_input(ref, results)
         assert ok
         assert value == "hello"
         assert err == ""
@@ -387,9 +388,10 @@ class TestExecutorResolvesOutputReference:
         executor, _ = _make_executor(DummySkill())
 
         ref = OutputReference(node="missing", output="result")
-        ok, _, err = executor._resolve_input(ref, {})
+        ok, _, err, failure_class = executor._resolve_input(ref, {})
         assert not ok
         assert "missing" in err
+        assert failure_class == "INVALID_REFERENCE"
 
     def test_missing_output_fails(self):
         executor, _ = _make_executor(DummySkill())
@@ -397,18 +399,19 @@ class TestExecutorResolvesOutputReference:
         results = {"node_a": {"other_key": "hello"}}
         ref = OutputReference(node="node_a", output="result")
 
-        ok, _, err = executor._resolve_input(ref, results)
+        ok, _, err, failure_class = executor._resolve_input(ref, results)
         assert not ok
         assert "result" in err
+        assert failure_class == "INVALID_REFERENCE"
 
     def test_literal_passes_through(self):
         executor, _ = _make_executor(DummySkill())
 
-        ok, value, _ = executor._resolve_input("hello", {})
+        ok, value, _, _ = executor._resolve_input("hello", {})
         assert ok
         assert value == "hello"
 
-        ok, value, _ = executor._resolve_input(42, {})
+        ok, value, _, _ = executor._resolve_input(42, {})
         assert ok
         assert value == 42
 

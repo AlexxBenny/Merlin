@@ -2,7 +2,7 @@
 
 **Location**: `orchestrator/`
 
-The control loop between cortex and executor. Handles the messy reality of entity resolution, failure recovery, and replanning.
+The control loop between cortex and executor. Handles entity resolution, inline recovery, and failure escalation.
 
 ## MissionOrchestrator (`orchestrator/mission_orchestrator.py`)
 
@@ -21,19 +21,34 @@ Compiled MissionPlan
 3. EntityResolver.resolve_plan(world_snapshot)
     │                                     # App entities: app_target → app_id
     │                                     # Browser entities: entity_ref → entity_index
+    │                                     # File entities: bare filename → resolved path + anchor
     │
     ├── Violations found?
     │     ├── App NOT_FOUND/AMBIGUOUS → ask user (clarification)
-    │     └── Browser NOT_FOUND → recovery recompile
+    │     ├── Browser NOT_FOUND → recovery recompile
+    │     └── File NOT_FOUND/AMBIGUOUS → structured options
     │
     ▼
-4. MissionExecutor.execute(plan)         # DAG walk
+4. ExecutionSupervisor.run(plan, snapshot, decision_engine=decision_engine)
+    │                                     # Passes DecisionEngine for inline recovery
     │
     ▼
 5. Results → ReportBuilder              # Narrate to user
 ```
 
-### Recovery Recompile
+### Inline Recovery (at execution time)
+
+When a node fails during execution, the supervisor can perform inline recovery before escalating:
+
+1. `MetaCognition.classify()` → `FailureVerdict`
+2. `DecisionEngine.decide(verdict, snapshot)` → `ActionDecision | EscalationDecision`
+3. If `ActionDecision` with safe effect_type:
+   - Build ephemeral `MissionNode` from decision
+   - Execute through `executor.execute_node()` (same 10-step pipeline)
+   - If succeeds → retry original node (preconditions re-evaluated)
+4. Bounded: `MAX_INLINE_RECOVERY = 2` per node, deduped, safety-gated
+
+### Recovery Recompile (for entity failures)
 
 When a browser entity is not found, the orchestrator triggers a recompile instead of immediate escalation:
 
@@ -60,4 +75,6 @@ The world snapshot is built from `WorldState.from_events(timeline.all_events())`
 | `ParameterError` | Report to user |
 | `EntityResolutionError` (app) | Ask user for clarification |
 | `EntityResolutionError` (browser) | Recovery recompile |
-| Execution failure | MetaCognition analysis → partial/failed report |
+| `EntityResolutionError` (file) | Structured options for user |
+| Execution failure (inline recoverable) | DecisionEngine → inline recovery → retry |
+| Execution failure (not recoverable) | MetaCognition analysis → partial/failed report |

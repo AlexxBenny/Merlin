@@ -171,3 +171,27 @@ class SkillContract(BaseModel):
     preconditions: List[Dict[str, Any]] = Field(default_factory=list)
     postconditions: List[Dict[str, Any]] = Field(default_factory=list)
 
+    # ── Effect modeling (derived producer/consumer discovery) ──
+    # requires: GuardType values that must be true BEFORE execution.
+    #   These are preconditions for reasoning — the DecisionEngine reads
+    #   them to diagnose failures. NOT the same as guards (which enforce).
+    #   Example: media_play requires=["media_session_active"]
+    requires: List[str] = Field(default_factory=list)
+
+    # produces: GuardType values this skill CREATES or MAINTAINS on success.
+    #   The DecisionEngine discovers producers by scanning:
+    #     registry.find(guard_value in skill.contract.produces)
+    #   No static maps needed — new skills just declare effects.
+    #   Example: open_app produces=["app_running"]
+    produces: List[str] = Field(default_factory=list)
+
+    # effect_type: How this skill relates to state.
+    #   "create"   — brings state into existence (open_app → app_running)
+    #   "maintain"  — keeps existing state alive (media_play → session)
+    #   "destroy"   — removes state (close_app → app_running gone)
+    #   "reveal"    — discovers/exposes existing state (search_file → file_reference known)
+    #              DecisionEngine treats reveal-producers separately from create-producers:
+    #              reveal reduces UNCERTAINTY, create resolves MISSING STATE.
+    #   Recovery prefers "create" effects when a state is missing.
+    effect_type: Literal["create", "maintain", "destroy", "reveal"] = "maintain"
+

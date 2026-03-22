@@ -143,6 +143,7 @@ When complex reasoning is required, the `MissionCortex` acts as an LLM-powered c
 The non-cognitive layer that mutates the world.
 * **MissionExecutor:** Executes the compiled DAG. Enables concurrent execution of parallel nodes.
 * **Enforced Execution Contracts:** Skills are rigorously defined. An LLM cannot hallucinate arguments or manipulate the system in undefined ways.
+* **Effect-Driven Inline Recovery:** When a node fails, the `DecisionEngine` classifies the failure, finds recovery actions via skill contract chains, and executes them inline — bounded, deduped, and safety-gated.
 * **World State Timeline:** Every action, input, and response is tracked as an append-only event stream in the `WorldTimeline`, allowing MERLIN to maintain perfect contextual awareness of its environment.
 
 ### 🧭 Request Lifecycle (Control-Flow View)
@@ -317,10 +318,11 @@ This allows the API server and frontends to remain process-isolated from core in
 
 ### 🧰 Skill Inventory Snapshot
 
-MERLIN currently ships with 34 registered skills (per `docs/skills/overview.md`, as of March 2026; inventory may evolve):
-- `system`: 20
-- `browser`: 7
-- `fs`: 3
+MERLIN currently ships with 46 registered skills:
+- `system`: 19
+- `browser`: 12
+- `email`: 5
+- `fs`: 5
 - `memory`: 4
 - `reasoning`: 1
 
@@ -414,7 +416,7 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 ├── main.py & merlin.py     # Entry points and central orchestration loops
 ├── brain/                  # Routing authority (think vs. react)
 ├── cortex/                 # The LLM compiler turning text into Mission DAGs
-├── execution/              # The engine running plans and enforcing Skill Contracts
+├── execution/              # The engine running plans, enforcing contracts, and inline recovery
 ├── infrastructure/         # Native OS adapters (e.g., Windows SystemController)
 ├── memory/                 # Pure-data storage for user preferences and traits
 ├── perception/             # Input handling (Speech & Text concurrent tracking)

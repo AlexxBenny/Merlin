@@ -87,6 +87,10 @@ class GoalState(BaseModel):
         subgoal_ids:  IDs of child goals
         priority:     Higher = more urgent (0 = default)
         progress:     0.0–1.0, computed from subgoal completion
+
+    Versioning (Decision System integration):
+        version:              Monotonically increasing version counter
+        refinement_history:   Audit trail of description changes
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -102,6 +106,26 @@ class GoalState(BaseModel):
     subgoal_ids: List[str] = Field(default_factory=list)
     priority: int = Field(default=0)
     progress: float = Field(default=0.0)
+
+    # ── Versioning (Decision System integration) ──
+    version: int = Field(default=1)
+    refinement_history: List[Dict[str, Any]] = Field(default_factory=list)
+
+    def refine(self, new_description: str) -> None:
+        """Refine goal description on user clarification.
+
+        Bumps version, records old description in history,
+        updates timestamp. Does NOT reset progress or status.
+        """
+        self.refinement_history.append({
+            "version": self.version,
+            "old_description": self.description,
+            "new_description": new_description,
+            "refined_at": time.time(),
+        })
+        self.version += 1
+        self.description = new_description
+        self.updated_at = time.time()
 
 
 # ---------------------------------------------------------------

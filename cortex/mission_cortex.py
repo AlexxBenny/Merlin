@@ -584,6 +584,10 @@ User query:
             available_skills = set(skill_manifest.keys())
             validate_mission_plan(
                 mission, available_skills, registry=self.registry,
+                entity_context=(
+                    conversation.unresolved_references
+                    if conversation else None
+                ),
             )
         except MissionValidationError as e:
             return FailureIR(
@@ -913,7 +917,11 @@ Rules (MANDATORY):
 - Output MUST conform to the schema exactly.
 - Do NOT invent skills.
 - Do NOT omit dependencies.
-- Do NOT infer implicit context.
+- Use conversation context and known entities when available.
+  Do NOT hallucinate paths, names, or values not present in context.
+- If the task requires processing content from an external source (file, email,
+  web page), include a skill that reads or retrieves that content BEFORE any
+  skill that processes it.
 - Skill names MUST use the format: domain.action or domain.action.variant
 - If the request cannot be compiled, output an error object.
 
@@ -924,6 +932,10 @@ REJECTION RULES — If you emit ANY of the following, the ENTIRE response will b
 - Skills not listed in Available Skills.
 - Empty inputs when the skill requires parameters.
 - depends_on entries that reference non-existent step indices.
+- Input keys that do not EXACTLY match the parameter names in the skill contract.
+  You MUST use EXACT parameter names from the skill's inputs/optional_inputs.
+  Do NOT invent, abbreviate, or modify parameter names.
+  Example: use "attachments" not "attachment_path", use "recipient" not "to".
 
 Execution Modes:
 - foreground: blocks mission completion, failure fails mission
@@ -1048,7 +1060,16 @@ User: "what are my latest emails"
 User: "draft an email to john@example.com about the project deadline"
 {{
   "nodes": [
-    {{"skill": "email.draft_message", "inputs": {{"to": "john@example.com", "subject": "Project Deadline", "prompt": "Draft a professional email about the project deadline"}}, "outputs": {{"draft_id": {{"name": "email.draft_message.draft_id", "type": "draft_identifier"}}}}, "depends_on": [], "mode": "foreground"}}
+    {{"skill": "email.draft_message", "inputs": {{"recipient": "john@example.com", "subject": "Project Deadline", "prompt": "Draft a professional email about the project deadline"}}, "outputs": {{"draft_id": {{"name": "email.draft_message.draft_id", "type": "draft_identifier"}}}}, "depends_on": [], "mode": "foreground"}}
+  ]
+}}
+
+User: "send the file report.pdf to alice@example.com"
+{{
+  "nodes": [
+    {{"skill": "fs.search_file", "inputs": {{"query": "report.pdf"}}, "outputs": {{"matches": {{"name": "fs.search_file.matches", "type": "file_ref_list"}}}}, "depends_on": [], "mode": "foreground"}},
+    {{"skill": "email.draft_message", "inputs": {{"recipient": "alice@example.com", "prompt": "Forward the attached file", "attachments": {{"$ref": {{"node": 0, "output": "matches"}}}}}}, "outputs": {{"draft_id": {{"name": "email.draft_message.draft_id", "type": "draft_identifier"}}}}, "depends_on": [0], "mode": "foreground"}},
+    {{"skill": "email.send_message", "inputs": {{"draft_id": {{"$ref": {{"node": 1, "output": "draft_id"}}}}}}, "outputs": {{"send_status": {{"name": "email.send_message.send_status", "type": "info_string"}}}}, "depends_on": [1], "mode": "foreground"}}
   ]
 }}
 

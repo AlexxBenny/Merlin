@@ -94,19 +94,41 @@ For time-deferred commands ("remind me in 5 minutes"):
   → Job stored in JsonTaskStore (survives restart)
 ```
 
-## Error Recovery
+## Error Recovery (Three-Tier)
 
 ```
-Skill execution fails
-  → MetaCognitionEngine.analyze_outcome()
-  → ExecutionSupervisor determines RepairAction:
-    → CONTINUE: skip and proceed
-    → RETRY: retry with backoff (within declared limits)
-    → FAIL: report failure
+Node execution fails
+  → MetaCognitionEngine.classify() → FailureVerdict (cause × scope)
   
+  Tier 1 — Inline Recovery (at point of failure):
+    → _attempt_inline_recovery()
+    → DecisionEngine.decide(verdict, snapshot)
+    → If ActionDecision + safe effect_type:
+        → Build ephemeral MissionNode
+        → executor.execute_node() (same pipeline)
+        → If succeeds: retry original node (re-evaluates preconditions)
+    → If escalation: fall through to post-execution
+    
+    Constraints:
+    - MAX_INLINE_RECOVERY = 2 per node
+    - Deduped: same (skill, inputs) never tried twice
+    - Safety: only effect_type ∈ {"reveal", "create", "maintain"}
+  
+  Tier 2 — Post-execution recovery (after plan completes):
+    → DecisionEngine.decide() on accumulated verdicts
+    → ActionDecision: recorded, causal graph linked
+    → AmbiguityDecision: logged (future: structured user prompt)
+    → EscalationDecision(GLOBAL): Tier 3
+    → EscalationDecision(USER): logged
+
+  Tier 3 — Cortex recompile:
+    → Refresh world state
+    → cortex.compile() with execution_failures context
+    → If new plan differs: execute recovery plan
+    → If identical: skip (infinite loop prevention)
+
 Entity NOT_FOUND (browser):
-  → Recovery recompile: cortex receives execution_failures context
-  → New plan generated (e.g., search instead of click)
+  → Recovery recompile with execution_failures context
   → Limited to 1 recompile attempt
   → If still fails: ask user or autonomous fallback
 ```

@@ -68,6 +68,9 @@ class ModifyDraftSkill(Skill):
         idempotent=False,
         data_freshness="snapshot",
         output_style="rich",
+        requires=["email_draft"],
+        produces=["email_draft"],
+        effect_type="maintain",
     )
 
     def __init__(self, content_llm: LLMClient, email_client: EmailClient,

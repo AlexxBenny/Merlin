@@ -22,8 +22,11 @@ Resolution priority order (enforced programmatically):
 """
 
 import re
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 class ReferenceResolutionError(Exception):
@@ -42,7 +45,8 @@ class ResolvedReference:
     list_key: Optional[str] = None
     resolved_value: Optional[Any] = None
     entity_hint: Optional[str] = None
-    resolution_source: Optional[str] = None  # "ordinal" | "entity" | "active" | "session"
+    entity_type: Optional[str] = None  # semantic type, e.g. "file_ref_list", "email_list"
+    resolution_source: Optional[str] = None  # "ordinal" | "entity" | "active" | "session" | "implicit_entity"
 
 
 @dataclass
@@ -172,6 +176,14 @@ class WorldResolver:
             if ctx.resolved_references:
                 return ctx
 
+        # ── Priority 2.5: Implicit entity binding (content match) ──
+        # When referential language detected but unresolved, check if
+        # query tokens match entity_registry value fields.
+        if entity_registry and not ctx.resolved_references:
+            cls._resolve_implicit_entity(user_text, entity_registry, ctx)
+            if ctx.resolved_references:
+                return ctx
+
         # ── Priority 2: Domain entity resolution ("that folder") ──
         if active_entity:
             cls._resolve_entity_reference(user_text, active_entity, ctx)
@@ -257,6 +269,91 @@ class WorldResolver:
                         resolution_source="entity_registry",
                     ))
                     break  # Only resolve first matching list
+
+    # Minimum normalized score to accept an implicit binding
+    _IMPLICIT_MATCH_THRESHOLD = 0.6
+    _MATCH_FIELDS = ("name", "title", "relative_path", "path", "anchor", "query")
+
+    @classmethod
+    def _resolve_implicit_entity(
+        cls,
+        text: str,
+        entity_registry: Dict[str, Any],
+        ctx: QueryContext,
+    ) -> None:
+        """Resolve implicit references by matching query tokens against entity values.
+
+        When the user says "the one in Gen AI Resume", this matches against
+        entity_registry entries whose values contain matching text fragments.
+
+        Scoring: normalized overlap = len(match) / len(field_value).
+        Threshold: 0.6 prevents false positives from common words.
+
+        Output: ResolvedReference with resolved_value as structured dict
+        and entity_type from EntityRecord.type (semantic type).
+
+        Bounded: O(E × F × P) where E=entities (≤50),
+        F=fields (≤6), P=phrases (≤10).
+        """
+        text_lower = text.lower()
+        best_match = None
+        best_score = 0.0
+        best_key = None
+        best_record_type = None
+
+        for key, record in entity_registry.items():
+            value = getattr(record, "value", record) if hasattr(record, "value") else record
+            record_type = getattr(record, "type", None)
+            items = value if isinstance(value, list) else [value]
+
+            for item in items[:10]:
+                if not isinstance(item, dict):
+                    continue
+                for field_name in cls._MATCH_FIELDS:
+                    field_val = item.get(field_name, "")
+                    if not field_val or not isinstance(field_val, str):
+                        continue
+                    field_lower = field_val.lower()
+                    if len(field_lower) < 3:
+                        continue
+
+                    # Full field value appears in query
+                    if field_lower in text_lower:
+                        score = 1.0  # Exact containment
+                        if score > best_score:
+                            best_score = score
+                            best_match = item
+                            best_key = key
+                            best_record_type = record_type
+                        continue
+
+                    # Query phrase appears in field value (normalized)
+                    words = text_lower.split()
+                    for i in range(len(words)):
+                        for j in range(i + 2, min(i + 6, len(words) + 1)):
+                            phrase = " ".join(words[i:j])
+                            if len(phrase) >= 5 and phrase in field_lower:
+                                score = len(phrase) / len(field_lower)
+                                if score > best_score:
+                                    best_score = score
+                                    best_match = item
+                                    best_key = key
+                                    best_record_type = record_type
+
+        if best_match and best_score >= cls._IMPLICIT_MATCH_THRESHOLD:
+            ctx.resolved_references.append(ResolvedReference(
+                resolved_value=best_match,
+                list_key=f"entity_registry.{best_key}",
+                entity_type=best_record_type,
+                resolution_source="implicit_entity",
+            ))
+            logger.info(
+                "[RESOLVER] Implicit entity binding: '%s' → %s "
+                "(score=%.2f, key=%s, type=%s)",
+                text[:50], str(best_match)[:80], best_score,
+                best_key, best_record_type,
+            )
+
 
     @classmethod
     def _resolve_entity_reference(
