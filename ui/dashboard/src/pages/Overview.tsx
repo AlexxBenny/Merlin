@@ -1,399 +1,258 @@
 import { useEffect, useState } from 'react'
-import { Cpu, HardDrive, MemoryStick, Clock, Zap, Battery, Activity, Wifi, Play, Pause, RotateCcw, Terminal, Rocket, Shield, TrendingUp } from 'lucide-react'
+import {
+  Cpu, HardDrive, MemoryStick, Clock, Zap, Battery, Activity, Wifi,
+  TrendingUp, Play, Pause, RotateCcw, Terminal, Rocket, Shield,
+} from 'lucide-react'
 import { api, type SystemState } from '../lib/api'
 
-/* ─── Circular Gauge with Glow ─── */
+/* ═══ Gauge Card ═══ */
 function Gauge({ value, label, color, glowColor, icon: Icon }: {
   value: number; label: string; color: string; glowColor: string; icon: typeof Cpu
 }) {
-  const radius = 45
-  const circumference = 2 * Math.PI * radius
-  const offset = circumference - (value / 100) * circumference
-  const displayValue = Math.round(value)
+  const r = 38, C = 2 * Math.PI * r
+  const offset = C - (value / 100) * C
+  const v = Math.round(value)
 
   return (
-    <div className="glass-card p-6 flex flex-col items-center gap-4 transition-transform duration-300 hover:scale-[1.02]">
-      <div className="relative w-28 h-28">
-        <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
-          <circle cx="50" cy="50" r={radius} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="6" />
+    <div className="card" style={{ padding: 18, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+      <div style={{ position: 'relative', width: 90, height: 90 }}>
+        <svg width="90" height="90" viewBox="0 0 100 100" style={{ transform: 'rotate(-90deg)' }}>
+          <circle cx="50" cy="50" r={r} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="5" />
           <defs>
-            <linearGradient id={`gauge-grad-${label}`} x1="0%" y1="0%" x2="100%" y2="100%">
+            <linearGradient id={`g-${label}`} x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stopColor={color} />
               <stop offset="100%" stopColor={color} stopOpacity="0.4" />
             </linearGradient>
           </defs>
-          <circle cx="50" cy="50" r={radius} fill="none"
-            stroke={`url(#gauge-grad-${label})`} strokeWidth="6"
-            strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset}
-            className="gauge-ring transition-all duration-1000"
-            style={{
-              '--gauge-color': glowColor,
-              filter: `drop-shadow(0 0 12px ${glowColor})`,
-            } as React.CSSProperties} />
+          <circle
+            cx="50" cy="50" r={r} fill="none"
+            stroke={`url(#g-${label})`} strokeWidth="5" strokeLinecap="round"
+            strokeDasharray={C} strokeDashoffset={offset}
+            style={{ filter: `drop-shadow(0 0 6px ${glowColor})`, transition: 'stroke-dashoffset 1s ease' }}
+          />
         </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-1"
-            style={{ background: color + '20' }}>
-            <Icon size={18} style={{ color }} />
-          </div>
-          <span className="text-xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
-            {displayValue}%
-          </span>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
+          <Icon size={15} style={{ color }} />
+          <span className="font-display" style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-1)' }}>{v}%</span>
         </div>
       </div>
-      <span className="text-xs font-medium tracking-wide uppercase" style={{ color: 'var(--color-text-secondary)' }}>
-        {label}
-      </span>
+      <span className="font-mono" style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.10em' }}>{label}</span>
     </div>
   )
 }
 
-/* ─── Uptime Card with Spinning Ring ─── */
+/* ═══ Uptime Card ═══ */
 function UptimeCard({ uptime }: { uptime: number }) {
-  const formatUptime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600)
-    const m = Math.floor((seconds % 3600) / 60)
-    const s = Math.floor(seconds % 60)
-    if (h > 0) return `${h}h ${m}m`
-    if (m > 0) return `${m}m ${s}s`
-    return `${s}s`
-  }
+  const h = Math.floor(uptime / 3600), m = Math.floor((uptime % 3600) / 60), s = Math.floor(uptime % 60)
+  const fmt = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`
 
   return (
-    <div className="glass-card p-6 flex flex-col items-center gap-4 transition-transform duration-300 hover:scale-[1.02]">
-      <div className="relative w-28 h-28">
-        <div className="absolute inset-0 rounded-full" style={{ border: '2px solid rgba(0,212,255,0.15)' }} />
-        <div className="absolute inset-2 rounded-full animate-spin-slow"
-          style={{ border: '1px dashed rgba(0,212,255,0.12)' }} />
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-1"
-            style={{ background: 'rgba(0,212,255,0.12)' }}>
-            <Clock size={18} style={{ color: 'var(--color-accent)' }} />
-          </div>
-          <span className="text-xl font-bold font-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {formatUptime(uptime)}
-          </span>
+    <div className="card" style={{ padding: 18, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+      <div style={{ position: 'relative', width: 90, height: 90 }}>
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid rgba(0,210,255,0.12)' }} />
+        <div className="animate-spin-slow" style={{ position: 'absolute', inset: 8, borderRadius: '50%', border: '1px dashed rgba(0,210,255,0.08)' }} />
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
+          <Clock size={15} style={{ color: 'var(--cyan)' }} />
+          <span className="font-display" style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-1)' }}>{fmt}</span>
         </div>
       </div>
-      <span className="text-xs font-medium tracking-wide uppercase" style={{ color: 'var(--color-text-secondary)' }}>
-        Uptime
-      </span>
+      <span className="font-mono" style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.10em' }}>Uptime</span>
     </div>
   )
 }
 
-/* ─── Battery Card with Shimmer ─── */
+/* ═══ Battery Card ═══ */
 function BatteryCard({ percent, charging }: { percent: number; charging: boolean }) {
+  const barColor = percent < 20 ? 'linear-gradient(90deg,#f43f5e,#dc2626)'
+    : percent < 50 ? 'linear-gradient(90deg,#f59e0b,#d97706)'
+    : 'linear-gradient(90deg,#10b981,#059669)'
+
   return (
-    <div className="glass-card p-5">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="relative">
-          <div className="w-12 h-12 rounded-xl flex items-center justify-center"
-            style={{ background: 'rgba(16,185,129,0.12)' }}>
-            <Battery size={22} style={{
-              color: percent < 20 ? 'var(--color-error)' : 'var(--color-success)'
-            }} />
+    <div className="card" style={{ padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ position: 'relative' }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(16,185,129,0.10)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Battery size={22} style={{ color: percent < 20 ? 'var(--rose)' : 'var(--emerald)' }} />
           </div>
           {charging && (
-            <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center"
-              style={{ background: 'var(--color-warning)', border: '2px solid var(--color-bg-primary)' }}>
-              <Zap size={10} style={{ color: '#000', fill: '#000' }} />
+            <div style={{ position: 'absolute', bottom: -2, right: -2, width: 16, height: 16, borderRadius: '50%', background: 'var(--amber)', border: '2px solid var(--bg1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Zap size={9} style={{ color: '#000', fill: '#000' }} />
             </div>
           )}
         </div>
-        <div className="flex-1">
-          <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>Battery</div>
-          <div className="flex items-center gap-1.5">
-            {charging && <Zap size={11} className="animate-pulse" style={{ color: 'var(--color-warning)' }} />}
-            <span className="text-xs" style={{ color: charging ? 'var(--color-warning)' : 'var(--color-text-muted)' }}>
-              {charging ? 'Charging' : 'On battery'}
-            </span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>Battery</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {charging && <Zap size={11} style={{ color: 'var(--amber)' }} />}
+            <span style={{ fontSize: 11, color: charging ? 'var(--amber)' : 'var(--text-3)' }}>{charging ? 'Charging' : 'On battery'}</span>
           </div>
         </div>
-        <span className="text-2xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
-          {Math.round(percent)}%
-        </span>
+        <span className="font-display" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-1)' }}>{Math.round(percent)}%</span>
       </div>
-      {/* Progress bar with shimmer */}
-      <div className="relative h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)' }}>
-        <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-700" style={{
-          width: `${percent}%`,
-          background: percent < 20
-            ? 'linear-gradient(90deg, #ef4444, #dc2626)'
-            : percent < 50
-            ? 'linear-gradient(90deg, #f59e0b, #d97706)'
-            : 'linear-gradient(90deg, #10b981, #059669)',
-        }} />
-        <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-700"
-          style={{
-            width: `${percent}%`,
-            background: 'linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.2) 50%, transparent 75%)',
-            backgroundSize: '200% 100%',
-            animation: 'shimmer 2s linear infinite',
-          }} />
-        <div className="absolute inset-y-0 left-0 rounded-full glow-emerald"
-          style={{ width: `${percent}%` }} />
+      <div style={{ height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.04)', overflow: 'hidden', marginTop: 10, position: 'relative' }}>
+        <div style={{ position: 'absolute', inset: 0, width: `${percent}%`, borderRadius: 3, background: barColor, transition: 'width 0.7s' }} />
       </div>
     </div>
   )
 }
 
-/* ─── API Server Card with Real Latency Graph ─── */
+/* ═══ API Server Card ═══ */
 function ApiServerCard({ missionState }: { missionState: string }) {
-  const [pingValues, setPingValues] = useState<number[]>([])
+  const [pings, setPings] = useState<number[]>([])
   const [online, setOnline] = useState(true)
 
   useEffect(() => {
-    const measurePing = async () => {
-      const start = performance.now()
-      try {
-        await api.getHealth()
-        const latency = Math.round(performance.now() - start)
-        setPingValues(prev => [...prev.slice(-19), latency])
-        setOnline(true)
-      } catch {
-        setPingValues(prev => [...prev.slice(-19), 0])
-        setOnline(false)
-      }
+    const measure = async () => {
+      const t0 = performance.now()
+      try { await api.getHealth(); setPings(p => [...p.slice(-19), Math.round(performance.now() - t0)]); setOnline(true) }
+      catch { setPings(p => [...p.slice(-19), 0]); setOnline(false) }
     }
-    measurePing()
-    const interval = setInterval(measurePing, 1500)
-    return () => clearInterval(interval)
+    measure()
+    const i = setInterval(measure, 1500)
+    return () => clearInterval(i)
   }, [])
 
-  const maxPing = Math.max(...pingValues, 1)
-  const latestPing = pingValues[pingValues.length - 1] || 0
+  const maxP = Math.max(...pings, 1), latest = pings[pings.length - 1] || 0
 
   return (
-    <div className="glass-card p-5">
-      <div className="flex items-start gap-3 mb-4">
-        <div className="relative">
-          <div className="w-12 h-12 rounded-xl flex items-center justify-center"
-            style={{ background: 'rgba(0,212,255,0.12)' }}>
-            <Wifi size={22} style={{ color: 'var(--color-accent)' }} />
+    <div className="card" style={{ padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
+        <div style={{ position: 'relative' }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: 'var(--cyan-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Wifi size={22} style={{ color: 'var(--cyan)' }} />
           </div>
-          <div className="absolute -bottom-1 -right-1 w-4 h-4">
-            <span className="absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping"
-              style={{ background: online ? 'var(--color-success)' : 'var(--color-error)' }} />
-            <span className="relative inline-flex rounded-full h-4 w-4"
-              style={{ background: online ? 'var(--color-success)' : 'var(--color-error)', border: '2px solid var(--color-bg-primary)' }} />
+          <div style={{ position: 'absolute', bottom: -2, right: -2, width: 11, height: 11 }}>
+            <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: online ? 'var(--emerald)' : 'var(--rose)', opacity: 0.75 }} className="animate-ping-dot" />
+            <span style={{ position: 'relative', display: 'block', width: 11, height: 11, borderRadius: '50%', background: online ? 'var(--emerald)' : 'var(--rose)', border: '2px solid var(--bg1)' }} />
           </div>
         </div>
-        <div className="flex-1">
-          <div className="flex items-start justify-between">
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
             <div>
-              <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>API Server</div>
-              <div className="text-xs font-mono" style={{ color: 'var(--color-text-muted)' }}>localhost:8420</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>API Server</div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)' }}>localhost:8420</div>
             </div>
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg"
-              style={{ background: online ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${online ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}` }}>
-              <div className="w-1.5 h-1.5 rounded-full" style={{ background: online ? 'var(--color-success)' : 'var(--color-error)' }} />
-              <span className="text-xs font-medium" style={{ color: online ? 'var(--color-success)' : 'var(--color-error)' }}>{online ? 'Online' : 'Offline'}</span>
-            </div>
+            <span className={`badge ${online ? 'badge-green' : 'badge-red'}`}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: online ? 'var(--emerald)' : 'var(--rose)' }} />
+              {online ? 'Online' : 'Offline'}
+            </span>
           </div>
         </div>
       </div>
-      {/* Stats row */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="space-y-1">
-          <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>Status</p>
-          <p className="text-xs font-semibold" style={{ color: online ? 'var(--color-success)' : 'var(--color-error)' }}>{online ? 'Online' : 'Offline'}</p>
-        </div>
-        <div className="space-y-1">
-          <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>Mode</p>
-          <p className="text-xs font-semibold" style={{ color: 'var(--color-text-primary)' }}>{missionState === 'idle' ? 'Standby' : 'Active'}</p>
-        </div>
-        <div className="space-y-1">
-          <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>Latency</p>
-          <p className="text-xs font-semibold" style={{ color: 'var(--color-accent)' }}>{latestPing}ms</p>
-        </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+        <div><p style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-3)' }}>Status</p><p style={{ fontSize: 12, fontWeight: 600, color: online ? 'var(--emerald)' : 'var(--rose)' }}>{online ? 'Online' : 'Offline'}</p></div>
+        <div><p style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-3)' }}>Mode</p><p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>{missionState === 'idle' ? 'Standby' : 'Active'}</p></div>
+        <div><p style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-3)' }}>Latency</p><p style={{ fontSize: 12, fontWeight: 600, color: 'var(--cyan)' }}>{latest}ms</p></div>
       </div>
-      {/* Mini ping graph — real latency */}
-      <div className="h-10 flex items-end gap-0.5">
-        {pingValues.map((ping, i) => (
-          <div
-            key={i}
-            className="flex-1 rounded-t transition-all duration-150"
-            style={{
-              height: `${Math.max((ping / maxPing) * 100, 4)}%`,
-              background: ping === 0 ? 'rgba(239,68,68,0.3)' : 'rgba(0,212,255,0.25)',
-            }}
-            onMouseEnter={e => (e.currentTarget.style.background = ping === 0 ? 'rgba(239,68,68,0.5)' : 'rgba(0,212,255,0.5)')}
-            onMouseLeave={e => (e.currentTarget.style.background = ping === 0 ? 'rgba(239,68,68,0.3)' : 'rgba(0,212,255,0.25)')}
-          />
+
+      <div style={{ height: 28, display: 'flex', alignItems: 'flex-end', gap: 1 }}>
+        {pings.map((p, i) => (
+          <div key={i} style={{ flex: 1, borderRadius: '2px 2px 0 0', height: `${Math.max((p / maxP) * 100, 4)}%`, background: p === 0 ? 'rgba(244,63,94,0.30)' : 'rgba(0,210,255,0.30)', transition: 'height 0.15s' }} />
         ))}
       </div>
     </div>
   )
 }
 
-/* ─── Activity Chart — Real CPU data ─── */
+/* ═══ Activity Chart ═══ */
 function ActivityChart({ cpuPercent }: { cpuPercent: number }) {
   const [data, setData] = useState<number[]>([])
 
-  // Accumulate real CPU readings over time
   useEffect(() => {
     if (cpuPercent === undefined) return
-    setData(prev => {
-      const updated = [...prev, Math.round(cpuPercent)]
-      return updated.slice(-30) // keep last 30 readings
-    })
+    setData(p => [...p, Math.round(cpuPercent)].slice(-30))
   }, [cpuPercent])
 
-  const maxValue = 100
-
-  // Compute real trend: compare recent half vs older half average
-  const computeTrend = () => {
+  const trend = (() => {
     if (data.length < 6) return null
     const mid = Math.floor(data.length / 2)
-    const older = data.slice(0, mid)
-    const newer = data.slice(mid)
-    const avgOlder = older.reduce((s, v) => s + v, 0) / older.length
-    const avgNewer = newer.reduce((s, v) => s + v, 0) / newer.length
-    if (avgOlder === 0) return null
-    return ((avgNewer - avgOlder) / avgOlder) * 100
-  }
-  const trend = computeTrend()
+    const a = data.slice(0, mid).reduce((s, v) => s + v, 0) / mid
+    const b = data.slice(mid).reduce((s, v) => s + v, 0) / (data.length - mid)
+    if (a === 0) return null
+    return ((b - a) / a) * 100
+  })()
   const trendUp = trend !== null && trend >= 0
 
   return (
-    <div className="glass-card p-6 h-full">
-      <div className="flex items-center justify-between mb-5">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-            style={{ background: 'rgba(0,212,255,0.12)' }}>
-            <Activity size={17} style={{ color: 'var(--color-accent)' }} />
+    <div className="card" style={{ padding: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--cyan-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Activity size={17} style={{ color: 'var(--cyan)' }} />
           </div>
           <div>
-            <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>CPU Activity</h3>
-            <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Live · {data.length} readings</p>
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>CPU Activity</h3>
+            <p style={{ fontSize: 11, color: 'var(--text-3)' }}>Live · {data.length} readings</p>
           </div>
         </div>
         {trend !== null && (
-          <div className="flex items-center gap-1.5" style={{ color: trendUp ? 'var(--color-warning)' : 'var(--color-success)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: trendUp ? 'var(--amber)' : 'var(--emerald)' }}>
             <TrendingUp size={14} style={{ transform: trendUp ? 'none' : 'scaleY(-1)' }} />
-            <span className="text-xs font-medium">{trendUp ? '+' : ''}{trend.toFixed(1)}%</span>
+            <span style={{ fontSize: 12, fontWeight: 500 }}>{trendUp ? '+' : ''}{trend.toFixed(1)}%</span>
           </div>
         )}
       </div>
 
-      {/* Chart */}
-      <div className="relative h-44">
-        {/* Y-axis labels */}
-        <div className="absolute left-0 top-0 bottom-6 w-8 flex flex-col justify-between text-[10px]"
-          style={{ color: 'var(--color-text-muted)' }}>
-          <span>100</span>
-          <span>50</span>
-          <span>0</span>
+      <div style={{ position: 'relative', height: 100 }}>
+        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 18, width: 28, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-3)' }}>
+          <span>100</span><span>50</span><span>0</span>
         </div>
-
-        {/* Grid lines */}
-        <div className="absolute left-10 right-0 top-0 bottom-6">
-          {[0, 1, 2].map(i => (
-            <div key={i} className="absolute w-full"
-              style={{ top: `${i * 50}%`, borderTop: '1px dashed rgba(255,255,255,0.04)' }} />
+        {[0, 1, 2].map(i => (
+          <div key={i} style={{ position: 'absolute', left: 32, right: 0, top: `${i * 41}px`, borderTop: '1px dashed rgba(255,255,255,0.03)' }} />
+        ))}
+        <div style={{ position: 'absolute', left: 32, right: 0, top: 0, bottom: 18, display: 'flex', alignItems: 'flex-end', gap: 2 }}>
+          {data.map((v, i) => (
+            <div key={i} style={{
+              flex: 1, borderRadius: '2px 2px 0 0', transition: 'height 0.5s',
+              height: `${Math.max((v / 100) * 100, 2)}%`,
+              background: v > 80 ? 'rgba(244,63,94,0.50)' : v > 50 ? 'rgba(245,158,11,0.50)' : 'rgba(0,210,255,0.40)',
+            }} />
           ))}
         </div>
-
-        {/* Bars */}
-        <div className="absolute left-10 right-0 top-0 bottom-6 flex items-end gap-0.5">
-          {data.map((value, i) => (
-            <div
-              key={i}
-              className="flex-1 rounded-t transition-all duration-500 relative group"
-              style={{
-                height: `${Math.max((value / maxValue) * 100, 2)}%`,
-                background: value > 80
-                  ? 'linear-gradient(to top, rgba(239,68,68,0.7), rgba(239,68,68,0.3))'
-                  : value > 50
-                  ? 'linear-gradient(to top, rgba(245,158,11,0.7), rgba(245,158,11,0.3))'
-                  : 'linear-gradient(to top, rgba(0,212,255,0.6), rgba(0,212,255,0.25))',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.opacity = '0.8')}
-              onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
-            >
-              <div className="absolute -top-7 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded text-[10px] font-mono opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10"
-                style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-primary)' }}>
-                {value}%
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* X-axis labels */}
-        <div className="absolute left-10 right-0 bottom-0 flex justify-between text-[10px]"
-          style={{ color: 'var(--color-text-muted)' }}>
-          <span>{data.length >= 30 ? '~90s ago' : 'Start'}</span>
-          <span>Now</span>
+        <div style={{ position: 'absolute', left: 32, right: 0, bottom: 0, display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-3)' }}>
+          <span>{data.length >= 30 ? '~60s ago' : 'Start'}</span><span>Now</span>
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="flex items-center gap-5 mt-3 pt-3" style={{ borderTop: '1px solid var(--color-border)' }}>
-        <div className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-full" style={{ background: 'var(--color-accent)' }} />
-          <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}>Normal (&lt;50%)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#f59e0b' }} />
-          <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}>Moderate (50-80%)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#ef4444' }} />
-          <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}>High (&gt;80%)</span>
-        </div>
+      <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+        {[{ c: 'var(--cyan)', l: 'Normal' }, { c: '#f59e0b', l: 'Moderate' }, { c: '#f43f5e', l: 'High' }].map(({ c, l }) => (
+          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 7, height: 7, borderRadius: '50%', background: c }} />
+            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{l}</span>
+          </div>
+        ))}
       </div>
     </div>
   )
 }
 
-/* ─── Quick Actions ─── */
-const actions = [
-  { icon: Play, label: 'Start', color: '#10b981', description: 'Launch services' },
-  { icon: Pause, label: 'Pause', color: '#f59e0b', description: 'Pause all tasks' },
-  { icon: RotateCcw, label: 'Restart', color: '#00d4ff', description: 'Restart system' },
-  { icon: Terminal, label: 'Console', color: '#a78bfa', description: 'Open terminal' },
-  { icon: Rocket, label: 'Deploy', color: '#00d4ff', description: 'Deploy changes' },
-  { icon: Shield, label: 'Secure', color: '#10b981', description: 'Security scan' },
+/* ═══ Quick Actions ═══ */
+const ACTIONS = [
+  { icon: Play,       label: 'Start',   color: '#10b981' },
+  { icon: Pause,      label: 'Pause',   color: '#f59e0b' },
+  { icon: RotateCcw,  label: 'Restart', color: '#00d2ff' },
+  { icon: Terminal,   label: 'Console', color: '#8b5cf6' },
+  { icon: Rocket,     label: 'Deploy',  color: '#00d2ff' },
+  { icon: Shield,     label: 'Secure',  color: '#10b981' },
 ]
 
 function QuickActions() {
   return (
-    <div className="glass-card p-6">
-      <div className="flex items-center gap-3 mb-5">
-        <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-          style={{ background: 'rgba(167,139,250,0.12)' }}>
-          <Rocket size={17} style={{ color: '#a78bfa' }} />
-        </div>
-        <div>
-          <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>Quick Actions</h3>
-          <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Common operations</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2.5">
-        {actions.map(action => (
-          <button
-            key={action.label}
-            className="group flex flex-col items-center gap-2 p-3.5 rounded-xl transition-all duration-300 hover:scale-105 active:scale-95"
-            style={{
-              background: `${action.color}10`,
-              border: `1px solid ${action.color}20`,
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = `${action.color}20`
-              e.currentTarget.style.borderColor = `${action.color}40`
-              e.currentTarget.style.boxShadow = `0 0 20px ${action.color}30, 0 0 40px ${action.color}10`
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = `${action.color}10`
-              e.currentTarget.style.borderColor = `${action.color}20`
-              e.currentTarget.style.boxShadow = 'none'
-            }}
+    <div className="card" style={{ padding: 18, width: 200 }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-3)', letterSpacing: '0.10em', marginBottom: 10 }}>Quick Actions</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        {ACTIONS.map(({ icon: Icon, label, color }) => (
+          <button key={label} style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+            padding: '10px 6px', borderRadius: 9, border: `1px solid ${color}25`,
+            background: `${color}0d`, color, cursor: 'pointer', transition: 'all 0.15s',
+          }}
+            onMouseEnter={e => { e.currentTarget.style.background = `${color}22`; e.currentTarget.style.transform = 'scale(1.04)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = `${color}0d`; e.currentTarget.style.transform = 'scale(1)' }}
           >
-            <action.icon size={22} className="transition-transform group-hover:scale-110" style={{ color: action.color }} />
-            <span className="text-xs font-medium" style={{ color: 'var(--color-text-primary)' }}>{action.label}</span>
-            <span className="text-[10px] hidden sm:block" style={{ color: 'var(--color-text-muted)' }}>{action.description}</span>
+            <Icon size={15} />
+            <span style={{ fontSize: 10, fontWeight: 500 }}>{label}</span>
           </button>
         ))}
       </div>
@@ -401,65 +260,56 @@ function QuickActions() {
   )
 }
 
-/* ─── Overview Page ─── */
+/* ═══ Overview Page ═══ */
 export default function Overview() {
-  const [system, setSystem] = useState<SystemState | null>(null)
-  const [error, setError] = useState('')
+  const [sys, setSys] = useState<SystemState | null>(null)
+  const [err, setErr] = useState('')
 
   useEffect(() => {
-    const load = () => {
-      api.getSystem().then(setSystem).catch(e => setError(e.message))
-    }
+    const load = () => api.getSystem().then(setSys).catch(e => setErr(e.message))
     load()
-    const interval = setInterval(load, 3000)
-    return () => clearInterval(interval)
+    const i = setInterval(load, 3000)
+    return () => clearInterval(i)
   }, [])
 
-  if (error) return (
-    <div className="flex items-center justify-center h-[80vh]">
-      <div className="glass-card p-10 text-center max-w-sm">
-        <div className="w-14 h-14 rounded-2xl mx-auto mb-5 flex items-center justify-center"
-          style={{ background: 'rgba(239,68,68,0.1)' }}>
-          <Zap size={28} style={{ color: 'var(--color-error)' }} />
-        </div>
-        <p className="text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>Connection Failed</p>
-        <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>{error}</p>
-        <p className="text-xs mt-3" style={{ color: 'var(--color-text-muted)' }}>
-          Make sure MERLIN is running with <code className="font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>--ui</code> flag
+  if (err) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '70vh' }}>
+      <div className="card" style={{ padding: 40, textAlign: 'center', maxWidth: 340 }}>
+        <Zap size={28} style={{ color: 'var(--rose)', marginBottom: 12 }} />
+        <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)', marginBottom: 6 }}>Connection Failed</p>
+        <p style={{ fontSize: 12, color: 'var(--text-3)' }}>{err}</p>
+        <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 10 }}>
+          Run MERLIN with <code style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--bg3)' }}>--ui</code> flag
         </p>
       </div>
     </div>
   )
 
-  if (!system) return (
-    <div className="flex items-center justify-center h-[80vh]">
-      <div className="animate-pulse-glow w-3 h-3 rounded-full" style={{ background: 'var(--color-accent)' }} />
+  if (!sys) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '70vh' }}>
+      <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--cyan)' }} className="animate-bop" />
     </div>
   )
 
   return (
-    <div className="space-y-6">
-      {/* Metrics Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Gauge value={system.cpu_percent} label="CPU" color="#00d4ff" glowColor="rgba(0,212,255,0.4)" icon={Cpu} />
-        <Gauge value={system.memory_percent} label="Memory" color="#a78bfa" glowColor="rgba(167,139,250,0.4)" icon={MemoryStick} />
-        <Gauge value={system.disk_percent} label="Disk" color="#f59e0b" glowColor="rgba(245,158,11,0.4)" icon={HardDrive} />
-        <UptimeCard uptime={system.uptime_seconds} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Row 1: Gauges */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+        <Gauge value={sys.cpu_percent} label="CPU" color="#00d2ff" glowColor="rgba(0,210,255,0.50)" icon={Cpu} />
+        <Gauge value={sys.memory_percent} label="Memory" color="#8b5cf6" glowColor="rgba(139,92,246,0.50)" icon={MemoryStick} />
+        <Gauge value={sys.disk_percent} label="Disk" color="#f59e0b" glowColor="rgba(245,158,11,0.50)" icon={HardDrive} />
+        <UptimeCard uptime={sys.uptime_seconds} />
       </div>
 
-      {/* Battery + API Server */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {system.battery_percent !== undefined && (
-          <BatteryCard percent={system.battery_percent} charging={!!system.battery_charging} />
-        )}
-        <ApiServerCard missionState={system.mission_state} />
+      {/* Row 2: Battery + API */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        {sys.battery_percent !== undefined && <BatteryCard percent={sys.battery_percent} charging={!!sys.battery_charging} />}
+        <ApiServerCard missionState={sys.mission_state} />
       </div>
 
-      {/* Activity Chart + Quick Actions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <ActivityChart cpuPercent={system.cpu_percent} />
-        </div>
+      {/* Row 3: Chart + Quick Actions */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: 12 }}>
+        <ActivityChart cpuPercent={sys.cpu_percent} />
         <QuickActions />
       </div>
     </div>

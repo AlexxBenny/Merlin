@@ -1,14 +1,12 @@
-# ui/widget/widget.py
-
 """
 MERLIN Desktop Widget — Floating assistant orb with chat panel.
 
 PySide6-based frameless, always-on-top circular orb that:
 - Sits in the top-right corner of the primary screen
-- Idle: dark translucent circle with MERLIN icon text
-- Processing: cyan glow pulse animation
-- Disconnected: grey appearance
-- Click: expands to ~300×400 chat panel with SSE streaming
+- Idle:       spinning conic-gradient ring around dark core with "M" letter
+- Processing: particles orbit + fast ring spin + cyan inner pulse
+- Disconnected: grey muted appearance
+- Click: expands to ~300×420 chat panel with typing indicator & message bubbles
 - Escape/click outside: collapses back to orb
 
 Communicates exclusively through the API server (http://localhost:8420).
@@ -17,6 +15,7 @@ No MERLIN core imports.
 
 import json
 import logging
+import math
 import sys
 import time
 import threading
@@ -24,25 +23,22 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────
-# Check for PySide6
-# ─────────────────────────────────────────────────────────────
-
 try:
     from PySide6.QtWidgets import (
         QApplication, QWidget, QVBoxLayout, QHBoxLayout,
         QLabel, QLineEdit, QPushButton, QScrollArea,
-        QGraphicsDropShadowEffect, QSizePolicy,
+        QSizePolicy, QGraphicsDropShadowEffect,
     )
     from PySide6.QtCore import (
-        Qt, QTimer, QPropertyAnimation, QEasingCurve,
-        QPoint, QSize, Signal, QThread, QUrl, QEvent,
+        Qt, QTimer, QPoint, QPointF, QRectF, QSizeF,
+        Signal, QThread, QEvent, QPropertyAnimation,
+        QEasingCurve,
     )
     from PySide6.QtGui import (
         QColor, QPainter, QBrush, QPen, QFont, QFontMetrics,
-        QLinearGradient, QRadialGradient, QIcon, QCursor,
+        QLinearGradient, QRadialGradient, QConicalGradient,
+        QIcon, QCursor, QPainterPath, QPixmap,
     )
-    from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
     HAS_PYSIDE6 = True
 except ImportError:
     HAS_PYSIDE6 = False
@@ -62,32 +58,36 @@ except ImportError:
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-API_BASE = "http://localhost:8420"
-HEALTH_INTERVAL_MS = 5000
-ORB_SIZE = 60
-PANEL_WIDTH = 320
-PANEL_HEIGHT = 440
+API_BASE          = "http://localhost:8420"
+HEALTH_INTERVAL   = 5000   # ms
+ORB_SIZE          = 80     # slightly bigger for the ring
+PANEL_WIDTH       = 320
+PANEL_HEIGHT      = 460
+ANIM_INTERVAL     = 20     # ms  → ~50 fps
 
-# Colors
-COLOR_BG_DARK = QColor(18, 18, 24)
-COLOR_BG_PANEL = QColor(24, 24, 32, 240)
-COLOR_ACCENT = QColor(0, 200, 255)       # Cyan
-COLOR_ACCENT_DIM = QColor(0, 120, 180)
-COLOR_GREY = QColor(80, 80, 90)
-COLOR_TEXT = QColor(220, 220, 230)
-COLOR_TEXT_DIM = QColor(140, 140, 155)
-COLOR_USER_BUBBLE = QColor(45, 45, 60)
-COLOR_BOT_BUBBLE = QColor(30, 80, 100)
-COLOR_INPUT_BG = QColor(35, 35, 48)
-COLOR_HOVER = QColor(0, 200, 255, 30)
+# ── Palette ────────────────────────────────────────────────
+C_BG_CORE      = QColor(13,  13,  20)
+C_BG_PANEL     = QColor(16,  16,  26,  245)
+C_ACCENT       = QColor(0,   200, 255)
+C_ACCENT_DIM   = QColor(0,   110, 190)
+C_ACCENT_GLOW  = QColor(0,   180, 255, 60)
+C_GREY         = QColor(70,  70,  82)
+C_RING_1       = QColor(0,   200, 255)
+C_RING_2       = QColor(0,    80, 180)
+C_TEXT         = QColor(215, 228, 245)
+C_TEXT_DIM     = QColor(130, 150, 175)
+C_USER_BUBBLE  = QColor(0,   90,  160, 60)
+C_BOT_BUBBLE   = QColor(255, 255, 255, 10)
+C_INPUT_BG     = QColor(28,  28,  42)
+C_BORDER_SOFT  = QColor(0,   180, 255, 40)
+C_SEPARATOR    = QColor(255, 255, 255, 13)
 
 
 # ─────────────────────────────────────────────────────────────
-# Chat Worker (background thread for API calls)
+# Chat Worker
 # ─────────────────────────────────────────────────────────────
 
 class ChatWorker(QThread):
-    """Background thread for chat API calls."""
     response_ready = Signal(str)
     error_occurred = Signal(str)
 
@@ -100,7 +100,6 @@ class ChatWorker(QThread):
             if _requests_mod is None:
                 self.error_occurred.emit("requests library not installed")
                 return
-
             resp = _requests_mod.post(
                 f"{API_BASE}/api/v1/chat",
                 json={"message": self.message},
@@ -110,301 +109,506 @@ class ChatWorker(QThread):
                 data = resp.json()
                 self.response_ready.emit(data.get("response", "No response."))
             else:
-                self.error_occurred.emit(f"API error: {resp.status_code}")
+                self.error_occurred.emit(f"API error {resp.status_code}")
         except Exception as e:
-            if 'ConnectionError' in type(e).__name__:
+            if "ConnectionError" in type(e).__name__:
                 self.error_occurred.emit("Cannot connect to MERLIN API.")
             else:
                 self.error_occurred.emit(str(e))
 
 
 # ─────────────────────────────────────────────────────────────
-# Chat Bubble Widget
+# Chat Bubble
 # ─────────────────────────────────────────────────────────────
 
 class ChatBubble(QWidget):
-    """Individual chat message bubble."""
+    """Rounded message bubble — user right / bot left / error left-red."""
 
-    def __init__(self, text: str, is_user: bool, parent=None):
+    # kind: "user" | "bot" | "error"
+    def __init__(self, text: str, kind: str = "bot", parent=None):
         super().__init__(parent)
         self.text = text
-        self.is_user = is_user
-        self._setup_ui()
+        self.kind = kind
+        self._setup()
 
-    def _setup_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+    def _setup(self):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 3, 10, 3)
 
-        label = QLabel(self.text)
+        label = QLabel()
+        # ── CRITICAL: always plain text — never let Qt parse HTML/rich ──
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setText(self.text)
         label.setWordWrap(True)
-        label.setFont(QFont("Segoe UI", 9))
-        label.setStyleSheet(f"""
-            QLabel {{
-                background-color: {COLOR_USER_BUBBLE.name() if self.is_user else COLOR_BOT_BUBBLE.name()};
-                color: {COLOR_TEXT.name()};
-                border-radius: 10px;
-                padding: 8px 12px;
-            }}
-        """)
+        label.setFont(QFont("Segoe UI", 10))
         label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        label.setMaximumWidth(PANEL_WIDTH - 60)
+        # max bubble width = 78% of panel, leaving margin on opposite side
+        label.setMaximumWidth(int(PANEL_WIDTH * 0.78))
 
-        if self.is_user:
-            layout.addStretch()
-            layout.addWidget(label)
-        else:
-            layout.addWidget(label)
-            layout.addStretch()
+        if self.kind == "user":
+            label.setStyleSheet("""
+                QLabel {
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                        stop:0 rgba(0,130,230,90), stop:1 rgba(0,85,170,70));
+                    color: rgba(220,238,255,235);
+                    border-radius: 16px;
+                    border-bottom-right-radius: 4px;
+                    border: 1px solid rgba(0,190,255,65);
+                    padding: 9px 13px;
+                }
+            """)
+            lay.addStretch()
+            lay.addWidget(label)
+
+        elif self.kind == "error":
+            # Distinct red-tinted style for API / connection errors
+            label.setStyleSheet("""
+                QLabel {
+                    background: rgba(160,30,30,55);
+                    color: rgba(255,190,185,230);
+                    border-radius: 16px;
+                    border-bottom-left-radius: 4px;
+                    border: 1px solid rgba(220,80,70,60);
+                    padding: 9px 13px;
+                }
+            """)
+            lay.addWidget(label)
+            lay.addStretch()
+
+        else:  # bot
+            label.setStyleSheet("""
+                QLabel {
+                    background: rgba(255,255,255,8);
+                    color: rgba(205,222,242,220);
+                    border-radius: 16px;
+                    border-bottom-left-radius: 4px;
+                    border: 1px solid rgba(255,255,255,16);
+                    padding: 9px 13px;
+                }
+            """)
+            lay.addWidget(label)
+            lay.addStretch()
+
+
+class TypingBubble(QWidget):
+    """Animated three-dot typing indicator — left-aligned inside a bot-style pill."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(35)
+        self.setFixedHeight(40)
+
+    def _tick(self):
+        self._phase = (self._phase + 0.09) % (2 * math.pi)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pill_w, pill_h = 62, 32
+        pill_x = 10
+        pill_y = (self.height() - pill_h) // 2
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(pill_x, pill_y, pill_w, pill_h), 16, 16)
+        p.fillPath(path, QBrush(QColor(255, 255, 255, 10)))
+        p.setPen(QPen(QColor(255, 255, 255, 18), 1))
+        p.drawPath(path)
+        dot_cx = pill_x + 14
+        cy = self.height() / 2.0
+        for i in range(3):
+            t      = self._phase + i * 1.05
+            offset = -3.5 * math.sin(t)
+            alpha  = int(140 + 100 * (0.5 + 0.5 * math.sin(t)))
+            c = QColor(0, 200, 255, max(40, min(255, alpha)))
+            p.setBrush(QBrush(c))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(dot_cx + i * 16, cy + offset), 3.5, 3.5)
+
+    def stop(self):
+        self._timer.stop()
 
 
 # ─────────────────────────────────────────────────────────────
-# MERLIN Orb Widget
+# MERLIN Orb — main widget
 # ─────────────────────────────────────────────────────────────
 
 class MerlinOrb(QWidget):
-    """Floating MERLIN assistant orb with expandable chat panel."""
 
     def __init__(self):
         super().__init__()
-        self._expanded = False
-        self._connected = False
-        self._processing = False
-        self._glow_opacity = 0.0
-        self._chat_worker: Optional[ChatWorker] = None
+        self._expanded    = False
+        self._connected   = False
+        self._processing  = False
+
+        # Orb animation state
+        self._ring_angle   = 0.0      # outer ring rotation (deg)
+        self._inner_angle  = 0.0      # inner highlight rotation
+        self._glow_phase   = 0.0      # pulsing glow
+        self._morph_phase  = 0.0      # blob morphing
+        self._particles: list[dict] = self._init_particles()
+
+        self._typing_widget: Optional[TypingBubble] = None
+        self._chat_worker:  Optional[ChatWorker]    = None
 
         self._setup_window()
-        self._setup_orb_ui()
-        self._setup_panel_ui()
+        self._setup_panel()
+        self._setup_anim_timer()
         self._setup_health_timer()
         self._position_window()
 
-    # ─── Window setup ───────────────────────────────────────
+    # ── window ───────────────────────────────────────────────
 
     def _setup_window(self):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool  # Don't show in taskbar
+            | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(ORB_SIZE, ORB_SIZE)
 
     def _position_window(self):
-        """Position in top-right corner of primary screen."""
         screen = QApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
-            x = geo.right() - ORB_SIZE - 20
-            y = geo.top() + 40
-            self.move(x, y)
+            self.move(geo.right() - ORB_SIZE - 20, geo.top() + 40)
 
-    # ─── Orb UI ─────────────────────────────────────────────
+    # ── particles ────────────────────────────────────────────
 
-    def _setup_orb_ui(self):
-        """Set up the circular orb."""
-        # Glow animation
-        self._glow_timer = QTimer(self)
-        self._glow_timer.timeout.connect(self._animate_glow)
-        self._glow_phase = 0.0
+    def _init_particles(self) -> list[dict]:
+        particles = []
+        for i in range(5):
+            particles.append({
+                "angle":  (360 / 5) * i,
+                "speed":  0.6 + i * 0.15,
+                "radius": 36 + (i % 3) * 4,
+                "size":   2.0 + (i % 2) * 1.0,
+                "life":   (i / 5.0),
+            })
+        return particles
+
+    # ── animation timer ──────────────────────────────────────
+
+    def _setup_anim_timer(self):
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._tick_anim)
+        self._anim_timer.start(ANIM_INTERVAL)
+
+    def _tick_anim(self):
+        speed = 2.5 if self._processing else 1.0
+
+        self._ring_angle   = (self._ring_angle  + 0.9  * speed) % 360
+        self._inner_angle  = (self._inner_angle - 1.3  * speed) % 360
+        self._glow_phase  += 0.04 * speed
+        self._morph_phase += 0.015
+
+        for pt in self._particles:
+            pt["angle"] = (pt["angle"] + pt["speed"] * speed) % 360
+            pt["life"]  = (pt["life"]  + 0.003 * speed) % 1.0
+
+        if not self._expanded:
+            self.update()
+
+    # ── paint ────────────────────────────────────────────────
 
     def paintEvent(self, event):
-        """Custom paint for the orb."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         if self._expanded:
-            # Draw panel background
-            painter.setBrush(QBrush(COLOR_BG_PANEL))
-            painter.setPen(QPen(COLOR_ACCENT_DIM if self._connected else COLOR_GREY, 1))
-            painter.drawRoundedRect(0, 0, self.width(), self.height(), 16, 16)
+            self._paint_panel_bg()
             return
+        self._paint_orb()
 
-        # Draw orb
-        center_x = self.width() // 2
-        center_y = self.height() // 2
-        radius = ORB_SIZE // 2 - 2
+    def _paint_panel_bg(self):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 18, 18)
+        p.fillPath(path, QBrush(C_BG_PANEL))
+        # top accent line
+        grad = QLinearGradient(0, 0, self.width(), 0)
+        grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+        grad.setColorAt(0.5, QColor(0, 200, 255, 90))
+        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QBrush(grad), 1))
+        p.drawLine(18, 0, self.width() - 18, 0)
+        # border
+        border_col = C_ACCENT if self._connected else C_GREY
+        border_col.setAlpha(50)
+        p.setPen(QPen(border_col, 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
 
-        # Glow effect (when processing)
-        if self._processing and self._connected:
-            glow_color = QColor(COLOR_ACCENT)
-            glow_color.setAlphaF(self._glow_opacity * 0.3)
-            glow_radius = radius + 8
-            gradient = QRadialGradient(center_x, center_y, glow_radius)
-            gradient.setColorAt(0, glow_color)
-            gradient.setColorAt(1, QColor(0, 0, 0, 0))
-            painter.setBrush(QBrush(gradient))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(
-                center_x - glow_radius, center_y - glow_radius,
-                glow_radius * 2, glow_radius * 2,
-            )
+    def _paint_orb(self):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Main circle
+        cx = self.width()  / 2.0
+        cy = self.height() / 2.0
+        r  = ORB_SIZE / 2.0 - 4
+
+        # ── ambient glow ──────────────────────────────────
+        glow_a = int(30 + 20 * math.sin(self._glow_phase)) if self._connected else 10
+        glow_r = r + 14
+        glow_g = QRadialGradient(cx, cy, glow_r)
+        glow_g.setColorAt(0.0, QColor(0, 180, 255, glow_a))
+        glow_g.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setBrush(QBrush(glow_g))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), glow_r, glow_r)
+
+        # ── outer spinning ring (conic simulation) ────────
         if self._connected:
-            bg = QColor(COLOR_BG_DARK)
-            border = COLOR_ACCENT if self._processing else COLOR_ACCENT_DIM
+            ring_pen_w = 2.5
+            steps = 60
+            for i in range(steps):
+                angle_deg = self._ring_angle + (360.0 / steps) * i
+                angle_rad = math.radians(angle_deg)
+                t = (i / steps)
+                # colour cycles blue → cyan → blue
+                alpha = int(60 + 195 * (0.5 + 0.5 * math.sin(t * 2 * math.pi)))
+                hue   = int(195 + 25 * math.sin(t * math.pi))
+                seg_c = QColor.fromHsv(hue, 220, 255, alpha)
+                p.setPen(QPen(seg_c, ring_pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                a1 = -self._ring_angle - (360.0 / steps) * i
+                span = 360.0 / steps
+                p.drawArc(
+                    QRectF(cx - r, cy - r, r * 2, r * 2),
+                    int(a1 * 16), int(span * 16),
+                )
         else:
-            bg = QColor(50, 50, 55)
-            border = COLOR_GREY
+            p.setPen(QPen(C_GREY, 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), r, r)
 
-        painter.setBrush(QBrush(bg))
-        painter.setPen(QPen(border, 2))
-        painter.drawEllipse(center_x - radius, center_y - radius, radius * 2, radius * 2)
+        # ── inner highlight arc ───────────────────────────
+        if self._connected:
+            hi_g = QConicalGradient(cx, cy, self._inner_angle)
+            hi_g.setColorAt(0.0, QColor(0, 220, 255, 90))
+            hi_g.setColorAt(0.25, QColor(0, 80,  200, 30))
+            hi_g.setColorAt(0.5, QColor(0, 220, 255, 10))
+            hi_g.setColorAt(1.0, QColor(0, 220, 255, 90))
+            p.setPen(QPen(QBrush(hi_g), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), r - 3, r - 3)
 
-        # Text
-        painter.setPen(QPen(COLOR_ACCENT if self._connected else COLOR_GREY))
-        font = QFont("Segoe UI", 10, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "M")
+        # ── core circle ───────────────────────────────────
+        core_g = QRadialGradient(cx - r * 0.2, cy - r * 0.25, r * 1.2)
+        core_g.setColorAt(0.0, QColor(22, 35, 52))
+        core_g.setColorAt(0.6, QColor(13, 13, 20))
+        core_g.setColorAt(1.0, QColor(8,  8,  14))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(core_g))
+        p.drawEllipse(QPointF(cx, cy), r - 2, r - 2)
 
-    def _animate_glow(self):
-        """Pulse glow animation."""
-        import math
-        self._glow_phase += 0.1
-        self._glow_opacity = (math.sin(self._glow_phase) + 1) / 2
-        self.update()
+        # ── inner glow pulse ──────────────────────────────
+        if self._connected:
+            pulse_a = int(18 + 14 * math.sin(self._glow_phase * 1.3))
+            inner_g = QRadialGradient(cx, cy, r * 0.75)
+            inner_g.setColorAt(0.0, QColor(0, 200, 255, pulse_a))
+            inner_g.setColorAt(1.0, QColor(0,   0,   0, 0))
+            p.setBrush(QBrush(inner_g))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx, cy), r - 2, r - 2)
 
-    # ─── Panel UI ───────────────────────────────────────────
+        # ── "M" letter ────────────────────────────────────
+        letter_color = C_ACCENT if self._connected else C_GREY
+        p.setPen(QPen(letter_color))
+        font = QFont("Segoe UI", 16, QFont.Weight.Bold)
+        p.setFont(font)
+        p.drawText(QRectF(0, 0, self.width(), self.height()),
+                   Qt.AlignmentFlag.AlignCenter, "M")
 
-    def _setup_panel_ui(self):
-        """Set up the expandable chat panel (hidden initially)."""
-        self._panel_widget = QWidget(self)
-        self._panel_widget.hide()
+        # ── orbiting particles ────────────────────────────
+        if self._connected:
+            for pt in self._particles:
+                life    = pt["life"]
+                alpha   = int(200 * math.sin(life * math.pi))
+                if alpha < 20:
+                    continue
+                ang_rad = math.radians(pt["angle"])
+                px  = cx + pt["radius"] * math.cos(ang_rad)
+                py  = cy + pt["radius"] * math.sin(ang_rad)
+                sz  = pt["size"] * (0.5 + 0.5 * math.sin(life * math.pi))
+                pc  = QColor(0, 200, 255, alpha)
+                p.setBrush(QBrush(pc))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QPointF(px, py), sz, sz)
 
-        layout = QVBoxLayout(self._panel_widget)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+    # ── panel UI ─────────────────────────────────────────────
 
-        # Header
-        header = QHBoxLayout()
+    def _setup_panel(self):
+        self._panel = QWidget(self)
+        self._panel.hide()
+
+        root = QVBoxLayout(self._panel)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── header ──
+        hdr_widget = QWidget()
+        hdr_widget.setFixedHeight(54)
+        hdr_widget.setStyleSheet("background: transparent;")
+        hdr = QHBoxLayout(hdr_widget)
+        hdr.setContentsMargins(14, 0, 14, 0)
+        hdr.setSpacing(10)
+
+        # mini orb in panel header
+        mini_orb = _MiniOrb(self)
+        hdr.addWidget(mini_orb)
+
         title = QLabel("MERLIN")
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {COLOR_ACCENT.name()};")
-        header.addWidget(title)
+        title.setStyleSheet(f"color: {C_ACCENT.name()}; letter-spacing: 2px;")
+        hdr.addWidget(title)
+        hdr.addStretch()
 
-        self._status_label = QLabel("●")
-        self._status_label.setFont(QFont("Segoe UI", 8))
-        self._status_label.setStyleSheet(f"color: {COLOR_GREY.name()};")
-        header.addStretch()
-        header.addWidget(self._status_label)
+        self._status_dot = QLabel("●")
+        self._status_dot.setFont(QFont("Segoe UI", 8))
+        self._status_dot.setStyleSheet(f"color: {C_GREY.name()};")
+        hdr.addWidget(self._status_dot)
 
         close_btn = QPushButton("✕")
-        close_btn.setFixedSize(24, 24)
+        close_btn.setFixedSize(26, 26)
         close_btn.setStyleSheet(f"""
             QPushButton {{
-                background: transparent;
-                color: {COLOR_TEXT_DIM.name()};
-                border: none;
-                font-size: 14px;
+                background: rgba(255,255,255,8);
+                color: {C_TEXT_DIM.name()};
+                border: 1px solid rgba(255,255,255,15);
+                border-radius: 13px;
+                font-size: 11px;
             }}
             QPushButton:hover {{
-                color: {COLOR_TEXT.name()};
+                background: rgba(255,255,255,18);
+                color: {C_TEXT.name()};
             }}
         """)
         close_btn.clicked.connect(self._collapse)
-        header.addWidget(close_btn)
+        hdr.addWidget(close_btn)
+        root.addWidget(hdr_widget)
 
-        layout.addLayout(header)
+        # separator
+        sep = QWidget()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: rgba(255,255,255,13);")
+        root.addWidget(sep)
 
-        # Chat area (scrollable)
-        self._scroll_area = QScrollArea()
-        self._scroll_area.setWidgetResizable(True)
-        self._scroll_area.setStyleSheet("""
-            QScrollArea {
-                background: transparent;
-                border: none;
-            }
-            QScrollBar:vertical {
-                width: 6px;
-                background: transparent;
-            }
+        # ── scroll area ──
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical { width: 5px; background: transparent; margin: 4px 0; }
             QScrollBar::handle:vertical {
-                background: rgba(100, 100, 120, 80);
-                border-radius: 3px;
+                background: rgba(0,180,255,60);
+                border-radius: 2px;
+                min-height: 20px;
             }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
 
         self._chat_container = QWidget()
+        self._chat_container.setStyleSheet("background: transparent;")
         self._chat_layout = QVBoxLayout(self._chat_container)
-        self._chat_layout.setContentsMargins(0, 0, 0, 0)
+        self._chat_layout.setContentsMargins(0, 10, 0, 10)
         self._chat_layout.setSpacing(4)
         self._chat_layout.addStretch()
 
-        self._scroll_area.setWidget(self._chat_container)
-        layout.addWidget(self._scroll_area)
+        self._scroll.setWidget(self._chat_container)
+        root.addWidget(self._scroll)
 
-        # Input area
-        input_layout = QHBoxLayout()
-        input_layout.setSpacing(6)
+        # separator
+        sep2 = QWidget()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background: rgba(255,255,255,13);")
+        root.addWidget(sep2)
 
-        self._input_field = QLineEdit()
-        self._input_field.setPlaceholderText("Ask MERLIN...")
-        self._input_field.setFont(QFont("Segoe UI", 10))
-        self._input_field.setStyleSheet(f"""
+        # ── input bar ──
+        bar = QWidget()
+        bar.setFixedHeight(60)
+        bar.setStyleSheet("background: transparent;")
+        bar_lay = QHBoxLayout(bar)
+        bar_lay.setContentsMargins(12, 10, 12, 10)
+        bar_lay.setSpacing(8)
+
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Ask MERLIN…")
+        self._input.setFont(QFont("Segoe UI", 10))
+        self._input.setStyleSheet(f"""
             QLineEdit {{
-                background-color: {COLOR_INPUT_BG.name()};
-                color: {COLOR_TEXT.name()};
-                border: 1px solid {COLOR_ACCENT_DIM.name()};
-                border-radius: 8px;
+                background: {C_INPUT_BG.name()};
+                color: rgba(215,230,248,225);
+                border: 1px solid rgba(0,170,255,40);
+                border-radius: 10px;
                 padding: 8px 12px;
+                selection-background-color: rgba(0,150,220,80);
             }}
             QLineEdit:focus {{
-                border-color: {COLOR_ACCENT.name()};
+                border-color: rgba(0,200,255,100);
+                background: rgba(30,32,48,255);
+            }}
+            QLineEdit:disabled {{
+                background: rgba(20,20,32,180);
+                color: rgba(255,255,255,50);
+                border-color: rgba(255,255,255,12);
             }}
         """)
-        self._input_field.returnPressed.connect(self._send_message)
-        input_layout.addWidget(self._input_field)
+        self._input.returnPressed.connect(self._send_message)
+        bar_lay.addWidget(self._input)
 
-        send_btn = QPushButton("→")
-        send_btn.setFixedSize(36, 36)
-        send_btn.setFont(QFont("Segoe UI", 14))
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLOR_ACCENT_DIM.name()};
-                color: {COLOR_BG_DARK.name()};
-                border: none;
-                border-radius: 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {COLOR_ACCENT.name()};
-            }}
+        self._send_btn = QPushButton("→")
+        self._send_btn.setFixedSize(38, 38)
+        self._send_btn.setFont(QFont("Segoe UI", 15))
+        self._send_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(0,110,200,210), stop:1 rgba(0,75,160,210));
+                color: rgba(200,235,255,235);
+                border: 1px solid rgba(0,185,255,65);
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(0,150,230,230), stop:1 rgba(0,110,200,230));
+                border-color: rgba(0,210,255,110);
+            }
+            QPushButton:pressed { padding-top: 2px; }
+            QPushButton:disabled {
+                background: rgba(40,40,60,120);
+                color: rgba(255,255,255,50);
+                border-color: rgba(255,255,255,15);
+            }
         """)
-        send_btn.clicked.connect(self._send_message)
-        input_layout.addWidget(send_btn)
+        self._send_btn.clicked.connect(self._send_message)
+        bar_lay.addWidget(self._send_btn)
 
-        layout.addLayout(input_layout)
+        root.addWidget(bar)
 
-    # ─── Expand / Collapse ──────────────────────────────────
+    # ── expand / collapse ─────────────────────────────────────
 
     def _expand(self):
-        """Expand from orb to chat panel."""
         if self._expanded:
             return
-
         self._expanded = True
         screen = QApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
-            x = geo.right() - PANEL_WIDTH - 20
-            y = geo.top() + 40
-            self.move(x, y)
+            self.move(geo.right() - PANEL_WIDTH - 20, geo.top() + 40)
 
         self.setFixedSize(PANEL_WIDTH, PANEL_HEIGHT)
-        self._panel_widget.setGeometry(0, 0, PANEL_WIDTH, PANEL_HEIGHT)
-        self._panel_widget.show()
-        self._input_field.setFocus()
-        # Install global event filter to detect clicks outside
+        self._panel.setGeometry(0, 0, PANEL_WIDTH, PANEL_HEIGHT)
+        self._panel.show()
+        self._input.setFocus()
         QApplication.instance().installEventFilter(self)
         self.update()
 
     def _collapse(self):
-        """Collapse from chat panel to orb."""
         if not self._expanded:
             return
-
         self._expanded = False
-        self._panel_widget.hide()
-        # Remove global event filter
+        self._panel.hide()
         app = QApplication.instance()
         if app:
             app.removeEventFilter(self)
@@ -412,19 +616,18 @@ class MerlinOrb(QWidget):
         self._position_window()
         self.update()
 
-    # ─── Mouse events (drag-to-move + click-to-expand) ─────
+    # ── drag ─────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_start_pos = event.globalPosition().toPoint()
+            self._drag_start  = event.globalPosition().toPoint()
             self._drag_origin = self.pos()
-            self._dragging = False
+            self._dragging    = False
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if hasattr(self, '_drag_start_pos') and self._drag_start_pos is not None:
-            delta = event.globalPosition().toPoint() - self._drag_start_pos
-            # Start dragging only after moving > 5px (avoids accidental drags)
+        if hasattr(self, "_drag_start") and self._drag_start:
+            delta = event.globalPosition().toPoint() - self._drag_start
             if not self._dragging and (abs(delta.x()) > 5 or abs(delta.y()) > 5):
                 self._dragging = True
             if self._dragging:
@@ -433,10 +636,10 @@ class MerlinOrb(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self._dragging and not self._expanded:
+            if not getattr(self, "_dragging", False) and not self._expanded:
                 self._expand()
-            self._drag_start_pos = None
-            self._dragging = False
+            self._drag_start = None
+            self._dragging   = False
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
@@ -445,7 +648,6 @@ class MerlinOrb(QWidget):
         super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):
-        """Catch global mouse clicks — collapse if click is outside this widget."""
         if (
             self._expanded
             and event.type() == QEvent.Type.MouseButtonPress
@@ -454,103 +656,155 @@ class MerlinOrb(QWidget):
             self._collapse()
         return super().eventFilter(obj, event)
 
-    # ─── Chat ───────────────────────────────────────────────
+    # ── chat ─────────────────────────────────────────────────
+
+    def _set_input_enabled(self, enabled: bool):
+        self._input.setEnabled(enabled)
+        self._send_btn.setEnabled(enabled)
+        if enabled:
+            self._input.setPlaceholderText("Ask MERLIN…")
+        else:
+            self._input.setPlaceholderText("Waiting for response…")
 
     def _send_message(self):
-        """Send a chat message to MERLIN."""
-        text = self._input_field.text().strip()
+        text = self._input.text().strip()
         if not text:
             return
-
-        self._input_field.clear()
-        self._add_bubble(text, is_user=True)
-
-        # Start processing
+        self._input.clear()
+        self._add_bubble(text, kind="user")
         self._processing = True
-        self._glow_timer.start(50)
-        self.update()
+        self._set_input_enabled(False)
 
-        # Send via background thread
+        # typing indicator
+        self._typing_widget = TypingBubble()
+        self._chat_layout.insertWidget(self._chat_layout.count() - 1, self._typing_widget)
+        self._scroll_to_bottom()
+
         self._chat_worker = ChatWorker(text)
         self._chat_worker.response_ready.connect(self._on_response)
         self._chat_worker.error_occurred.connect(self._on_error)
         self._chat_worker.start()
 
+    def _remove_typing(self):
+        if self._typing_widget:
+            self._typing_widget.stop()
+            self._typing_widget.setParent(None)
+            self._typing_widget.deleteLater()
+            self._typing_widget = None
+
     def _on_response(self, response: str):
-        """Handle chat response."""
         self._processing = False
-        self._glow_timer.stop()
-        self._glow_opacity = 0.0
-        self.update()
-        self._add_bubble(response, is_user=False)
+        self._remove_typing()
+        self._add_bubble(response, kind="bot")
+        self._set_input_enabled(True)
+        self._input.setFocus()
 
     def _on_error(self, error: str):
-        """Handle chat error."""
         self._processing = False
-        self._glow_timer.stop()
-        self._glow_opacity = 0.0
-        self.update()
-        self._add_bubble(f"⚠ {error}", is_user=False)
+        self._remove_typing()
+        self._add_bubble(error, kind="error")
+        self._set_input_enabled(True)
+        self._input.setFocus()
 
-    def _add_bubble(self, text: str, is_user: bool):
-        """Add a chat bubble to the panel."""
-        bubble = ChatBubble(text, is_user)
-        # Insert before the stretch at the end
-        self._chat_layout.insertWidget(
-            self._chat_layout.count() - 1, bubble,
-        )
-        # Auto-scroll to bottom
-        QTimer.singleShot(50, lambda: self._scroll_area.verticalScrollBar().setValue(
-            self._scroll_area.verticalScrollBar().maximum()
+    def _add_bubble(self, text: str, kind: str = "bot"):
+        bubble = ChatBubble(text, kind)
+        self._chat_layout.insertWidget(self._chat_layout.count() - 1, bubble)
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self):
+        QTimer.singleShot(60, lambda: self._scroll.verticalScrollBar().setValue(
+            self._scroll.verticalScrollBar().maximum()
         ))
 
-    # ─── Health heartbeat ───────────────────────────────────
+    # ── health ───────────────────────────────────────────────
 
     def _setup_health_timer(self):
-        """Poll API health every 5 seconds."""
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._check_health)
-        self._health_timer.start(HEALTH_INTERVAL_MS)
-        # Initial check
-        QTimer.singleShot(500, self._check_health)
+        self._health_timer.start(HEALTH_INTERVAL)
+        QTimer.singleShot(600, self._check_health)
 
     def _check_health(self):
-        """Check if MERLIN API is reachable."""
-        def _do_check():
+        def _run():
             try:
-                if HAS_REQUESTS and _requests_mod is not None:
-                    resp = _requests_mod.get(
-                        f"{API_BASE}/api/v1/health",
-                        timeout=3,
-                    )
+                if HAS_REQUESTS and _requests_mod:
+                    resp = _requests_mod.get(f"{API_BASE}/api/v1/health", timeout=3)
                     self._connected = resp.status_code == 200
                 else:
                     self._connected = False
             except Exception:
                 self._connected = False
 
-            # Update status indicator (must be on main thread)
-            if hasattr(self, '_status_label'):
-                color = COLOR_ACCENT.name() if self._connected else COLOR_GREY.name()
-                self._status_label.setStyleSheet(f"color: {color};")
-            self.update()
+            color = C_ACCENT.name() if self._connected else C_GREY.name()
+            if hasattr(self, "_status_dot"):
+                self._status_dot.setStyleSheet(f"color: {color};")
 
-        # Run in background to avoid blocking UI
-        thread = threading.Thread(target=_do_check, daemon=True)
-        thread.start()
+        threading.Thread(target=_run, daemon=True).start()
 
 
 # ─────────────────────────────────────────────────────────────
-# Module entrypoint
+# Mini animated orb for the panel header
+# ─────────────────────────────────────────────────────────────
+
+class _MiniOrb(QWidget):
+    def __init__(self, parent_orb: MerlinOrb):
+        super().__init__()
+        self._orb   = parent_orb
+        self._phase = 0.0
+        self.setFixedSize(28, 28)
+        t = QTimer(self)
+        t.timeout.connect(self._tick)
+        t.start(40)
+
+    def _tick(self):
+        self._phase = (self._phase + 0.08) % (2 * math.pi)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy, r = 14.0, 14.0, 11.0
+
+        # glow
+        glow_a = int(20 + 15 * math.sin(self._phase))
+        if self._orb._connected:
+            gg = QRadialGradient(cx, cy, r + 5)
+            gg.setColorAt(0, QColor(0, 200, 255, glow_a))
+            gg.setColorAt(1, QColor(0, 0, 0, 0))
+            p.setBrush(QBrush(gg))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx, cy), r + 5, r + 5)
+
+        # core
+        core_g = QRadialGradient(cx - 3, cy - 3, r * 1.2)
+        core_g.setColorAt(0, QColor(22, 35, 52))
+        core_g.setColorAt(1, QColor(10, 10, 18))
+        p.setBrush(QBrush(core_g))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+
+        # ring
+        ring_c = QColor(0, 200, 255, 160) if self._orb._connected else QColor(70, 70, 82, 120)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(ring_c, 1.2))
+        p.drawEllipse(QPointF(cx, cy), r, r)
+
+        # letter
+        p.setPen(QPen(C_ACCENT if self._orb._connected else C_GREY))
+        p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        p.drawText(QRectF(0, 0, 28, 28), Qt.AlignmentFlag.AlignCenter, "M")
+
+
+# ─────────────────────────────────────────────────────────────
+# Entry point
 # ─────────────────────────────────────────────────────────────
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("MERLIN Widget")
-
+    # dark palette baseline
     orb = MerlinOrb()
     orb.show()
-
     sys.exit(app.exec())
 
 
