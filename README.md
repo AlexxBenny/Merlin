@@ -26,7 +26,9 @@ MERLIN is equipped to operate as a JARVIS-level assistant, featuring robust OS i
 * ⏱️ **Proactive Attention Management**: MERLIN doesn't just wait to be spoken to. It runs scheduled tasks, evaluates completion queues, and uses an `AttentionManager` to decide whether to *interrupt* you immediately, *queue* a notification for later, or *suppress* it entirely based on priority.
 * 🌐 **File System & Browser Control**: Native capabilities to search, read, write to your local file system, and scrape/control the web browser.
 * 🔀 **Granular LLM Routing**: Configure specific LLM providers (OpenRouter, Gemini, HuggingFace, Ollama) for specific cognitive tasks based on speed, cost, and intelligence requirements via `models.yaml`.
-* 🖥️ **Professional Dashboard & Widget**: A React dashboard with 9 pages (system gauges, chat,mail, scheduler, memory, logs, config, mission inspector, world state) and a PySide6 floating desktop widget — all communicating via a decoupled REST/WebSocket API.
+* 💬 **Multi-Channel Communication**: Send and receive messages via **WhatsApp** (neonize bridge) and **Telegram** (bot adapter), with email drafts and inbox reading via SMTP/IMAP.
+* 🤖 **Telegram Remote Control**: Control MERLIN from your phone via a Telegram bot — whitelist-secured, serialized, with queue pressure guards and bridge liveness checks.
+* 🖥️ **Professional Dashboard & Widget**: A React dashboard with 10 pages (system gauges, chat, mail, WhatsApp, scheduler, memory, logs, config, mission inspector, world state) and a PySide6 floating desktop widget — all communicating via a decoupled REST/WebSocket API.
 
 ---
 
@@ -214,14 +216,17 @@ flowchart LR
 
 5. **Run MERLIN:**
    ```bash
-   python main.py          # Terminal-only mode
-   python main.py --ui     # With dashboard + widget
-   python main.py --voice  # Voice-only mode
-   python main.py --hybrid # Text + voice
+   python main.py                  # Terminal-only mode
+   python main.py --ui             # With dashboard + widget
+   python main.py --telegram       # With Telegram bot adapter
+   python main.py --ui --telegram  # Dashboard + Telegram
+   python main.py --voice          # Voice-only mode
+   python main.py --hybrid         # Text + voice
    ```
     *Note: Ensure your virtual environment is active and all dependencies are installed before running.*
 
     When using `--ui`, the dashboard is available at `http://localhost:8420` and API docs at `http://localhost:8420/docs`.
+    When using `--telegram`, configure `TELEGRAM_BOT_TOKEN` in `.env` and set `allowed_user_ids` in `config/telegram.yaml`.
 
 ### UI Frontend Development (Optional)
 
@@ -243,6 +248,7 @@ Required (at least one provider key):
 - `GEMINI_API_KEY`
 
 Common optional variables:
+- `TELEGRAM_BOT_TOKEN` (required for `--telegram` mode)
 - `OLLAMA_HOST` (default: `http://localhost:11434`)
 - `LOG_LEVEL` (default: `INFO`)
 - `STT_ENGINE` / `TTS_ENGINE` (defaults: `whisper` / `pyttsx3`)
@@ -259,6 +265,9 @@ Key files in `config/`:
 | `skills.yaml` | Skill registry metadata/configuration |
 | `execution.yaml` | Executor concurrency, timeout, retries |
 | `browser.yaml` | Browser headless/security/timeout settings |
+| `email.yaml` | Email provider (SMTP/IMAP) configuration |
+| `whatsapp.yaml` | WhatsApp connection and provider settings |
+| `telegram.yaml` | Telegram bot whitelist, queue depth, timeout |
 | `paths.yaml` | Filesystem alias mapping |
 | `app_aliases.yaml` | App name alias normalization |
 | `app_capabilities.yaml` | Per-app media capability flags |
@@ -318,22 +327,25 @@ This allows the API server and frontends to remain process-isolated from core in
 
 ### 🧰 Skill Inventory Snapshot
 
-MERLIN currently ships with 46 registered skills:
-- `system`: 19
-- `browser`: 12
-- `email`: 5
-- `fs`: 5
-- `memory`: 4
-- `reasoning`: 1
+MERLIN currently ships with **48 registered skills** across 7 domains:
+- `system`: 19 — media, volume, brightness, apps, jobs, time, battery
+- `browser`: 12 — click, fill, scroll, navigate, go_back, go_forward, autonomous_task
+- `email`: 5 — read_inbox, draft_message, modify_draft, send_message, search_email
+- `fs`: 5 — read_file, write_file, create_folder, search_file, list_directory
+- `memory`: 4 — get_preference, set_preference, set_fact, add_policy
+- `whatsapp`: 2 — send_message, send_file
+- `reasoning`: 1 — generate_text
 
 ### 📊 Dashboard Pages (What You Can Inspect)
 
-The React dashboard provides 8 focused views:
+The React dashboard provides 10 focused views:
 
 | Route | Purpose |
 |-------|---------|
 | `/` | System overview (CPU/RAM/Disk/battery + mission state) |
 | `/chat` | Chat with streaming responses + session controls |
+| `/mail` | Email drafts, inbox, compose with approve/send workflow |
+| `/whatsapp` | WhatsApp message history and composition |
 | `/scheduler` | Job lifecycle controls (pause/resume/cancel) |
 | `/memory` | User knowledge domains (preferences, facts, traits, policies, relationships) |
 | `/logs` | Live logs via WebSocket with filtering/search |
@@ -422,11 +434,12 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 ├── perception/             # Input handling (Speech & Text concurrent tracking)
 ├── reporting/              # Proactive intelligence formatting (deciding how to talk back)
 ├── runtime/                # Always-on heartbeat, reflex matching, and job scheduler
-├── skills/                 # Registry of executable actions (browser, fs, system, etc.)
-├── interface/              # API boundary: bridge (IPC), FastAPI server, log buffer
-├── ui/dashboard/           # React + Vite + Tailwind v4 dashboard (8 pages)
+├── skills/                 # Registry of executable actions (browser, fs, system, whatsapp, etc.)
+├── providers/              # External service connectors (email, WhatsApp/neonize)
+├── interface/              # API boundary: bridge, FastAPI, shared IPC, Telegram bot
+├── ui/dashboard/           # React + Vite + Tailwind v4 dashboard (10 pages)
 ├── ui/widget/              # PySide6 floating orb with chat
-└── config/                 # YAML configurations for models, routing, and skills
+└── config/                 # YAML configurations for models, routing, skills, and integrations
 ```
 
 ## 📚 Deep-Dive Documentation
@@ -435,6 +448,7 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 * Architectural laws: `ARCHITECTURE.md`
 * Cognitive request flow: `docs/architecture/cognitive-pipeline.md`
 * World-state model: `docs/architecture/world-state.md`
+* Three-tier browser execution: `docs/architecture/three-tier-browser.md`
 * Interface/API layer: `docs/subsystems/interface.md`
 * UI dashboard and widget internals: `docs/subsystems/ui.md`
 * Model routing and provider adapters: `docs/subsystems/models.md`
@@ -443,3 +457,4 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 * YAML configuration reference: `docs/configuration/config-files.md`
 * Mission IR specification: `docs/ir/mission-ir.md`
 * Autonomous readiness analysis report: `docs/analysis-report.md`
+* Email skills analysis report: `docs/email-analysis-report.md`

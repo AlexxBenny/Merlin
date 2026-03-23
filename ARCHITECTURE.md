@@ -89,15 +89,16 @@ Transforms user intent into a static Mission DAG.
 
 ### 3.4 Skill Layer (`skills/`)
 
-Deterministic, testable capabilities. 46 registered skills across 6 domains:
+Deterministic, testable capabilities. 48 registered skills across 7 domains:
 
 | Domain | Count | Examples |
 |--------|-------|---------|
 | `system.*` | 19 | media control, volume, brightness, apps, jobs, time, battery |
 | `browser.*` | 12 | click, fill, scroll, navigate, go_back, go_forward, autonomous_task |
 | `email.*` | 5 | read_inbox, draft_message, modify_draft, send_message, search_email |
-| `memory.*` | 4 | get_preference, set_preference, set_fact, add_policy |
 | `fs.*` | 5 | read_file, write_file, create_folder, search_file, list_directory |
+| `memory.*` | 4 | get_preference, set_preference, set_fact, add_policy |
+| `whatsapp.*` | 2 | send_message, send_file |
 | `reasoning.*` | 1 | generate_text |
 
 Each skill has a `SkillContract` defining: name, inputs, outputs, semantic types, execution mode, failure policy, domain, narration template, `requires` (preconditions), `produces` (postconditions), and `effect_type` (create/maintain/destroy/reveal).
@@ -327,9 +328,11 @@ The frontend is a **separate-process** architecture. The UI never touches MERLIN
 | `MerlinBridge` | MERLIN (daemon thread) | Export state → JSON files, poll command queue |
 | `LogBufferHandler` | MERLIN (root logger) | Ring-buffer capture of all log records |
 | `api_server.py` | **Separate** (uvicorn) | FastAPI REST + WebSocket + SSE on port 8420 |
+| `ipc.py` | Shared module | Atomic JSON I/O, command submission, response polling, bridge liveness |
+| `telegram_bot.py` | **Separate** (subprocess) | Telegram bot adapter (whitelist, serialization, queue guard) |
 | `config_schema.py` | API server | Pydantic validation for config editing |
 
-**IPC**: Filesystem-based. Bridge writes `state/api/*.json` (atomic tmp→rename). API server reads them. Commands flow via `state/api/command_queue/` with exactly-once semantics.
+**IPC**: Filesystem-based via shared `ipc.py` module. Bridge writes `state/api/*.json` (atomic tmp→rename). API server and Telegram adapter read them. Commands flow via `state/api/command_queue/` with exactly-once semantics. Protocol version: 1.
 
 **Endpoints**: 15+ REST endpoints under `/api/v1/`, two WebSocket channels (`/ws/logs`, `/ws/events`), SSE streaming for chat.
 
@@ -339,6 +342,10 @@ React + TypeScript + Vite + Tailwind CSS v4. Dark theme with cyan accent.
 
 8 pages: Overview (gauges), Chat (SSE streaming), Scheduler (pause/resume), Memory (5 domains), Logs (WebSocket live), Config (inline editing), Missions (DAG inspector), World State (tree view).
 
+Plus 2 integration pages: Mail (drafts, inbox, approve/send workflow), WhatsApp (message history and composition).
+
+**Total: 10 pages.**
+
 ### 16.3 Desktop Widget (`ui/widget/`)
 
 PySide6 floating orb. Click to expand into chat panel. Polls `/api/v1/health` every 5 seconds — grey when disconnected, cyan when connected.
@@ -346,11 +353,13 @@ PySide6 floating orb. Click to expand into chat panel. Polls `/api/v1/health` ev
 ### 16.4 Activation
 
 ```bash
-python main.py --ui
+python main.py --ui               # Dashboard + API + widget
+python main.py --telegram          # Telegram bot adapter
+python main.py --ui --telegram     # Both
 ```
 
-Startup order: MERLIN core → bridge thread → API subprocess → widget subprocess.
-Shutdown order (reverse): widget → API → bridge → core.
+Startup order: MERLIN core → bridge thread → API subprocess → widget subprocess → Telegram subprocess.
+Shutdown order (reverse): Telegram → widget → API → bridge → core.
 
 **Forbidden**: UI importing core modules. Bridge accessing MERLIN from the API process. Shared memory between processes.
 
@@ -441,8 +450,9 @@ MERLIN/
 │   ├── browser/              # 12 browser skills
 │   ├── system/               # 19 system skills
 │   ├── email/                # 5 email skills
-│   ├── fs/                   # 3 file system skills
+│   ├── fs/                   # 5 file system skills
 │   ├── memory/               # 4 memory skills
+│   ├── whatsapp/             # 2 WhatsApp skills
 │   └── reasoning/            # 1 reasoning skill
 │
 ├── perception/               # Layer 1: Input
@@ -479,20 +489,29 @@ MERLIN/
 │   ├── paths.yaml            # OS path aliases
 │   ├── browser.yaml          # Browser configuration
 │   ├── email.yaml            # Email provider configuration
+│   ├── whatsapp.yaml         # WhatsApp connection settings
+│   ├── telegram.yaml         # Telegram bot configuration
 │   ├── app_aliases.yaml      # Application name aliases
 │   └── app_capabilities.yaml # Per-app media capabilities
 │
 ├── interface/                # API boundary layer
 │   ├── bridge.py             # IPC bridge (daemon thread inside MERLIN)
 │   ├── api_server.py         # FastAPI server (separate process)
+│   ├── ipc.py                # Shared file-based IPC helpers (protocol v1)
+│   ├── telegram_bot.py       # Telegram bot adapter (separate process)
 │   ├── log_buffer.py         # Ring-buffer log handler
 │   └── config_schema.py      # Pydantic config validation
 │
 ├── ui/                       # Frontend UIs
 │   ├── dashboard/            # React + Vite + Tailwind dashboard
-│   │   └── src/              # TypeScript source (8 pages + layout + API client)
+│   │   └── src/              # TypeScript source (10 pages + layout + API client)
 │   └── widget/               # PySide6 desktop widget
 │       └── widget.py         # Floating orb + chat panel
+│
+├── providers/                # External service connectors
+│   ├── email/                # SMTP/IMAP email provider
+│   ├── whatsapp/             # WhatsApp via neonize bridge
+│   └── communication/        # Abstract communication provider base
 │
 ├── state/                    # Persistent state
 │   ├── user_knowledge.json   # Stored user knowledge
@@ -512,4 +531,4 @@ MERLIN/
 │   ├── collect_compiler_baseline.py
 │   └── measure_phase3*.py
 │
-└── tests/                    # Test suite (1736 tests)
+└── tests/                    # Test suite (1796 tests)

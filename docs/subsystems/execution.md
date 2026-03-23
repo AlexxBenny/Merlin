@@ -100,7 +100,7 @@ Single source of truth for all decision-making. Built once per mission.
 
 O(1) skill lookup by name. Enforces:
 - Idempotent registration (duplicate registrations silently skip)
-- Action namespace uniqueness (46 skills, 46 unique actions)
+- Action namespace uniqueness (48 skills, 48 unique actions)
 - Contract validation at registration
 - Domain-based grouping
 

@@ -75,8 +75,8 @@ User speaks/types
 | [Models](subsystems/models.md) | LLM clients, router, key pool |
 | [Conversation](subsystems/conversation.md) | Conversation frame, outcomes |
 | [Skills Overview](skills/overview.md) | Contracts, base class, registration |
-| [Browser Skills](skills/browser-skills.md) | All 7 browser skills |
-| [System Skills](skills/system-skills.md) | All 20 system skills |
+| [Browser Skills](skills/browser-skills.md) | All 12 browser skills |
+| [System Skills](skills/system-skills.md) | All 19 system skills |
 | [File Skills](skills/file-skills.md) | read, write, create_folder, search_file, list_directory |
 | [Memory Skills](skills/memory-skills.md) | Preference, fact, policy management |
 | [Reasoning Skills](skills/reasoning-skills.md) | generate_text |

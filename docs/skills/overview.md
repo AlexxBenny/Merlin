@@ -61,20 +61,21 @@ class SkillResult:
 
 Skills are registered in `main.py` via `SkillRegistry.register()`. The registry enforces:
 - Idempotent registration (duplicates silently skip, first instance preserved)
-- Unique action namespace (46 skills, 46 unique actions)
+- Unique action namespace (48 skills, 48 unique actions)
 - Contract validation at registration time
 
 Skills can opt into receiving `SkillContext` (frozen per-mission `user` + `time`) by accepting a `context` parameter. Backward-compatible: existing skills without `context` continue to work.
 
-## Skill Inventory (46 skills)
+## Skill Inventory (48 skills)
 
 | Domain | Skills |
 |--------|--------|
 | `system` | 19 — media, volume, brightness, apps, jobs, time, battery |
 | `browser` | 12 — click, fill, scroll, navigate, go_back, go_forward, autonomous_task, + 5 more |
 | `email` | 5 — read_inbox, draft_message, modify_draft, send_message, search_email |
-| `memory` | 4 — get_preference, set_preference, set_fact, add_policy |
 | `fs` | 5 — read_file, write_file, create_folder, search_file, list_directory |
+| `memory` | 4 — get_preference, set_preference, set_fact, add_policy |
+| `whatsapp` | 2 — send_message, send_file |
 | `reasoning` | 1 — generate_text |
 
 See domain-specific docs for details on each skill.

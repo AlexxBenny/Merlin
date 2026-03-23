@@ -6,7 +6,7 @@
 
 ## Overview
 
-The interface layer provides a **decoupled communication bridge** between the MERLIN runtime process and external consumers (dashboard, widget, third-party tools). It uses **filesystem-based IPC** for state export and a **command queue** for exactly-once command execution.
+The interface layer provides a **decoupled communication bridge** between the MERLIN runtime process and external consumers (dashboard, widget, Telegram bot, third-party tools). It uses **filesystem-based IPC** (via a shared `ipc.py` module) for state export and a **command queue** for exactly-once command execution.
 
 Key design constraint: the API server runs as a **separate process** — it never imports or touches MERLIN core internals directly.
 
@@ -34,6 +34,16 @@ Key design constraint: the API server runs as a **separate process** — it neve
 │         FastAPI on port 8420                     │
 │                                                  │
 │  Reads:  state/api/*.json                       │
+│  Writes: state/api/command_queue/cmd_*.json     │
+│  Reads:  state/api/responses/cmd_*.json         │
+└─────────────────────────────────────────────────┘
+                  │  Same IPC
+                  ▼
+┌─────────────────────────────────────────────────┐
+│       Telegram Bot (separate process)            │
+│       python -m interface.telegram_bot           │
+│       Whitelist-secured, serialized              │
+│                                                  │
 │  Writes: state/api/command_queue/cmd_*.json     │
 │  Reads:  state/api/responses/cmd_*.json         │
 └─────────────────────────────────────────────────┘
@@ -92,6 +102,34 @@ Pydantic models for validated configuration editing.
 | `EditableBrowserConfig` | `headless` |
 
 `apply_config_update()` uses `ruamel.yaml` for comment-preserving round-trip YAML editing. Falls back to standard `yaml` if `ruamel` is unavailable.
+
+### `ipc.py` — Shared IPC Module
+
+Used by **both** the API server and the Telegram adapter. Zero MERLIN core imports.
+
+| Function | Purpose |
+|--------|---------|
+| `read_json(path)` | Safe JSON read (returns None on failure) |
+| `write_json(path, data)` | Atomic tmp→rename JSON write |
+| `submit_command(type, payload, dir)` | Write command to queue, returns cmd_id |
+| `wait_for_response(cmd_id, dir, timeout)` | Async poll for response |
+| `queue_depth(dir)` | Count pending commands |
+| `is_bridge_alive(state_dir)` | Check system.json freshness |
+
+**Protocol version**: 1. Command format: `{id, type, payload, created_at, protocol_version}`.
+
+### `telegram_bot.py` — Telegram Adapter
+
+Runs as a **separate subprocess** (`python -m interface.telegram_bot`). Whitelist-secured.
+
+| Feature | Implementation |
+|---------|---------------|
+| Security | `allowed_user_ids` whitelist from `config/telegram.yaml` |
+| Serialization | `asyncio.Lock` — one message at a time |
+| Queue guard | Rejects if `queue_depth > max_queue_depth` |
+| Liveness | Checks `system.json` freshness before submitting |
+| Truncation | Response capped at 4000 chars (Telegram limit) |
+| Logging | Structured `[TELEGRAM]` logs with user_id, cmd_id, latency |
 
 ### `api_server.py` — FastAPI Server
 
