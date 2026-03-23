@@ -107,6 +107,7 @@ def production_deps():
         "browser_adapter": browser_adapter,
         "browser_controller": browser_controller,
         "email_client": email_client,
+        "whatsapp_client": None,  # WhatsApp disabled in test — skills skipped
     }
     yield deps
     os.unlink(tmp.name)
@@ -137,6 +138,9 @@ class TestProductionSkillLoading:
         "fs.read_file",
         "fs.search_file",
         "fs.list_directory",
+        # WhatsApp skills require whatsapp_client (None in test env)
+        "whatsapp.send_message",
+        "whatsapp.send_file",
     }
 
     def test_all_non_skipped_skills_loaded(
@@ -221,6 +225,10 @@ class TestSemanticTypeHygiene:
             "directory_contents",
         }
         used_types.update(fs_types)
+
+        # Types used by WhatsApp skills (skipped — whatsapp_client is None)
+        wa_types = {"whatsapp_contact", "phone_number"}
+        used_types.update(wa_types)
 
         unused = set(SEMANTIC_TYPES.keys()) - used_types
         assert not unused, (

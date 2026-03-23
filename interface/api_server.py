@@ -13,13 +13,10 @@ Reads responses from state/api/responses/ (written by bridge.py).
 No MERLIN core imports. No direct access to MERLIN internals.
 """
 
-import asyncio
 import json
 import logging
 import os
-import re
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,27 +41,15 @@ for _d in [_STATE_DIR, _COMMAND_DIR, _RESPONSE_DIR, _CHAT_DIR]:
 
 
 # ─────────────────────────────────────────────────────────────
-# File I/O helpers
+# File I/O helpers (shared IPC + local)
 # ─────────────────────────────────────────────────────────────
 
-def _read_json(path: Path) -> Any:
-    """Read a JSON file safely. Returns None on failure."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-
-
-def _write_json(path: Path, data: Any) -> None:
-    """Write JSON atomically."""
-    tmp = str(path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-    if os.path.exists(str(path)):
-        os.replace(tmp, str(path))
-    else:
-        os.rename(tmp, str(path))
+from interface.ipc import (
+    read_json as _read_json,
+    write_json as _write_json,
+    submit_command as _ipc_submit,
+    wait_for_response as _ipc_wait,
+)
 
 
 def _mask_secrets(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -86,7 +71,7 @@ def _mask_secrets(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Command queue interface
+# Command queue interface (delegates to shared IPC)
 # ─────────────────────────────────────────────────────────────
 
 def _submit_command(
@@ -94,15 +79,7 @@ def _submit_command(
     payload: Dict[str, Any],
 ) -> str:
     """Submit a command to the queue. Returns command ID."""
-    cmd_id = f"cmd_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    cmd = {
-        "id": cmd_id,
-        "type": cmd_type,
-        "payload": payload,
-        "created_at": time.time(),
-    }
-    _write_json(_COMMAND_DIR / f"{cmd_id}.json", cmd)
-    return cmd_id
+    return _ipc_submit(cmd_type, payload, _COMMAND_DIR)
 
 
 async def _wait_for_response(
@@ -111,26 +88,7 @@ async def _wait_for_response(
     poll_interval: float = 0.2,
 ) -> Dict[str, Any]:
     """Poll for a command response."""
-    response_path = _RESPONSE_DIR / f"{cmd_id}.json"
-    start = time.time()
-
-    while time.time() - start < timeout:
-        data = _read_json(response_path)
-        if data is not None:
-            # Clean up response file
-            try:
-                response_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return data
-        await asyncio.sleep(poll_interval)
-
-    return {
-        "id": cmd_id,
-        "status": "timeout",
-        "response": "Command timed out.",
-        "completed_at": time.time(),
-    }
+    return await _ipc_wait(cmd_id, _RESPONSE_DIR, timeout, poll_interval)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -415,6 +373,13 @@ async def get_config():
             email_config = yaml.safe_load(f) or {}
         config["email"] = _mask_secrets(email_config.get("email", email_config))
 
+    # Load whatsapp.yaml if exists
+    wa_path = _CONFIG_DIR / "whatsapp.yaml"
+    if wa_path.exists():
+        with open(wa_path, "r", encoding="utf-8") as f:
+            wa_config = yaml.safe_load(f) or {}
+        config["whatsapp"] = _mask_secrets(wa_config.get("whatsapp", wa_config))
+
     # Load field metadata for dashboard display
     from interface.config_schema import CONFIG_FIELD_METADATA
     config["_field_metadata"] = CONFIG_FIELD_METADATA
@@ -620,6 +585,54 @@ async def delete_draft(draft_id: str):
 async def send_draft(draft_id: str):
     """Send an approved draft via bridge command."""
     cmd_id = _submit_command("send_draft", {"draft_id": draft_id})
+    response = await _wait_for_response(cmd_id, timeout=30.0)
+    return response
+
+
+# ─────────────────────────────────────────────────────────────
+# WhatsApp endpoints
+# ─────────────────────────────────────────────────────────────
+
+_WA_STATUS_FILE = _STATE_DIR / "whatsapp_status.json"
+_WA_MESSAGES_FILE = _STATE_DIR / "whatsapp_messages.json"
+
+
+class WhatsAppSendRequest(BaseModel):
+    """Pydantic model for WhatsApp send requests."""
+    contact: str
+    text: str
+
+
+@app.get("/api/v1/whatsapp/status")
+async def whatsapp_status():
+    """Get WhatsApp connection status."""
+    data = _read_json(_WA_STATUS_FILE)
+    if data is None:
+        return {
+            "connected": False,
+            "messages_sent_today": 0,
+            "total_messages": 0,
+            "rate_limit_remaining": 0,
+        }
+    return data
+
+
+@app.get("/api/v1/whatsapp/messages")
+async def whatsapp_messages():
+    """Get WhatsApp message history."""
+    data = _read_json(_WA_MESSAGES_FILE)
+    if data is None:
+        return []
+    return data
+
+
+@app.post("/api/v1/whatsapp/send")
+async def whatsapp_send(request: WhatsAppSendRequest):
+    """Send a WhatsApp message via bridge command."""
+    cmd_id = _submit_command("wa_send", {
+        "contact": request.contact,
+        "text": request.text,
+    })
     response = await _wait_for_response(cmd_id, timeout=30.0)
     return response
 

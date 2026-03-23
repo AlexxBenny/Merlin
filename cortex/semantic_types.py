@@ -530,6 +530,23 @@ SEMANTIC_TYPES: Dict[str, SemanticType] = {
         ),
         direction="both",
     ),
+
+    # ── WhatsApp domain ──────────────────────────────────────
+    "whatsapp_contact": SemanticType(
+        description=(
+            "A WhatsApp contact name, alias, or phone number "
+            '(e.g., "Mom", "amma", "919876543210"). '
+            "Resolved to a JID by ContactResolver."
+        ),
+        direction="input",
+    ),
+    "phone_number": SemanticType(
+        description=(
+            "A phone number string with country code "
+            '(e.g., "919876543210", "+1-415-555-1234").'
+        ),
+        direction="both",
+    ),
 }
 
 

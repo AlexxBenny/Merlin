@@ -9,7 +9,7 @@
 
 executor:
   max_workers: 4
-  node_timeout_seconds: 30
+  node_timeout_seconds: 45
 
 event_loop:
   tick_interval: 0.1

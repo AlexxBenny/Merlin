@@ -93,6 +93,18 @@ class EditableEmailDefaultsConfig(BaseModel):
     max_inbox_fetch: Optional[int] = Field(None, ge=1, le=100)
 
 
+class EditableWhatsAppConfig(BaseModel):
+    """WhatsApp settings (mirrors whatsapp.yaml → whatsapp section)."""
+    enabled: Optional[bool] = None
+    session_name: Optional[str] = None
+
+
+class EditableWhatsAppRateLimitConfig(BaseModel):
+    """WhatsApp rate limit settings."""
+    max_messages: Optional[int] = Field(None, ge=1, le=100)
+    window_seconds: Optional[int] = Field(None, ge=10, le=3600)
+
+
 # ─────────────────────────────────────────────────────────────
 # Master config update model
 # ─────────────────────────────────────────────────────────────
@@ -114,6 +126,8 @@ class ConfigUpdateRequest(BaseModel):
     email_smtp: Optional[EditableEmailSmtpConfig] = None
     email_imap: Optional[EditableEmailImapConfig] = None
     email_defaults: Optional[EditableEmailDefaultsConfig] = None
+    whatsapp: Optional[EditableWhatsAppConfig] = None
+    whatsapp_rate_limit: Optional[EditableWhatsAppRateLimitConfig] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -251,6 +265,27 @@ CONFIG_FIELD_METADATA: Dict[str, Dict[str, Any]] = {
         "label": "Max Inbox Fetch",
         "description": "Maximum emails to fetch per inbox read",
         "type": "int", "min": 1, "max": 100,
+    },
+    # WhatsApp config fields
+    "whatsapp.enabled": {
+        "label": "WhatsApp Enabled",
+        "description": "Master switch for WhatsApp integration",
+        "type": "bool",
+    },
+    "whatsapp.session_name": {
+        "label": "Session Name",
+        "description": "WhatsApp session identifier",
+        "type": "str",
+    },
+    "whatsapp.rate_limit.max_messages": {
+        "label": "Rate Limit — Max Messages",
+        "description": "Maximum messages allowed per window",
+        "type": "int", "min": 1, "max": 100,
+    },
+    "whatsapp.rate_limit.window_seconds": {
+        "label": "Rate Limit — Window (seconds)",
+        "description": "Time window for rate limiting",
+        "type": "int", "min": 10, "max": 3600,
     },
 }
 

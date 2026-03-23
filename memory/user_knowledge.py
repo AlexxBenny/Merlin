@@ -60,6 +60,17 @@ _CANONICAL_KEYS: Dict[str, str] = {
     "color_scheme": "theme",
     "colour scheme": "theme",
     "appearance": "theme",
+    # Contact aliases (for WhatsApp contact resolution)
+    "mother": "mom",
+    "mum": "mom",
+    "mommy": "mom",
+    "amma": "mom",
+    "father": "dad",
+    "papa": "dad",
+    "daddy": "dad",
+    "appa": "dad",
+    "bro": "brother",
+    "sis": "sister",
 }
 
 

@@ -522,6 +522,61 @@ def main(args=None):
     user_knowledge = UserKnowledgeStore(persist_path="state/user_knowledge.json")
     logger.info("UserKnowledgeStore initialized (early — for skill DI)")
 
+    # ── WhatsApp Provider (pluggable — v1: Neonize/Whatsmeow) ──
+    wa_config = load_yaml("whatsapp.yaml")
+    whatsapp_client = None
+    if wa_config.get("whatsapp", {}).get("enabled", False):
+        try:
+            from providers.whatsapp.connection_manager import WhatsAppConnectionManager
+            from providers.whatsapp.rate_limiter import WhatsAppRateLimiter
+            from providers.whatsapp.neonize_provider import NeonizeProvider
+            from providers.whatsapp.contact_resolver import ContactResolver
+            from providers.whatsapp.client import WhatsAppClient
+
+            wa_settings = wa_config["whatsapp"]
+            rate_cfg = wa_settings.get("rate_limit", {})
+
+            wa_conn_manager = WhatsAppConnectionManager(
+                session_name=wa_settings.get("session_name", "merlin_whatsapp"),
+                database_path=wa_settings.get(
+                    "database_path", "state/whatsapp/neonize.db",
+                ),
+            )
+            wa_conn_manager.start()
+
+            wa_rate_limiter = WhatsAppRateLimiter(
+                max_messages=rate_cfg.get("max_messages", 10),
+                window_seconds=rate_cfg.get("window_seconds", 60),
+            )
+
+            wa_provider = NeonizeProvider(
+                connection_manager=wa_conn_manager,
+                rate_limiter=wa_rate_limiter,
+            )
+
+            wa_contact_resolver = ContactResolver(
+                user_knowledge,
+                connection_manager=wa_conn_manager,
+            )
+
+            whatsapp_client = WhatsAppClient(
+                provider=wa_provider,
+                contact_resolver=wa_contact_resolver,
+                messages_dir=wa_settings.get(
+                    "messages_dir", "state/whatsapp/messages",
+                ),
+            )
+            logger.info(
+                "WhatsAppClient initialized (session=%s)",
+                wa_settings.get("session_name", "merlin_whatsapp"),
+            )
+        except Exception as e:
+            logger.warning(
+                "WhatsAppClient init failed — WhatsApp skills disabled: %s", e,
+            )
+    else:
+        logger.info("WhatsApp disabled in config")
+
     # FileIndex — lazy-built file search index across anchors
     from world.file_index import FileIndex
     file_index = FileIndex()
@@ -537,6 +592,7 @@ def main(args=None):
         "browser_adapter": browser_adapter,
         "browser_controller": browser_controller,
         "email_client": email_client,
+        "whatsapp_client": whatsapp_client,
         "user_knowledge": user_knowledge,
         "file_index": file_index,
     }
@@ -866,11 +922,16 @@ def main(args=None):
 
     # ── UI Mode: Start bridge, API server, widget ──
     ui_mode = getattr(args, 'ui', False)
+    telegram_mode = getattr(args, 'telegram', False)
     bridge = None
     api_process = None
     widget_process = None
+    telegram_process = None
 
-    if ui_mode:
+    # Bridge is needed for both UI and Telegram (file-based IPC)
+    needs_bridge = ui_mode or telegram_mode
+
+    if needs_bridge:
         import subprocess
         import sys
         project_root = Path(__file__).resolve().parent
@@ -887,6 +948,12 @@ def main(args=None):
             log_buffer=log_buffer,
         )
         bridge.start()
+
+    if ui_mode:
+        if not needs_bridge:  # should not happen, but guard
+            import subprocess
+            import sys
+            project_root = Path(__file__).resolve().parent
 
         # 3. Start API server subprocess
         api_process = subprocess.Popen(
@@ -907,6 +974,44 @@ def main(args=None):
         except Exception as e:
             logger.warning("Widget launch failed (PySide6 may not be installed): %s", e)
             widget_process = None
+
+    # ── Telegram Mode: Start Telegram bot subprocess ──
+    if telegram_mode:
+        import os as _os
+        import subprocess
+        import sys
+        project_root = Path(__file__).resolve().parent
+
+        # Validate token
+        tg_token = _os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not tg_token:
+            logger.error(
+                "TELEGRAM_BOT_TOKEN not set in .env — cannot start Telegram bot"
+            )
+        else:
+            # Validate config
+            tg_config = load_yaml("telegram.yaml").get("telegram", {})
+            tg_enabled = tg_config.get("enabled", False)
+            tg_users = tg_config.get("allowed_user_ids", [])
+
+            if not tg_enabled:
+                logger.error(
+                    "Telegram is disabled in config/telegram.yaml — "
+                    "set 'enabled: true' to activate"
+                )
+            elif not tg_users:
+                logger.error(
+                    "allowed_user_ids is empty in config/telegram.yaml — "
+                    "add your Telegram user ID for security"
+                )
+            else:
+                telegram_process = subprocess.Popen(
+                    [sys.executable, "-m", "interface.telegram_bot"],
+                    cwd=str(project_root),
+                )
+                logger.info(
+                    "Telegram bot started (allowed_users=%s)", tg_users
+                )
 
     # ── Interactive loop ──
     print("=" * 60)
@@ -930,6 +1035,8 @@ def main(args=None):
         print(f"  Dashboard: http://localhost:8420")
         print(f"  API: http://localhost:8420/api/v1/")
         print(f"  API Docs: http://localhost:8420/docs")
+    if telegram_mode and telegram_process is not None:
+        print(f"  Telegram: Bot active")
     print("=" * 60)
     print()
 
@@ -964,7 +1071,13 @@ def main(args=None):
         print("\n\nInterrupted.")
 
     finally:
-        # Shutdown in reverse order: widget → API → bridge → MERLIN core
+        # Shutdown in reverse order: telegram → widget → API → bridge → MERLIN core
+        if telegram_process is not None:
+            try:
+                telegram_process.terminate()
+                telegram_process.wait(timeout=5)
+            except Exception as e:
+                logger.warning("Telegram bot shutdown error: %s", e)
         if widget_process is not None:
             try:
                 widget_process.terminate()
@@ -1002,6 +1115,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ui", action="store_true",
         help="Launch dashboard UI, API server, and desktop widget",
+    )
+    parser.add_argument(
+        "--telegram", action="store_true",
+        help="Launch Telegram bot adapter (requires TELEGRAM_BOT_TOKEN in .env)",
     )
     args = parser.parse_args()
     main(args)

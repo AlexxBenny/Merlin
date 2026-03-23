@@ -560,7 +560,13 @@ class MissionOrchestrator:
                                 "node_id": sf.get("node_id"),
                                 "skill": sf.get("skill"),
                                 "plan": plan,
-                                "node_results": dict(exec_result.results),
+                                "node_results": {
+                                    nid: {
+                                        **exec_result.results.get(nid, {}),
+                                        **exec_result.metadata.get(nid, {}),
+                                    }
+                                    for nid in exec_result.results
+                                },
                             },
                         }
                         logger.info(

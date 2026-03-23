@@ -1,4 +1,7 @@
 .env
+config/telegram.yaml
+config/email.yaml
+config/browser.yaml
 
 venv/
 .venv/
@@ -18,3 +21,9 @@ state
 .agents
 
 skills-lock.json
+
+# WhatsApp/neonize session DB (contains encryption keys + contacts)
+merlin_whatsapp
+neonize_sigs.txt
+test_results.txt
+test_failures.txt

@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, MessageSquare, Brain, GitBranch,
-  Calendar, ScrollText, Globe, Mail, Settings2,
+  Calendar, ScrollText, Globe, Mail, MessageCircle, Settings2,
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { path: '/logs',      label: 'Logs',        icon: ScrollText },
   { path: '/world',     label: 'World State',  icon: Globe },
   { path: '/mail',      label: 'Mail',        icon: Mail },
+  { path: '/whatsapp',  label: 'WhatsApp',    icon: MessageCircle },
   { path: '/config',    label: 'Config',      icon: Settings2 },
 ]
 
@@ -25,6 +26,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   '/logs':      { title: 'Logs',              subtitle: 'Real-time log stream' },
   '/world':     { title: 'World State',       subtitle: "MERLIN's deterministic world projection" },
   '/mail':      { title: 'Mail',              subtitle: 'Email drafts and compose' },
+  '/whatsapp':  { title: 'WhatsApp',          subtitle: 'Messages and connection status' },
   '/config':    { title: 'Configuration',     subtitle: 'MERLIN runtime settings' },
 }
 

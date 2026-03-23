@@ -55,28 +55,28 @@ class TestResolveMaxTokens:
     def test_credit_cap_applied(self):
         """When credit budget known, cap max_tokens."""
         client = self._client(max_tokens=4096)
-        client._credit_budget = 1000
+        client._credit_budgets[client.api_key] = 1000
         result = client._resolve_max_tokens(None)
         assert result == 1000 - _CREDIT_SAFETY_MARGIN
 
     def test_credit_cap_not_applied_when_under(self):
         """When requested < budget, no capping needed."""
         client = self._client(max_tokens=256)
-        client._credit_budget = 5000
+        client._credit_budgets[client.api_key] = 5000
         result = client._resolve_max_tokens(None)
         assert result == 256
 
     def test_per_call_override_also_capped(self):
         """Per-call override is also subject to credit capping."""
         client = self._client(max_tokens=512)
-        client._credit_budget = 200
+        client._credit_budgets[client.api_key] = 200
         result = client._resolve_max_tokens(1024)
         assert result == 200 - _CREDIT_SAFETY_MARGIN
 
     def test_credit_cap_minimum_1(self):
         """Credit cap never goes below 1."""
         client = self._client(max_tokens=4096)
-        client._credit_budget = 10  # 10 - 50 = -40, but min is 1
+        client._credit_budgets[client.api_key] = 10  # 10 - 50 = -40, but min is 1
         result = client._resolve_max_tokens(None)
         assert result == 1
 
@@ -102,21 +102,21 @@ class TestParseCreditBudget:
             'but can only afford 3974"}}'
         )
         client._parse_credit_budget(error_body)
-        assert client._credit_budget == 3974
+        assert client._credit_budgets[client.api_key] == 3974
 
     def test_no_match_leaves_none(self):
         """Unrecognized error format doesn't change budget."""
         client = self._client()
         client._parse_credit_budget("some random error message")
-        assert client._credit_budget is None
+        assert client._credit_budgets.get(client.api_key) is None
 
     def test_updates_on_repeated_402(self):
         """Budget updates on each 402 (credits may change)."""
         client = self._client()
         client._parse_credit_budget("can only afford 5000")
-        assert client._credit_budget == 5000
+        assert client._credit_budgets[client.api_key] == 5000
         client._parse_credit_budget("can only afford 3000")
-        assert client._credit_budget == 3000
+        assert client._credit_budgets[client.api_key] == 3000
 
     def test_budget_affects_subsequent_resolve(self):
         """After parsing 402, future requests are capped."""
