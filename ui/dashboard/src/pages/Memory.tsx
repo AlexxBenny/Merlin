@@ -3,16 +3,16 @@ import { RefreshCw, Database } from 'lucide-react'
 import { api, type Memory } from '../lib/api'
 
 const DOMAINS: { key: string; label: string; color: string }[] = [
-  { key: 'preferences',   label: 'Preferences',   color: '#8b5cf6' },
-  { key: 'facts',         label: 'Facts',          color: '#60a5fa' },
-  { key: 'traits',        label: 'Traits',         color: '#10b981' },
-  { key: 'policies',      label: 'Policies',       color: '#f59e0b' },
-  { key: 'relationships', label: 'Relationships',  color: '#f472b6' },
+  { key: 'preferences', label: 'Preferences', color: '#8b5cf6' },
+  { key: 'facts', label: 'Facts', color: '#60a5fa' },
+  { key: 'traits', label: 'Traits', color: '#10b981' },
+  { key: 'policies', label: 'Policies', color: '#f59e0b' },
+  { key: 'relationships', label: 'Relationships', color: '#f472b6' },
 ]
 
 export default function MemoryPage() {
   const [memory, setMemory] = useState<Memory | null>(null)
-  const load = () => api.getMemory().then(setMemory).catch(() => {})
+  const load = () => api.getMemory().then(setMemory).catch(() => { })
 
   useEffect(() => { load(); const i = setInterval(load, 5000); return () => clearInterval(i) }, [])
 

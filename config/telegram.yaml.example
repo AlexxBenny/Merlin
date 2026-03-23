@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────
+# Telegram Bot Configuration — TEMPLATE
+# ─────────────────────────────────────────────────────────────
+#
+# Copy this file to config/telegram.yaml and fill in your values.
+#
+# The bot token is stored in .env (TELEGRAM_BOT_TOKEN), never here.
+#
+# allowed_user_ids: MANDATORY whitelist. Only these Telegram user IDs
+# can interact with MERLIN. Leave empty = bot rejects everyone.
+# Find your ID: message @userinfobot on Telegram.
+#
+# max_queue_depth: Soft guard. If this many commands are already
+# pending in the bridge queue, new messages are rejected with
+# "System busy" to prevent queue pressure.
+#
+# response_timeout: How long (seconds) the adapter waits for a
+# bridge response before returning "timed out" to the user.
+# ─────────────────────────────────────────────────────────────
+
+telegram:
+  enabled: false
+  allowed_user_ids: []
+  max_queue_depth: 5
+  response_timeout: 120

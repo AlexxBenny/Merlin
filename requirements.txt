@@ -34,3 +34,6 @@ comtypes>=1.2,<2.0; platform_system == 'Windows'
 pycaw>=20240210; platform_system == 'Windows'
 pygetwindow>=0.0.9; platform_system == 'Windows'
 winsdk>=1.0; platform_system == 'Windows'
+
+# Telegram bot
+python-telegram-bot>=21.0,<22.0

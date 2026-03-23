@@ -48,6 +48,9 @@ windows = [
   "pygetwindow>=0.0.9; platform_system == 'Windows'",
   "winsdk>=1.0; platform_system == 'Windows'",
 ]
+telegram = [
+  "python-telegram-bot>=21.0,<22.0",
+]
 dev = [
   "pytest>=8.2,<9.0",
   "numpy>=1.26,<3.0",

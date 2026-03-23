@@ -922,11 +922,16 @@ def main(args=None):
 
     # ── UI Mode: Start bridge, API server, widget ──
     ui_mode = getattr(args, 'ui', False)
+    telegram_mode = getattr(args, 'telegram', False)
     bridge = None
     api_process = None
     widget_process = None
+    telegram_process = None
 
-    if ui_mode:
+    # Bridge is needed for both UI and Telegram (file-based IPC)
+    needs_bridge = ui_mode or telegram_mode
+
+    if needs_bridge:
         import subprocess
         import sys
         project_root = Path(__file__).resolve().parent
@@ -943,6 +948,12 @@ def main(args=None):
             log_buffer=log_buffer,
         )
         bridge.start()
+
+    if ui_mode:
+        if not needs_bridge:  # should not happen, but guard
+            import subprocess
+            import sys
+            project_root = Path(__file__).resolve().parent
 
         # 3. Start API server subprocess
         api_process = subprocess.Popen(
@@ -963,6 +974,44 @@ def main(args=None):
         except Exception as e:
             logger.warning("Widget launch failed (PySide6 may not be installed): %s", e)
             widget_process = None
+
+    # ── Telegram Mode: Start Telegram bot subprocess ──
+    if telegram_mode:
+        import os as _os
+        import subprocess
+        import sys
+        project_root = Path(__file__).resolve().parent
+
+        # Validate token
+        tg_token = _os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not tg_token:
+            logger.error(
+                "TELEGRAM_BOT_TOKEN not set in .env — cannot start Telegram bot"
+            )
+        else:
+            # Validate config
+            tg_config = load_yaml("telegram.yaml").get("telegram", {})
+            tg_enabled = tg_config.get("enabled", False)
+            tg_users = tg_config.get("allowed_user_ids", [])
+
+            if not tg_enabled:
+                logger.error(
+                    "Telegram is disabled in config/telegram.yaml — "
+                    "set 'enabled: true' to activate"
+                )
+            elif not tg_users:
+                logger.error(
+                    "allowed_user_ids is empty in config/telegram.yaml — "
+                    "add your Telegram user ID for security"
+                )
+            else:
+                telegram_process = subprocess.Popen(
+                    [sys.executable, "-m", "interface.telegram_bot"],
+                    cwd=str(project_root),
+                )
+                logger.info(
+                    "Telegram bot started (allowed_users=%s)", tg_users
+                )
 
     # ── Interactive loop ──
     print("=" * 60)
@@ -986,6 +1035,8 @@ def main(args=None):
         print(f"  Dashboard: http://localhost:8420")
         print(f"  API: http://localhost:8420/api/v1/")
         print(f"  API Docs: http://localhost:8420/docs")
+    if telegram_mode and telegram_process is not None:
+        print(f"  Telegram: Bot active")
     print("=" * 60)
     print()
 
@@ -1020,7 +1071,13 @@ def main(args=None):
         print("\n\nInterrupted.")
 
     finally:
-        # Shutdown in reverse order: widget → API → bridge → MERLIN core
+        # Shutdown in reverse order: telegram → widget → API → bridge → MERLIN core
+        if telegram_process is not None:
+            try:
+                telegram_process.terminate()
+                telegram_process.wait(timeout=5)
+            except Exception as e:
+                logger.warning("Telegram bot shutdown error: %s", e)
         if widget_process is not None:
             try:
                 widget_process.terminate()
@@ -1058,6 +1115,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ui", action="store_true",
         help="Launch dashboard UI, API server, and desktop widget",
+    )
+    parser.add_argument(
+        "--telegram", action="store_true",
+        help="Launch Telegram bot adapter (requires TELEGRAM_BOT_TOKEN in .env)",
     )
     args = parser.parse_args()
     main(args)

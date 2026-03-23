@@ -1,4 +1,7 @@
 .env
+config/telegram.yaml
+config/email.yaml
+config/browser.yaml
 
 venv/
 .venv/

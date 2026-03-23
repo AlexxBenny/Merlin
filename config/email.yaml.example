@@ -4,6 +4,8 @@
 # Email Provider Configuration
 # ─────────────────────────────────────────────────────────────
 #
+# Copy this file to config/email.yaml and fill in your values.
+#
 # Provider types:
 #   "smtp"             — SMTP send + IMAP read (v1, Python stdlib)
 #   "gmail_api"        — Gmail API with OAuth2 (v2, planned)
@@ -13,7 +15,7 @@
 # never stored in this YAML file.
 
 email:
-  enabled: true
+  enabled: false
   provider: "smtp"
 
   smtp:
@@ -27,7 +29,7 @@ email:
     use_ssl: true
 
   defaults:
-    from_address: "alexbenny2004@gmail.com"            # override via EMAIL_FROM_ADDRESS env
+    from_address: ""             # override via EMAIL_FROM_ADDRESS env
     signature: "-Sent via MERLIN"
     max_inbox_fetch: 20
 
