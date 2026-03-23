@@ -40,13 +40,22 @@ MERLIN is divided into distinct execution layers, preventing hallucinations and 
 graph TD
     %% Styling
     classDef user fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff,font-weight:bold
+    classDef iface fill:#1a365d,stroke:#63b3ed,stroke-width:2px,color:#fff
     classDef perception fill:#2c5282,stroke:#4299e1,stroke-width:2px,color:#fff
     classDef nervous fill:#742a2a,stroke:#fc8181,stroke-width:2px,color:#fff
     classDef cortex fill:#44337a,stroke:#9f7aea,stroke-width:2px,color:#fff
     classDef execution fill:#276749,stroke:#68d391,stroke-width:2px,color:#fff
     classDef memory fill:#7b341e,stroke:#f6ad55,stroke-width:2px,color:#fff
+    classDef provider fill:#285e61,stroke:#4fd1c5,stroke-width:2px,color:#fff
 
     User((User)):::user
+
+    subgraph Interface_Layer ["Input Channels"]
+        direction TB
+        TG["Telegram Bot"]:::iface
+        DASH["Dashboard / Widget"]:::iface
+        CLI["Terminal / Voice"]:::iface
+    end
 
     subgraph Perception_Layer ["1. Perception Layer (The Senses)"]
         PO["Perception Orchestrator"]:::perception
@@ -73,7 +82,7 @@ graph TD
         direction TB
         ME["Mission Executor"]:::execution
         SR["Skill Registry"]:::execution
-        Skills["System / Browser Skills"]:::execution
+        Skills["Skills: System / Browser / Email <br> FS / Memory / WhatsApp / Reasoning"]:::execution
         SCHED["Tick Scheduler"]:::execution
     end
 
@@ -85,8 +94,20 @@ graph TD
         CP["Context Provider"]:::memory
     end
 
-    %% Flow
-    User -.->|Command / Audio| PO
+    subgraph Providers ["External Providers"]
+        direction LR
+        EP_MAIL["Email SMTP/IMAP"]:::provider
+        EP_WA["WhatsApp Neonize"]:::provider
+        EP_BR["Browser-use Agent"]:::provider
+    end
+
+    %% Input Channels
+    User -.->|Phone| TG
+    User -.->|Browser| DASH
+    User -.->|Command / Audio| CLI
+    TG -->|IPC Queue| PO
+    DASH -->|IPC Queue| PO
+    CLI --> PO
     PO -->|Text & Speech| CF
     PO --> BC
     
@@ -109,6 +130,11 @@ graph TD
     ME -->|Topological Execution| SR
     SCHED -->|Scheduled Execution| ME
     SR --> Skills
+    
+    %% Provider Connections
+    Skills --> EP_MAIL
+    Skills --> EP_WA
+    Skills --> EP_BR
     
     %% State Mutation
     Skills -->|Emit Events| WT
