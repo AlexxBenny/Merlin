@@ -408,17 +408,84 @@ MERLIN routes different cognitive roles to different model providers via `config
 
 Here are some ways you can interact with MERLIN depending on the complexity of the task:
 
+### 🖥️ System Control
+
 **Reflex Action (Zero-LLM Fast Path)**
 > **User:** *"Mute the audio"*
-> **MERLIN:** Instantly mutes system volume via `SystemController` without LLM compilation.
+> **MERLIN:** Instantly mutes system volume via `SystemController` — no LLM involved. The reflex engine matches the intent and fires the skill in milliseconds.
 
-**Complex Mission Compilation (DAG Execution)**
-> **User:** *"Find the latest server logs, summarize any critical errors, and then schedule a reminder to email the team in 10 minutes."*
-> **MERLIN:** Compiles a multi-step Mission DAG ensuring logs are read before summarization, and schedules the reminder synchronously.
+**Volume & Brightness**
+> **User:** *"Set volume to 40 and brightness to 70"*
+> **MERLIN:** Compiles a two-node parallel DAG — one node calls `system.set_volume`, the other calls `system.set_brightness`. Both execute concurrently and complete within a second.
 
-**Policy Enforcement (Memory)**
+**Application Management**
+> **User:** *"Open Spotify and close Chrome"*
+> **MERLIN:** Routes through the reflex engine for instant execution. `SystemController` launches Spotify via the application registry and gracefully terminates Chrome — no compilation overhead, no LLM.
+
+**System Status**
+> **User:** *"How's the system doing?"*
+> **MERLIN:** Pulls a live snapshot — CPU load, memory usage, disk capacity, and battery level — from `SystemController` hardware metrics and presents a clean summary.
+
+**Media Playback**
+> **User:** *"Skip this track"*
+> **MERLIN:** Fires `system.media_next` through the reflex engine, sending the media key event to the active player. Play, pause, next, and previous are all sub-second reflexes.
+
+### ⏱️ Proactive Monitoring & Policies
+
+**Policy Enforcement**
 > **User:** *"Whenever I open Netflix, set the brightness to 30%."*
-> **MERLIN:** Saves this policy to the `UserKnowledgeStore`. The next time it detects Netflix, the background event loop triggers the brightness adjustment proactively.
+> **MERLIN:** Saves this policy to the `UserKnowledgeStore`. The background event loop continuously monitors running applications — the moment Netflix is detected, the `AttentionManager` triggers the brightness adjustment proactively without being asked.
+
+**Proactive System Watch**
+> MERLIN's always-on event loop doesn't just wait for commands. It evaluates scheduled tasks, monitors system events, and runs proactive reflexes in the background. If battery drops below a threshold or a scheduled job completes, the `AttentionManager` classifies the urgency and decides whether to interrupt you immediately, queue a notification for later, or suppress it entirely.
+
+### 📧 Email
+
+**Draft & Send**
+> **User:** *"Email my professor about the project deadline extension"*
+> **MERLIN:** Uses the `generate_text` skill to draft a polished, context-aware message — pulling your name and relevant details from memory. The draft appears in the dashboard for review. Sending requires explicit approval through a two-stage confirmation gate (`risk_level: destructive`), so nothing leaves your inbox without your say-so.
+
+**File Attachments**
+> **User:** *"Send the quarterly report to finance@company.com"*
+> **MERLIN:** Resolves "quarterly report" against the file index, validates the attachment (existence, permissions, size under 25 MB, MIME type), and stages the draft with the file attached. You review and approve before it's dispatched.
+
+### 🌐 Browser Automation
+
+**Autonomous Browsing**
+> **User:** *"Look up the latest GPU benchmarks and summarize the top 5"*
+> **MERLIN:** Spins up a `browser-use` agent that navigates, scrolls, and extracts data autonomously. A three-layer `BrowserSafetyGate` runs before every task — blocking financial domains and purchase actions, flagging login/download flows for confirmation. MERLIN can browse for you, but it won't buy anything or log into your accounts without explicit approval.
+
+### 💬 WhatsApp & Messaging
+
+**Send a Message**
+> **User:** *"Tell Raj on WhatsApp that I'll be 10 minutes late"*
+> **MERLIN:** Routes through the WhatsApp neonize bridge to deliver the message directly. File sharing works the same way — just say *"send the meeting notes to Raj on WhatsApp"* and MERLIN resolves the file, attaches it, and sends.
+
+### 🧠 Memory & Knowledge
+
+**Facts & Relationships**
+> **User:** *"My brother's name is Arjun and he lives in Bangalore"*
+> **MERLIN:** Stores both facts in the `UserKnowledgeStore` — structured, versioned, instantly queryable. The next time you say *"send Arjun a birthday message"*, MERLIN already knows who he is and where he is, without asking again.
+
+**Recall During Work**
+> MERLIN's memory isn't a novelty — it's wired into the execution pipeline. Stored preferences, facts, traits, and policies are injected as context into LLM prompts during mission compilation, meaning your identity and rules shape every plan MERLIN generates.
+
+### 📁 File System
+
+**Nested Creation**
+> **User:** *"Create a folder structure for my new project: src, docs, and tests inside a folder called Atlas on the desktop"*
+> **MERLIN:** Compiles a multi-node DAG that creates each directory with full path resolution through `LocationConfig`. Nested paths are handled natively — `parents=True` means intermediate directories are created automatically. No manual scaffolding needed.
+
+### ⏰ Job Scheduler
+
+**Timed Execution**
+> **User:** *"Remind me to check the server logs every 30 minutes"*
+> **MERLIN:** Submits a recurring job to the `TickScheduler` with a 30-minute interval. The scheduler runs on a cooperative tick cycle — priority-ordered, concurrency-capped, with exponential retry backoff on failure. If MERLIN restarts, boot recovery fast-forwards missed intervals so you get one catch-up execution instead of a flood.
+
+### 📱 Telegram Remote Control
+
+**Remote Access**
+> When you're away from your desk, MERLIN stays reachable through a Telegram bot. Send a message from your phone — *"what's running on my machine?"* or *"email the report to the team"* — and it flows through the exact same execution pipeline as the desktop UI. Access is locked to a whitelist of approved Telegram user IDs, messages are serialized through queue pressure guards, and bridge liveness is verified before every dispatch. It's your full MERLIN instance in your pocket, secured at every layer.
 
 ---
 
