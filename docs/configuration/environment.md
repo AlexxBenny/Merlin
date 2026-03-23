@@ -13,6 +13,9 @@ MERLIN uses a `.env` file for secrets and environment-specific settings.
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `TELEGRAM_BOT_TOKEN` | Telegram bot adapter | — |
+| `EMAIL_ADDRESS` | Email sender address | — |
+| `EMAIL_APP_PASSWORD` | Email SMTP app password | — |
 | `OLLAMA_HOST` | Ollama server URL | `http://localhost:11434` |
 | `HUGGINGFACE_API_KEY` | HuggingFace Inference API | — |
 | `BROWSER_HEADLESS` | Run browser headless | `false` |

@@ -2,7 +2,7 @@
 
 **Location**: `skills/browser/`
 
-7 skills for web browser interaction. Follow the three-tier execution model.
+12 skills for web browser interaction. Follow the three-tier execution model.
 
 ## Skills
 
@@ -51,6 +51,26 @@ Navigate back in browser history. No inputs.
 ### `browser.go_forward` (`browser_go_forward.py`)
 
 Navigate forward in browser history. No inputs.
+
+### `browser.find_element` (`browser_find_element.py`)
+
+Find a specific element on the page by text or description.
+
+### `browser.keypress` (`browser_keypress.py`)
+
+Send keyboard events (key presses, shortcuts) to the browser.
+
+### `browser.search` (`browser_search.py`)
+
+Perform a web search query.
+
+### `browser.select_result` (`browser_select_result.py`)
+
+Select a specific result from search results or a list.
+
+### `browser.wait_for` (`browser_wait_for.py`)
+
+Wait for a page element or condition before proceeding.
 
 ### `browser.autonomous_task` (`autonomous_task.py`)
 

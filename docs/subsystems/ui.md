@@ -47,6 +47,8 @@ Glass-morphism cards (`.glass-card`), animated SVG gauges, and `fadeInUp` page t
 |-------|------|----------|
 | `/` | **Overview** | CPU/RAM/Disk SVG gauges, uptime counter, mission state badge, battery |
 | `/chat` | **Chat** | SSE streaming with cursor animation, typing indicator, session management |
+| `/mail` | **Mail** | Email drafts, inbox, compose with approve/send workflow |
+| `/whatsapp` | **WhatsApp** | WhatsApp message history and composition |
 | `/scheduler` | **Scheduler** | Jobs table with status badges, pause/resume/cancel actions |
 | `/memory` | **Memory** | 5 knowledge domain cards (preferences, facts, traits, policies, relationships) |
 | `/logs` | **Logs** | WebSocket real-time stream, level filter chips, text search, auto-scroll |
@@ -114,15 +116,17 @@ When `python main.py --ui` is used:
 3. MerlinBridge daemon thread starts (export + command loops)
 4. API server subprocess launched (python -m interface.api_server)
 5. Widget subprocess launched (python -m ui.widget.widget)
-6. Interactive terminal loop runs normally
+6. Telegram subprocess launched (if --telegram flag, python -m interface.telegram_bot)
+7. Interactive terminal loop runs normally
 ```
 
 ### Shutdown Order (reverse)
 
 ```
-1. Widget subprocess terminated
-2. API server subprocess terminated
-3. Bridge daemon thread stopped
-4. MERLIN core stopped (merlin.stop())
-5. Browser adapter shutdown
+1. Telegram subprocess terminated (if running)
+2. Widget subprocess terminated
+3. API server subprocess terminated
+4. Bridge daemon thread stopped
+5. MERLIN core stopped (merlin.stop())
+6. Browser adapter shutdown
 ```

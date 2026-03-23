@@ -2,7 +2,7 @@
 
 **Location**: `skills/system/`
 
-20 skills for OS interaction, media control, and job management.
+19 skills for OS interaction, media control, and job management.
 
 ## Media Control
 

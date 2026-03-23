@@ -13,7 +13,7 @@ At platform level, MERLIN remains strong in deterministic execution, guard-based
 
 ## Validation Snapshot (Observed During Analysis)
 
-- Latest test run (`python -m pytest -q`): **1736 passed, 1 skipped, 0 failed**.
+- Latest test run at time of analysis (`python -m pytest -q`): **1736 passed, 1 skipped, 0 failed** (as of 2026-03-17; current count: **1796**).
 - Email skills fully loaded and discoverable at runtime.
 - Compiler correctly generates `email.read_inbox` plan for queries like "what are my latest emails".
 - Scored discovery handles plural/singular normalization (`emails` → `email`).
@@ -126,7 +126,7 @@ Readiness scale: **Good / Partial / Limited**
 
 1. ~~Harden email bootstrap diagnostics~~ — Email skills load reliably
 2. ~~Ensure deterministic skill availability modes~~ — Registry is idempotent, discovery handles plurals
-3. ~~Stabilize integration tests~~ — 1517 tests pass, 0 failures
+3. ~~Stabilize integration tests~~ — 1796 tests pass, 0 failures (current)
 
 ## P1 — Strengthen Autonomous Operations
 
@@ -138,7 +138,7 @@ Readiness scale: **Good / Partial / Limited**
 
 1. Define first-class plugin SDK conventions (packaging, versioning, compatibility).
 2. Introduce safer plugin isolation boundaries for untrusted integrations.
-3. Grow integration domains beyond email (calendar/chat/tickets/docs) using same guarded architecture.
+3. ~~Grow integration domains beyond email (calendar/chat/tickets/docs) using same guarded architecture.~~ WhatsApp (neonize, 2 skills) and Telegram (bot adapter) now integrated. Calendar/tickets/docs remain.
 
 ---
 

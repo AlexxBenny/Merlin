@@ -50,6 +50,7 @@ class VoiceEngineFactory:
                         "compute_type", "float16"
                     ),
                     language=voice_config["stt"].get("language", "en"),
+                    model_path=voice_config["stt"].get("model_path"),
                 )
         except ImportError:
             logger.error(

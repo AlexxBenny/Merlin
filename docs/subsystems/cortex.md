@@ -46,9 +46,9 @@ Intermediate reasoning layer. Decides whether skills are needed.
 ### IntentEngine (`cortex/intent_engine.py`)
 
 Verb/keyword-based skill discovery. Maintains an inverted index:
-- 98 verb entries
-- 120+ keyword entries (including plural forms)
-- 44 skills indexed
+- Verb entries mapped per `intent_verbs` in each SkillContract
+- Keyword entries mapped per `intent_keywords` (including plural normalization)
+- 48 skills indexed across 7 domains
 
 ### ScoredDiscovery (`cortex/scored_discovery.py`)
 

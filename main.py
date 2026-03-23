@@ -1035,6 +1035,14 @@ def main(args=None):
         print(f"  Dashboard: http://localhost:8420")
         print(f"  API: http://localhost:8420/api/v1/")
         print(f"  API Docs: http://localhost:8420/docs")
+        # STT status
+        stt_mode = voice_config.get("ui_stt_mode", "controlled") if voice_config else "controlled"
+        stt_engine_name = voice_config.get("stt", {}).get("engine", "?") if voice_config else "?"
+        stt_model = voice_config.get("stt", {}).get("model", "?") if voice_config else "?"
+        if voice_config and voice_config.get("enabled", True):
+            print(f"  STT: {stt_engine_name}/{stt_model} (mode={stt_mode})")
+        else:
+            print(f"  STT: disabled")
     if telegram_mode and telegram_process is not None:
         print(f"  Telegram: Bot active")
     print("=" * 60)

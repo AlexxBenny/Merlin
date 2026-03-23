@@ -89,3 +89,28 @@ vlc:
   can_play: true
   can_pause: true
 ```
+
+## `email.yaml`
+
+Email provider configuration:
+- Provider type (`smtp`, `gmail_api`, `microsoft_graph`)
+- SMTP/IMAP host and port settings
+- Default sender address and signature
+- Credentials via `.env` (never in YAML)
+
+## `whatsapp.yaml`
+
+WhatsApp integration settings:
+- Provider configuration (neonize bridge)
+- Connection parameters
+- Rate limiting settings
+
+## `telegram.yaml`
+
+Telegram bot adapter configuration:
+- `enabled` — toggle adapter on/off
+- `allowed_user_ids` — whitelist of authorized Telegram user IDs
+- `max_queue_depth` — queue pressure guard threshold
+- `response_timeout` — response wait timeout in seconds
+- Bot token stored in `.env` (`TELEGRAM_BOT_TOKEN`), never in this file
+

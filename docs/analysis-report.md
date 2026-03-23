@@ -87,12 +87,12 @@ Readiness scale: **Excellent / Good / Partial / Missing**
 
 **Status:** Resolved. `pyproject.toml` and `requirements.txt` now exist at repo root. Frontend dependency conflicts addressed.
 
-## B) External ecosystem capability
+## B) External ecosystem capability — ✅ PARTIALLY RESOLVED
 
 1. Limited first-party productivity integrations (email, calendar, chat, issue trackers, cloud docs).  
 2. High-value enterprise automations require additional skill domains and auth connectors.
 
-Impact: limits “daily driver” adoption for advanced users.
+Impact: Reduced — Email (SMTP/IMAP, 5 skills), WhatsApp (neonize, 2 skills), and Telegram (bot adapter) now integrated. Calendar, issue trackers, and cloud docs remain.
 
 ## C) Operational hardening for autonomous usage
 
@@ -121,15 +121,15 @@ Impact: may cause execution surprises in ambiguous requests.
 
 ## Prioritized Roadmap to “Best Framework” Status
 
-## P0 (critical foundations)
+## P0 (critical foundations) — ✅ RESOLVED
 
-1. Add canonical Python package/dependency management (`pyproject.toml`) and reproducible setup instructions.
-2. Resolve frontend dependency conflicts and ensure lint/build pass in CI.
+1. ~~Add canonical Python package/dependency management (`pyproject.toml`) and reproducible setup instructions.~~ ✔️
+2. ~~Resolve frontend dependency conflicts and ensure lint/build pass in CI.~~ ✔️
 3. Add explicit runtime guardrails: budget ceilings, action risk classes, and confirmation policy for sensitive operations.
 
-## P1 (power-user expansion)
+## P1 (power-user expansion) — PARTIALLY RESOLVED
 
-1. Add first-party integration skill packs (email/calendar/chat/task trackers).
+1. ~~Add first-party integration skill packs (email/calendar/chat/task trackers).~~ Email, WhatsApp, Telegram now integrated. Calendar/task trackers remain.
 2. Add policy-driven autonomous session planner (goal decomposition + checkpoints + abort criteria).
 3. Add user-visible observability panel for token, cost, latency, and failure reasons per mission.
 

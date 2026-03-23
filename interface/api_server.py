@@ -13,10 +13,12 @@ Reads responses from state/api/responses/ (written by bridge.py).
 No MERLIN core imports. No direct access to MERLIN internals.
 """
 
+import io
 import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -96,7 +98,7 @@ async def _wait_for_response(
 # ─────────────────────────────────────────────────────────────
 
 try:
-    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel
@@ -105,6 +107,46 @@ except ImportError:
         "FastAPI is required for the API server. "
         "Install with: pip install fastapi uvicorn"
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# STT Engine — loaded directly, no IPC round-trip
+# ─────────────────────────────────────────────────────────────
+
+def _load_stt_engine():
+    """Load STT engine from execution.yaml voice config.
+
+    Uses the same config path and factory as main.py
+    to prevent config drift.
+    """
+    try:
+        config_path = _CONFIG_DIR / "execution.yaml"
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        voice_cfg = config.get("voice", {})
+        if not voice_cfg.get("enabled", True):
+            logger.info("[STT] Voice disabled in config — STT engine not loaded")
+            return None, voice_cfg
+
+        from infrastructure.voice_factory import VoiceEngineFactory
+        engine = VoiceEngineFactory.create_stt(voice_cfg)
+        if engine and engine.is_available():
+            logger.info("[STT] Engine loaded: %s", type(engine).__name__)
+            # Eagerly load model at startup — avoids cold-start latency
+            if hasattr(engine, '_ensure_model'):
+                engine._ensure_model()
+                logger.info("[STT] Model pre-loaded at startup")
+            return engine, voice_cfg
+        else:
+            logger.warning("[STT] Engine not available (missing dependencies?)")
+            return None, voice_cfg
+    except Exception:
+        logger.exception("[STT] Failed to load engine")
+        return None, {}
+
+
+_stt_engine, _voice_config = _load_stt_engine()
 
 
 app = FastAPI(
@@ -380,6 +422,17 @@ async def get_config():
             wa_config = yaml.safe_load(f) or {}
         config["whatsapp"] = _mask_secrets(wa_config.get("whatsapp", wa_config))
 
+    # Load telegram.yaml if exists
+    tg_path = _CONFIG_DIR / "telegram.yaml"
+    if tg_path.exists():
+        with open(tg_path, "r", encoding="utf-8") as f:
+            tg_config = yaml.safe_load(f) or {}
+        tg_data = tg_config.get("telegram", tg_config)
+        # Convert allowed_user_ids list to comma-separated string for UI
+        if "allowed_user_ids" in tg_data and isinstance(tg_data["allowed_user_ids"], list):
+            tg_data["allowed_user_ids"] = ",".join(str(uid) for uid in tg_data["allowed_user_ids"])
+        config["telegram"] = _mask_secrets(tg_data)
+
     # Load field metadata for dashboard display
     from interface.config_schema import CONFIG_FIELD_METADATA
     config["_field_metadata"] = CONFIG_FIELD_METADATA
@@ -635,6 +688,86 @@ async def whatsapp_send(request: WhatsAppSendRequest):
     })
     response = await _wait_for_response(cmd_id, timeout=30.0)
     return response
+
+
+# ─────────────────────────────────────────────────────────────
+# STT Endpoints
+# ─────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/stt/transcribe")
+async def stt_transcribe(audio: UploadFile):
+    """Transcribe uploaded audio via server-side STT engine.
+
+    Accepts any format PyAV can decode: webm, opus, wav, mp3, ogg.
+    Returns enriched transcription with duration, confidence,
+    language, and segment timestamps.
+    """
+    request_id = str(uuid.uuid4())[:8]
+    t_start = time.monotonic()
+
+    if _stt_engine is None:
+        logger.warning("[STT] request_id=%s — engine unavailable, returning 503", request_id)
+        raise HTTPException(
+            status_code=503,
+            detail="STT engine not available. Check voice config and dependencies.",
+        )
+
+    try:
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        audio_size_kb = len(audio_bytes) / 1024
+        logger.info(
+            "[STT] request_id=%s — transcribing %.1fKB audio (content_type=%s)",
+            request_id, audio_size_kb, audio.content_type,
+        )
+
+        audio_io = io.BytesIO(audio_bytes)
+        result = _stt_engine.transcribe_file(audio_io)
+
+        latency = time.monotonic() - t_start
+        logger.info(
+            "[STT] request_id=%s — done: duration=%.1fs latency=%.2fs "
+            "confidence=%.3f language=%s text_len=%d mode=controlled",
+            request_id, result.duration, latency,
+            result.confidence, result.language, len(result.text),
+        )
+
+        return {
+            "text": result.text,
+            "confidence": result.confidence,
+            "duration": result.duration,
+            "language": result.language,
+            "segments": [
+                {"start": s.start, "end": s.end, "text": s.text}
+                for s in result.segments
+            ],
+        }
+
+    except HTTPException:
+        raise
+    except Exception:
+        latency = time.monotonic() - t_start
+        logger.exception(
+            "[STT] request_id=%s — transcription failed after %.2fs",
+            request_id, latency,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Transcription failed. Check server logs.",
+        )
+
+
+@app.get("/api/v1/stt/config")
+async def stt_config():
+    """Return current STT configuration for the UI."""
+    mode = _voice_config.get("ui_stt_mode", "controlled")
+    return {
+        "mode": mode,
+        "available": _stt_engine is not None,
+        "engine": type(_stt_engine).__name__ if _stt_engine else None,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
