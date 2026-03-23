@@ -5,6 +5,7 @@ config/browser.yaml
 
 venv/
 .venv/
+models/whisper/
 *.egg-info/
 
 __pycache__

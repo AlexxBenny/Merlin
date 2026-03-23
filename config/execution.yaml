@@ -75,9 +75,11 @@ browser:
 
 voice:
   enabled: true                     # Master switch for voice subsystem
+  ui_stt_mode: "controlled"         # "controlled" (server Whisper) | "fast" (browser Web Speech API)
   stt:
     engine: "faster-whisper"        # faster-whisper | vosk (future)
     model: "small"                  # tiny | base | small | medium
+    model_path: "models/whisper"    # Local path for model storage (relative to project root). null = ~/.cache/huggingface/
     device: "cuda"                  # cpu | cuda
     compute_type: "float16"         # float16 | int8 | float32
     language: "en"                  # ISO 639-1

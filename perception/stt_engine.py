@@ -9,9 +9,18 @@ Engines are created by VoiceEngineFactory from config.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Tuple
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class TranscriptionSegment:
+    """A single segment of transcribed speech with timestamps."""
+    start: float   # seconds
+    end: float     # seconds
+    text: str
 
 
 @dataclass(frozen=True)
@@ -20,6 +29,8 @@ class TranscriptionResult:
     text: str
     confidence: float
     language: str
+    duration: float = 0.0
+    segments: Tuple[TranscriptionSegment, ...] = ()
 
 
 class STTEngine(ABC):

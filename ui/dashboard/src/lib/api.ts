@@ -134,6 +134,20 @@ export interface DraftUpdate {
   status?: string;
 }
 
+export interface SttConfig {
+  mode: 'controlled' | 'fast';
+  available: boolean;
+  engine: string | null;
+}
+
+export interface SttTranscription {
+  text: string;
+  confidence: number;
+  duration: number;
+  language: string;
+  segments: { start: number; end: number; text: string }[];
+}
+
 // ── Fetch helpers ───────────────────────────────────────
 
 async function get<T>(path: string): Promise<T> {
@@ -199,6 +213,22 @@ export const api = {
   getWhatsAppStatus: () => get<WhatsAppStatus>('/whatsapp/status'),
   getWhatsAppMessages: () => get<WhatsAppMessage[]>('/whatsapp/messages'),
   sendWhatsApp: (contact: string, text: string) => post<{ status: string; response: string }>('/whatsapp/send', { contact, text }),
+
+  // ── STT (Speech-to-Text) ────────────────────────────────────
+  getSttConfig: () => get<SttConfig>('/stt/config'),
+  sttTranscribe: async (audio: Blob): Promise<SttTranscription> => {
+    const form = new FormData();
+    form.append('audio', audio, 'recording.webm');
+    const res = await fetch(`${API_BASE}/stt/transcribe`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      throw new Error(`STT ${res.status}: ${detail}`);
+    }
+    return res.json();
+  },
 };
 
 // ── WebSocket helper ────────────────────────────────────

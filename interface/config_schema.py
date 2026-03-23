@@ -57,6 +57,7 @@ class EditableNarrationConfig(BaseModel):
 class EditableVoiceConfig(BaseModel):
     """Voice subsystem settings."""
     enabled: Optional[bool] = None
+    ui_stt_mode: Optional[str] = Field(None, pattern="^(controlled|fast)$")
     tts_enabled: Optional[bool] = None
     tts_rate: Optional[int] = Field(None, ge=100, le=300)
 
@@ -105,6 +106,17 @@ class EditableWhatsAppRateLimitConfig(BaseModel):
     window_seconds: Optional[int] = Field(None, ge=10, le=3600)
 
 
+class EditableTelegramConfig(BaseModel):
+    """Telegram settings (mirrors telegram.yaml → telegram section)."""
+    enabled: Optional[bool] = None
+    allowed_user_ids: Optional[str] = Field(
+        None,
+        description="Comma-separated Telegram user IDs (e.g. 123456,789012)",
+    )
+    max_queue_depth: Optional[int] = Field(None, ge=1, le=20)
+    response_timeout: Optional[int] = Field(None, ge=10, le=600)
+
+
 # ─────────────────────────────────────────────────────────────
 # Master config update model
 # ─────────────────────────────────────────────────────────────
@@ -128,6 +140,7 @@ class ConfigUpdateRequest(BaseModel):
     email_defaults: Optional[EditableEmailDefaultsConfig] = None
     whatsapp: Optional[EditableWhatsAppConfig] = None
     whatsapp_rate_limit: Optional[EditableWhatsAppRateLimitConfig] = None
+    telegram: Optional[EditableTelegramConfig] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -204,6 +217,11 @@ CONFIG_FIELD_METADATA: Dict[str, Dict[str, Any]] = {
         "label": "TTS Rate (WPM)",
         "description": "Text-to-speech words per minute",
         "type": "int", "min": 100, "max": 300,
+    },
+    "voice.ui_stt_mode": {
+        "label": "UI STT Mode",
+        "description": "controlled (server Whisper) or fast (browser Web Speech API)",
+        "type": "str",
     },
     "browser.headless": {
         "label": "Headless Browser",
@@ -286,6 +304,27 @@ CONFIG_FIELD_METADATA: Dict[str, Dict[str, Any]] = {
         "label": "Rate Limit — Window (seconds)",
         "description": "Time window for rate limiting",
         "type": "int", "min": 10, "max": 3600,
+    },
+    # Telegram config fields
+    "telegram.enabled": {
+        "label": "Telegram Enabled",
+        "description": "Master switch for Telegram bot integration",
+        "type": "bool",
+    },
+    "telegram.allowed_user_ids": {
+        "label": "Allowed User IDs",
+        "description": "Comma-separated Telegram user IDs (e.g. 123456,789012)",
+        "type": "str",
+    },
+    "telegram.max_queue_depth": {
+        "label": "Max Queue Depth",
+        "description": "Max pending commands before rejecting new messages",
+        "type": "int", "min": 1, "max": 20,
+    },
+    "telegram.response_timeout": {
+        "label": "Response Timeout (seconds)",
+        "description": "Max wait time for a bridge response",
+        "type": "int", "min": 10, "max": 600,
     },
 }
 

@@ -117,6 +117,183 @@ class ChatWorker(QThread):
                 self.error_occurred.emit(str(e))
 
 
+class MicWorker(QThread):
+    """Records mic audio with VAD, uploads to STT endpoint.
+
+    States: recording → uploading → done/error
+    Stops on: manual stop(), 1.2s silence, or 10s max duration.
+    """
+
+    transcription_ready = Signal(str)   # emitted with transcribed text
+    error_occurred = Signal(str)        # emitted with error message
+    status_changed = Signal(str)        # "listening" | "processing"
+
+    # Recording params
+    SAMPLE_RATE = 16000
+    CHANNELS = 1
+    BLOCK_SIZE = 480          # 30ms frames for VAD
+    SILENCE_LIMIT = 1.2       # seconds of silence before auto-stop
+    MAX_DURATION = 10.0       # seconds max recording
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stop_flag = False
+
+    def stop_recording(self):
+        """Signal the worker to stop recording (button re-click)."""
+        self._stop_flag = True
+
+    def run(self):
+        self.status_changed.emit("listening")
+        audio_data = self._record()
+        if audio_data is None:
+            return  # error already emitted
+
+        if len(audio_data) < self.SAMPLE_RATE * 0.3:  # < 300ms
+            self.error_occurred.emit("Recording too short")
+            return
+
+        self.status_changed.emit("processing")
+        self._upload_and_transcribe(audio_data)
+
+    def _record(self):
+        """Record mic audio with silence detection."""
+        try:
+            import sounddevice as sd
+        except ImportError:
+            self.error_occurred.emit("sounddevice not installed")
+            return None
+
+        frames = []
+        silence_frames = 0
+        silence_threshold = int(self.SILENCE_LIMIT * self.SAMPLE_RATE / self.BLOCK_SIZE)
+        max_frames = int(self.MAX_DURATION * self.SAMPLE_RATE / self.BLOCK_SIZE)
+        frame_count = 0
+
+        # Energy-based silence detection (simpler, no webrtcvad dep)
+        ENERGY_THRESHOLD = 0.01
+
+        try:
+            with sd.InputStream(
+                samplerate=self.SAMPLE_RATE,
+                channels=self.CHANNELS,
+                dtype='float32',
+                blocksize=self.BLOCK_SIZE,
+            ) as stream:
+                while not self._stop_flag and frame_count < max_frames:
+                    data, overflowed = stream.read(self.BLOCK_SIZE)
+                    frames.append(data.copy())
+                    frame_count += 1
+
+                    # Energy check
+                    import numpy as np
+                    energy = np.sqrt(np.mean(data ** 2))
+                    if energy < ENERGY_THRESHOLD:
+                        silence_frames += 1
+                    else:
+                        silence_frames = 0
+
+                    # Auto-stop after sustained silence
+                    if silence_frames >= silence_threshold and frame_count > 10:
+                        logger.debug("MicWorker: auto-stop after %.1fs silence",
+                                     self.SILENCE_LIMIT)
+                        break
+
+        except sd.PortAudioError as e:
+            err = str(e)
+            if "permission" in err.lower() or "denied" in err.lower():
+                self.error_occurred.emit("Microphone permission denied")
+            elif "not found" in err.lower() or "no device" in err.lower():
+                self.error_occurred.emit("No microphone device found")
+            else:
+                self.error_occurred.emit(f"Mic error: {err}")
+            return None
+        except Exception as e:
+            self.error_occurred.emit(f"Recording error: {e}")
+            return None
+
+        if not frames:
+            self.error_occurred.emit("No audio captured")
+            return None
+
+        import numpy as np
+        audio = np.concatenate(frames, axis=0)
+        # sounddevice returns (N, channels) — flatten to 1D for mono
+        if audio.ndim > 1:
+            audio = audio.flatten()
+        return audio
+
+    def _upload_and_transcribe(self, audio_data):
+        """Upload audio to STT endpoint and emit result."""
+        import io
+        import struct
+
+        if _requests_mod is None:
+            self.error_occurred.emit("requests library not installed")
+            return
+
+        # Convert float32 numpy to WAV bytes in memory
+        try:
+            wav_buffer = io.BytesIO()
+            import numpy as np
+            # Convert float32 [-1,1] to int16
+            pcm = (audio_data * 32767).astype(np.int16)
+            # Write WAV header manually (avoids soundfile dep)
+            num_samples = len(pcm)
+            data_size = num_samples * 2  # 16-bit = 2 bytes per sample
+            wav_buffer.write(b'RIFF')
+            wav_buffer.write(struct.pack('<I', 36 + data_size))
+            wav_buffer.write(b'WAVE')
+            wav_buffer.write(b'fmt ')
+            wav_buffer.write(struct.pack('<I', 16))       # chunk size
+            wav_buffer.write(struct.pack('<H', 1))        # PCM
+            wav_buffer.write(struct.pack('<H', 1))        # mono
+            wav_buffer.write(struct.pack('<I', self.SAMPLE_RATE))
+            wav_buffer.write(struct.pack('<I', self.SAMPLE_RATE * 2))
+            wav_buffer.write(struct.pack('<H', 2))        # block align
+            wav_buffer.write(struct.pack('<H', 16))       # bits per sample
+            wav_buffer.write(b'data')
+            wav_buffer.write(struct.pack('<I', data_size))
+            wav_buffer.write(pcm.tobytes())
+            wav_buffer.seek(0)
+        except Exception as e:
+            self.error_occurred.emit(f"Audio encoding error: {e}")
+            return
+
+        try:
+            resp = _requests_mod.post(
+                f"{API_BASE}/api/v1/stt/transcribe",
+                files={"audio": ("recording.wav", wav_buffer, "audio/wav")},
+                timeout=30,
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data.get("text", "").strip()
+                if text:
+                    logger.info(
+                        "MicWorker: transcribed %d chars (confidence=%.3f, "
+                        "duration=%.1fs, language=%s)",
+                        len(text), data.get("confidence", 0),
+                        data.get("duration", 0), data.get("language", "?"),
+                    )
+                    self.transcription_ready.emit(text)
+                else:
+                    self.error_occurred.emit("No speech detected")
+            elif resp.status_code == 503:
+                self.error_occurred.emit("STT engine unavailable on server")
+            else:
+                self.error_occurred.emit(f"STT error: HTTP {resp.status_code}")
+
+        except Exception as e:
+            if "ConnectionError" in type(e).__name__:
+                self.error_occurred.emit("Cannot connect to MERLIN API")
+            elif "Timeout" in type(e).__name__:
+                self.error_occurred.emit("STT request timed out")
+            else:
+                self.error_occurred.emit(f"STT error: {e}")
+
+
 # ─────────────────────────────────────────────────────────────
 # Chat Bubble
 # ─────────────────────────────────────────────────────────────
@@ -252,6 +429,8 @@ class MerlinOrb(QWidget):
 
         self._typing_widget: Optional[TypingBubble] = None
         self._chat_worker:  Optional[ChatWorker]    = None
+        self._mic_worker:   Optional[MicWorker]     = None
+        self._mic_recording = False
 
         self._setup_window()
         self._setup_panel()
@@ -558,6 +737,32 @@ class MerlinOrb(QWidget):
         self._input.returnPressed.connect(self._send_message)
         bar_lay.addWidget(self._input)
 
+        # ── mic button ──
+        self._mic_btn = QPushButton("\U0001F3A4")  # 🎤
+        self._mic_btn.setFixedSize(38, 38)
+        self._mic_btn.setFont(QFont("Segoe UI", 13))
+        self._mic_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0,160,220,45);
+                color: rgba(0,200,255,220);
+                border: 1px solid rgba(0,185,255,55);
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background: rgba(0,180,240,75);
+                border-color: rgba(0,210,255,100);
+            }
+            QPushButton:pressed { padding-top: 2px; }
+            QPushButton:disabled {
+                background: rgba(40,40,60,120);
+                color: rgba(255,255,255,50);
+                border-color: rgba(255,255,255,15);
+            }
+        """)
+        self._mic_btn.setToolTip("Voice input")
+        self._mic_btn.clicked.connect(self._toggle_mic)
+        bar_lay.addWidget(self._mic_btn)
+
         self._send_btn = QPushButton("→")
         self._send_btn.setFixedSize(38, 38)
         self._send_btn.setFont(QFont("Segoe UI", 15))
@@ -705,6 +910,97 @@ class MerlinOrb(QWidget):
         self._add_bubble(error, kind="error")
         self._set_input_enabled(True)
         self._input.setFocus()
+
+    # ── mic ───────────────────────────────────────────────
+
+    def _toggle_mic(self):
+        """Toggle mic recording on/off."""
+        if self._mic_recording:
+            # Stop recording
+            if self._mic_worker:
+                self._mic_worker.stop_recording()
+            return
+
+        if self._processing:
+            return
+
+        # Start recording
+        self._mic_worker = MicWorker()
+        self._mic_worker.transcription_ready.connect(self._on_mic_result)
+        self._mic_worker.error_occurred.connect(self._on_mic_error)
+        self._mic_worker.status_changed.connect(self._on_mic_status)
+        self._mic_worker.finished.connect(self._on_mic_thread_finished)
+        self._mic_worker.start()
+        self._mic_recording = True
+
+        # Visual: red recording state
+        self._mic_btn.setText("\u25FC")  # ◼ stop icon
+        self._mic_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(220,50,50,65);
+                color: rgba(255,130,130,230);
+                border: 1px solid rgba(220,70,70,80);
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background: rgba(220,50,50,100);
+            }
+        """)
+        self._input.setPlaceholderText("Listening\u2026")
+
+    def _on_mic_status(self, status: str):
+        if status == "listening":
+            self._input.setPlaceholderText("Listening\u2026")
+        elif status == "processing":
+            self._input.setPlaceholderText("Transcribing\u2026")
+            self._mic_btn.setText("\u27F3")  # ⟳
+
+    def _on_mic_result(self, text: str):
+        """Handle successful transcription: populate + auto-send."""
+        self._reset_mic_ui()
+        self._input.setText(text)
+        self._send_message()
+
+    def _on_mic_error(self, error: str):
+        """Handle mic/STT error: show as error bubble."""
+        self._reset_mic_ui()
+        self._add_bubble(f"\U0001F3A4 {error}", kind="error")
+
+    def _reset_mic_ui(self):
+        """Reset mic button to idle state.
+
+        NOTE: does NOT set _mic_worker = None here.
+        The QThread may still be finishing its run() method.
+        Cleanup happens in _on_mic_thread_finished via the
+        finished signal, which fires after run() returns.
+        """
+        self._mic_recording = False
+        self._mic_btn.setText("\U0001F3A4")  # 🎤
+        self._mic_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0,160,220,45);
+                color: rgba(0,200,255,220);
+                border: 1px solid rgba(0,185,255,55);
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background: rgba(0,180,240,75);
+                border-color: rgba(0,210,255,100);
+            }
+            QPushButton:pressed { padding-top: 2px; }
+            QPushButton:disabled {
+                background: rgba(40,40,60,120);
+                color: rgba(255,255,255,50);
+                border-color: rgba(255,255,255,15);
+            }
+        """)
+        self._input.setPlaceholderText("Ask MERLIN\u2026")
+
+    def _on_mic_thread_finished(self):
+        """Safely clean up the MicWorker after its thread exits."""
+        if self._mic_worker is not None:
+            self._mic_worker.deleteLater()
+            self._mic_worker = None
 
     def _add_bubble(self, text: str, kind: str = "bot"):
         bubble = ChatBubble(text, kind)
