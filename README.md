@@ -310,6 +310,19 @@ python -m pytest -m slow
 
 `@pytest.mark.slow` tests are excluded by default unless you explicitly run `-m slow`.
 
+### 📦 Releasing Packages / Versioning
+
+MERLIN package version is controlled in `pyproject.toml` (`[project].version`).
+
+This repository includes a release workflow at `.github/workflows/release.yml` that runs on tags named `v*` and:
+- verifies tag version matches `pyproject.toml`,
+- runs tests,
+- builds wheel + sdist artifacts,
+- creates a GitHub Release,
+- publishes to PyPI if `PYPI_API_TOKEN` secret is configured.
+
+See `docs/releasing.md` for complete setup and release steps.
+
 ### 🌐 API & Frontend Surface (Quick Reference)
 
 MERLIN exposes versioned endpoints under `/api/v1` when running with `--ui`:
