@@ -37,7 +37,7 @@ MERLIN is equipped to operate as a JARVIS-level assistant, featuring robust OS i
 MERLIN is divided into distinct execution layers, preventing hallucinations and enforcing strict operational contracts.
 
 ```mermaid
-graph TD
+flowchart TD
     %% Styling
     classDef user fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff,font-weight:bold
     classDef iface fill:#1a365d,stroke:#63b3ed,stroke-width:2px,color:#fff
