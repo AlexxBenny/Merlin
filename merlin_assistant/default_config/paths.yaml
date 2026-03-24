@@ -1,0 +1,39 @@
+# config/paths.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Location Anchors
+# ─────────────────────────────────────────────────────────────
+#
+# Symbolic anchor names → filesystem path templates.
+# Loaded by LocationConfig (infrastructure/location_config.py).
+# Injected into MissionCortex prompt as anchor vocabulary.
+#
+# WORKSPACE is NOT defined here — it is always dynamic (cwd).
+#
+# Path templates support ${ENV_VAR} expansion.
+
+anchors:
+  DESKTOP:
+    path: "${USERPROFILE}/Desktop"
+  DOCUMENTS:
+    path: "${USERPROFILE}/Documents"
+  DOWNLOADS:
+    path: "${USERPROFILE}/Downloads"
+  PICTURES:
+    path: "${USERPROFILE}/Pictures"
+  MUSIC:
+    path: "${USERPROFILE}/Music"
+  VIDEOS:
+    path: "${USERPROFILE}/Videos"
+  HOME:
+    path: "${USERPROFILE}"
+
+# ─────────────────────────────────────────────────────────────
+# Drive Anchors (auto-generated)
+# ─────────────────────────────────────────────────────────────
+#
+# Each letter generates DRIVE_{LETTER} → "{LETTER}:/"
+# e.g., "C" → DRIVE_C → "C:/"
+
+drives:
+  enabled: ["C", "D", "E"]

@@ -1,0 +1,5 @@
+recursive-include merlin_assistant/default_config *.yaml *.yaml.example
+include merlin_assistant/default_config/.env.example
+include README.md
+include LICENSE
+recursive-include config *.yaml *.yaml.example

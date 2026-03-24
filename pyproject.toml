@@ -16,7 +16,11 @@ dependencies = [
   "requests>=2.31,<3.0",
   "ruamel.yaml>=0.18,<0.19",
   "psutil>=5.9,<8.0",
+  "platformdirs>=4.0,<5.0",
 ]
+
+[project.scripts]
+merlin = "merlin_assistant.cli:main"
 
 [project.optional-dependencies]
 test = [
@@ -60,6 +64,7 @@ dev = [
 
 [tool.setuptools]
 include-package-data = true
+py-modules = ["main", "merlin", "errors"]
 
 [tool.setuptools.packages.find]
 include = [
@@ -71,10 +76,12 @@ include = [
   "interface*",
   "ir*",
   "memory*",
+  "merlin_assistant*",
   "metrics*",
   "models*",
   "orchestrator*",
   "perception*",
+  "providers*",
   "reporting*",
   "runtime*",
   "skills*",
@@ -82,3 +89,10 @@ include = [
   "world*",
 ]
 exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+merlin_assistant = [
+  "default_config/*.yaml",
+  "default_config/*.yaml.example",
+  "default_config/.env.example",
+]

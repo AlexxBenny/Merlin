@@ -31,3 +31,6 @@ merlin_whatsapp
 neonize_sigs.txt
 test_results.txt
 test_failures.txt
+
+test_venv
+test_venv/

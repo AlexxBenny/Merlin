@@ -1,0 +1,253 @@
+# config/skills.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Skill Registration Configuration
+# ─────────────────────────────────────────────────────────────
+#
+# Each skill maps a name to its Python module path and class name.
+# The registry loads skills from this file at startup.
+# To add a new skill: add an entry here and drop the file in skills/.
+# No other file needs to change.
+
+# ─────────────────────────────────────────────────────────────
+# World State Provider — controls what WorldState the LLM sees
+# ─────────────────────────────────────────────────────────────
+# "simple" = full WorldState dump (Phase 1-2)
+# "filtered" = query-scoped view projection (Phase 3A+)
+world_state_provider: "filtered"
+
+# ─────────────────────────────────────────────────────────────
+# Context Provider — controls temporal context bounding
+# ─────────────────────────────────────────────────────────────
+# "simple"    = unbounded, last 5 turns + entities (Phase 1-2)
+# "retrieval" = token-budgeted, priority-ordered, memory-aware (Phase 3B+)
+context_provider: "retrieval"
+context_token_budget: 800
+
+# Domain → WorldState section mapping.
+# Each skill domain prefix maps to the state sections it needs.
+# Only used when world_state_provider is "filtered".
+domain_state_mapping:
+  system:
+    - "system.hardware"
+    - "system.session"
+  fs:
+    - "cwd"
+  media:
+    - "media"
+    - "system.hardware"
+  browser:
+    - "system.session"
+  reasoning: []  # Pure generation — no world state needed
+  email: []       # Email skills — no world state needed
+  whatsapp: []    # WhatsApp skills — no world state needed
+
+
+skills:
+  - name: "fs.create_folder"
+    module: "skills.fs.create_folder"
+    class: "CreateFolderSkill"
+
+  - name: "fs.write_file"
+    module: "skills.fs.write_file"
+    class: "WriteFileSkill"
+
+  - name: "fs.read_file"
+    module: "skills.fs.read_file"
+    class: "ReadFileSkill"
+
+  - name: "fs.search_file"
+    module: "skills.fs.search_file"
+    class: "SearchFileSkill"
+
+  - name: "fs.list_directory"
+    module: "skills.fs.list_directory"
+    class: "ListDirectorySkill"
+
+  - name: "system.open_app"
+    module: "skills.system.open_app"
+    class: "OpenAppSkill"
+
+  - name: "system.focus_app"
+    module: "skills.system.focus_app"
+    class: "FocusAppSkill"
+
+  - name: "system.close_app"
+    module: "skills.system.close_app"
+    class: "CloseAppSkill"
+
+  - name: "system.list_apps"
+    module: "skills.system.list_apps"
+    class: "ListAppsSkill"
+
+  # ── Add new skills below ──
+
+  - name: "system.set_brightness"
+    module: "skills.system.set_brightness"
+    class: "SetBrightnessSkill"
+
+  - name: "system.set_volume"
+    module: "skills.system.set_volume"
+    class: "SetVolumeSkill"
+
+  - name: "system.mute"
+    module: "skills.system.mute"
+    class: "MuteSkill"
+
+  - name: "system.unmute"
+    module: "skills.system.unmute"
+    class: "UnmuteSkill"
+
+  - name: "system.toggle_nightlight"
+    module: "skills.system.toggle_nightlight"
+    class: "ToggleNightlightSkill"
+
+  - name: "system.media_play"
+    module: "skills.system.media_play"
+    class: "MediaPlaySkill"
+
+  - name: "system.media_pause"
+    module: "skills.system.media_pause"
+    class: "MediaPauseSkill"
+
+  - name: "system.media_next"
+    module: "skills.system.media_next"
+    class: "MediaNextSkill"
+
+  - name: "system.media_previous"
+    module: "skills.system.media_previous"
+    class: "MediaPreviousSkill"
+
+  # ── Tier 0: Query skills (read WorldSnapshot, zero LLM) ──
+
+  - name: "system.get_time"
+    module: "skills.system.get_time"
+    class: "GetTimeSkill"
+
+  - name: "system.get_battery"
+    module: "skills.system.get_battery"
+    class: "GetBatterySkill"
+
+  - name: "system.get_system_status"
+    module: "skills.system.get_system_status"
+    class: "GetSystemStatusSkill"
+
+  - name: "system.get_now_playing"
+    module: "skills.system.get_now_playing"
+    class: "GetNowPlayingSkill"
+
+  - name: "reasoning.generate_text"
+    module: "skills.reasoning.generate_text"
+    class: "GenerateTextSkill"
+
+  # ── Scheduler domain (job lifecycle) ──
+
+  - name: "system.list_jobs"
+    module: "skills.system.list_jobs"
+    class: "ListJobsSkill"
+
+  - name: "system.cancel_job"
+    module: "skills.system.cancel_job"
+    class: "CancelJobSkill"
+
+  # ── Memory domain (UserKnowledgeStore) ──
+
+  - name: "memory.get_preference"
+    module: "skills.memory.memory_skills"
+    class: "GetPreferenceSkill"
+
+  - name: "memory.set_preference"
+    module: "skills.memory.memory_skills"
+    class: "SetPreferenceSkill"
+
+  - name: "memory.set_fact"
+    module: "skills.memory.memory_skills"
+    class: "SetFactSkill"
+
+  - name: "memory.add_policy"
+    module: "skills.memory.memory_skills"
+    class: "AddPolicySkill"
+
+  # ── Browser domain (browser-use AI automation) ──
+
+  - name: "browser.autonomous_task"
+    module: "skills.browser.autonomous_task"
+    class: "BrowserAutonomousTaskSkill"
+
+  - name: "browser.click"
+    module: "skills.browser.browser_click"
+    class: "BrowserClickSkill"
+
+  - name: "browser.navigate"
+    module: "skills.browser.browser_navigate"
+    class: "BrowserNavigateSkill"
+
+  - name: "browser.scroll"
+    module: "skills.browser.browser_scroll"
+    class: "BrowserScrollSkill"
+
+  - name: "browser.fill"
+    module: "skills.browser.browser_fill"
+    class: "BrowserFillSkill"
+
+  - name: "browser.keypress"
+    module: "skills.browser.browser_keypress"
+    class: "BrowserKeypressSkill"
+
+  - name: "browser.go_back"
+    module: "skills.browser.browser_go_back"
+    class: "BrowserGoBackSkill"
+
+  - name: "browser.go_forward"
+    module: "skills.browser.browser_go_forward"
+    class: "BrowserGoForwardSkill"
+
+  # ── Tier 2: Reactive controllers ──
+
+  - name: "browser.search"
+    module: "skills.browser.browser_search"
+    class: "BrowserSearchSkill"
+
+  - name: "browser.find_element"
+    module: "skills.browser.browser_find_element"
+    class: "BrowserFindElementSkill"
+
+  - name: "browser.wait_for"
+    module: "skills.browser.browser_wait_for"
+    class: "BrowserWaitForSkill"
+
+  - name: "browser.select_result"
+    module: "skills.browser.browser_select_result"
+    class: "BrowserSelectResultSkill"
+
+  # ── Email domain ──────────────────────────────────────────
+
+  - name: "email.draft_message"
+    module: "skills.email.draft_message"
+    class: "DraftMessageSkill"
+
+  - name: "email.modify_draft"
+    module: "skills.email.modify_draft"
+    class: "ModifyDraftSkill"
+
+  - name: "email.send_message"
+    module: "skills.email.send_message"
+    class: "SendMessageSkill"
+
+  - name: "email.read_inbox"
+    module: "skills.email.read_inbox"
+    class: "ReadInboxSkill"
+
+  - name: "email.search_email"
+    module: "skills.email.search_email"
+    class: "SearchEmailSkill"
+
+  # ── WhatsApp domain ────────────────────────────────────────
+
+  - name: "whatsapp.send_message"
+    module: "skills.whatsapp.send_message"
+    class: "WhatsAppSendMessageSkill"
+
+  - name: "whatsapp.send_file"
+    module: "skills.whatsapp.send_file"
+    class: "WhatsAppSendFileSkill"
