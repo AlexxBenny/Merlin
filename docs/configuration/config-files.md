@@ -1,8 +1,15 @@
 # Configuration Files
 
-**Location**: `config/`
+MERLIN resolves configuration in the following order:
 
-All YAML configuration files.
+1. **Environment override** — `MERLIN_CONFIG_DIR` environment variable
+2. **User config directory** — `~/.config/merlin/config/` or `%APPDATA%\Local\merlin\config\`
+3. **Current working directory** — `./config/` (development mode only, requires repo fingerprint)
+4. **Package defaults** — bundled templates inside `merlin_assistant/default_config/`
+
+For pip-installed users, `merlin init` populates the user config directory automatically.
+
+For developers working from a cloned repo, MERLIN detects the repo root and uses `./config/` directly.
 
 ## `models.yaml`
 
@@ -113,4 +120,3 @@ Telegram bot adapter configuration:
 - `max_queue_depth` — queue pressure guard threshold
 - `response_timeout` — response wait timeout in seconds
 - Bot token stored in `.env` (`TELEGRAM_BOT_TOKEN`), never in this file
-

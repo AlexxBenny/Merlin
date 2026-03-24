@@ -30,6 +30,7 @@ MERLIN is equipped to operate as a JARVIS-level assistant, featuring robust OS i
 * 🤖 **Telegram Remote Control**: Control MERLIN from your phone via a Telegram bot — whitelist-secured, serialized, with queue pressure guards and bridge liveness checks.
 * 🖥️ **Professional Dashboard & Widget**: A React dashboard with 10 pages (system gauges, chat, mail, WhatsApp, scheduler, memory, logs, config, mission inspector, world state) and a PySide6 floating desktop widget — all communicating via a decoupled REST/WebSocket API.
 
+
 ---
 
 ## 🧠 The 4-Layer Architecture
@@ -194,13 +195,42 @@ flowchart LR
 
 ---
 
-## 🚀 Getting Started
+## 🚧 Status
 
-### Prerequisites
-* Python 3.10+
-* Required API Keys (OpenRouter, Gemini, or HuggingFace depending on your configuration). Local Ollama models are also supported.
+**v0.1.0** — Initial public release
 
-### Installation & Configuration
+- Core execution system is stable
+- Text-based interaction fully supported
+- OS control, file system, memory, and scheduling are production-ready
+- Advanced integrations (browser automation, messaging, voice) are in active development
+
+To access the full feature set including the dashboard UI, Telegram bot, browser control, and voice modes, clone the repository and follow the [Development Setup](#-development-setup) below.
+
+---
+
+## 🚀 Quick Start
+
+**Prerequisites:** Python 3.10+ and an API key (OpenRouter, Gemini, or local Ollama).
+
+```bash
+pip install merlin-assistant
+merlin init
+merlin
+```
+
+`merlin init` walks you through provider selection, API key validation, and config generation. Once complete, try:
+
+```
+You: open notepad
+You: what time is it
+You: set volume to 50
+```
+
+---
+
+## 👨‍💻 Development Setup
+
+For contributors or users who want the full feature set (dashboard, voice, browser, Telegram, WhatsApp):
 
 1. **Clone the repository:**
    ```bash
@@ -208,37 +238,28 @@ flowchart LR
    cd Merlin
    ```
 
-2. **Create a virtual environment and install Python dependencies (single command):**
+2. **Create a virtual environment and install dependencies:**
    ```bash
    python -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
    ```
-   This installs the canonical Python dependency set from `pyproject.toml`.
    On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`.
-
-   If you prefer `requirements.txt`:
-   ```bash
-   python -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-   ```
-   `requirements.txt` mirrors the union of core + optional dependencies for pip-only workflows.
 
     Optional feature extras:
     - `.[voice]` for local STT/TTS dependencies
     - `.[ui]` for the PySide6 desktop widget
     - `.[browser]` for browser-use integrations
     - `.[windows]` for Windows-only control integrations
-    - React dashboard dependencies are installed via `npm` in `ui/dashboard` (see UI section below)
 
 3. **Set up API Keys:**
-   Copy the example environment file and configure your keys.
    ```bash
    cp .env.example .env
    ```
-   *Edit `.env` to include your provider API keys (e.g., `OPENROUTER_API_KEY`, `GEMINI_API_KEY`).*
+   Edit `.env` to include your provider API keys (e.g., `OPENROUTER_API_KEY`, `GEMINI_API_KEY`).
 
-4. **Configure Routing & Models:**
+4. **Configure Models & Routing:**
+   * Configure LLMs for specific roles in `config/models.yaml`.
    * Adjust routing policies in `config/routing.yaml`.
-   * Configure specific LLMs for specific roles in `config/models.yaml`.
-   * Tune execution and runtime behavior in `config/execution.yaml`, `config/browser.yaml`, and `config/skills.yaml`.
+   * Tune execution behavior in `config/execution.yaml`, `config/browser.yaml`, and `config/skills.yaml`.
 
 5. **Run MERLIN:**
    ```bash
@@ -249,8 +270,6 @@ flowchart LR
    python main.py --voice          # Voice-only mode
    python main.py --hybrid         # Text + voice
    ```
-    *Note: Ensure your virtual environment is active and all dependencies are installed before running.*
-
     When using `--ui`, the dashboard is available at `http://localhost:8420` and API docs at `http://localhost:8420/docs`.
     When using `--telegram`, configure `TELEGRAM_BOT_TOKEN` in `.env` and set `allowed_user_ids` in `config/telegram.yaml`.
 
@@ -309,6 +328,19 @@ python -m pytest -m slow
 ```
 
 `@pytest.mark.slow` tests are excluded by default unless you explicitly run `-m slow`.
+
+### 📦 Releasing
+
+MERLIN package version is controlled in `pyproject.toml` (`[project].version`).
+
+The release workflow at `.github/workflows/release.yml` runs on tags named `v*` and:
+- verifies tag version matches `pyproject.toml`,
+- runs tests,
+- builds wheel + sdist artifacts,
+- creates a GitHub Release with download links,
+- publishes to PyPI.
+
+See `docs/releasing.md` for complete release steps.
 
 ### 🌐 API & Frontend Surface (Quick Reference)
 
@@ -519,6 +551,7 @@ Here are some ways you can interact with MERLIN depending on the complexity of t
 
 ```text
 ├── main.py & merlin.py     # Entry points and central orchestration loops
+├── merlin_assistant/       # Pip package: CLI, setup wizard, config discovery
 ├── brain/                  # Routing authority (think vs. react)
 ├── cortex/                 # The LLM compiler turning text into Mission DAGs
 ├── execution/              # The engine running plans, enforcing contracts, and inline recovery

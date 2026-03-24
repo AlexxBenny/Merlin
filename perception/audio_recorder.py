@@ -1,5 +1,7 @@
 # perception/audio_recorder.py
 
+from __future__ import annotations
+
 """
 AudioRecorder — Microphone capture with WebRTC VAD silence detection.
 
@@ -15,9 +17,10 @@ Design contract:
 import logging
 import struct
 import threading
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ class AudioRecorder:
             1D float32 numpy array of audio samples.
             Empty array if cancelled before any speech detected.
         """
+        import numpy as np
         import sounddevice as sd
         import webrtcvad
 

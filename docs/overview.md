@@ -83,5 +83,6 @@ User speaks/types
 | [Environment](configuration/environment.md) | .env variables, API keys |
 | [Config Files](configuration/config-files.md) | YAML configuration reference |
 | [Mission IR](ir/mission-ir.md) | IR v1 specification |
+| [Releasing](releasing.md) | End-to-end GitHub tag, release, and PyPI publishing flow |
 | [Autonomous Readiness Analysis](analysis-report.md) | End-to-end readiness report, scenario simulation, and gap analysis |
 | [Email Skills Analysis](email-analysis-report.md) | End-to-end production behavior review for email skills and integration readiness |

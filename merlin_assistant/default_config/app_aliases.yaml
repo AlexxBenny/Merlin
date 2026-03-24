@@ -1,0 +1,30 @@
+# Application Aliases Configuration
+# Maps semantic category names to canonical app_ids
+# Used by EntityResolver for NL → app_id resolution
+#
+# Format: alias_term: canonical_app_id
+# These are semantic aliases, not display names.
+# Display names are handled by ApplicationRegistry name index.
+
+# Category aliases
+browser: chrome
+web browser: chrome
+music: spotify
+music player: spotify
+text editor: notepad
+code editor: vscode
+ide: vscode
+terminal: windowsterminal
+shell: powershell
+email: outlook
+mail client: outlook
+spreadsheet: excel
+word processor: word
+presentation: powerpoint
+notes: onenote
+file manager: explorer
+files: explorer
+paint: mspaint
+drawing: mspaint
+chat: discord
+messaging: discord

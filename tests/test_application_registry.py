@@ -292,6 +292,7 @@ class TestApplicationDiscoveryService:
         assert entity.launch_strategies[0].priority == 100
         assert entity.launch_strategies[1].priority == 80
 
+    @pytest.mark.windows_only
     def test_entity_builder_infers_process_name(self):
         from infrastructure.app_discovery import _EntityBuilder
 
@@ -301,6 +302,7 @@ class TestApplicationDiscoveryService:
 
         assert "chrome.exe" in entity.canonical_process_names
 
+    @pytest.mark.windows_only
     def test_entity_builder_default_process_name(self):
         """If no executables found, infer from app_id."""
         from infrastructure.app_discovery import _EntityBuilder

@@ -110,6 +110,20 @@ CONFIG_DIR = Path(__file__).parent / "config"
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# ── Config discovery (supports dev mode + installed mode) ──
+# Override CONFIG_DIR and .env path if the discovery module is available.
+# This allows 'pip install merlin-assistant && merlin' to find configs
+# in ~/.config/merlin/ (or %APPDATA%\merlin\ on Windows) while keeping
+# 'python main.py' from repo root working unchanged.
+try:
+    from merlin_assistant.config_discovery import get_config_dir, get_env_path
+    CONFIG_DIR = get_config_dir()
+    _discovered_env = get_env_path()
+    if _discovered_env.is_file():
+        load_dotenv(_discovered_env, override=True)
+except ImportError:
+    pass  # merlin_assistant not installed — use repo-relative defaults
+
 
 def load_yaml(filename: str) -> dict:
     """Load a YAML config file, return empty dict if missing."""

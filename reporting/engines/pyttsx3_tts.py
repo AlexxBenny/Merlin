@@ -63,6 +63,7 @@ class Pyttsx3TTS(TTSEngine):
         self._ready = threading.Event()  # signaled when engine inits
         self._generation = 0  # incremented on each worker restart
         self._lock = threading.Lock()  # guards worker lifecycle
+        self._permanently_unavailable = False  # set if pyttsx3 missing
 
     def _ensure_worker(self) -> None:
         """Start or restart the TTS worker thread.
@@ -71,6 +72,8 @@ class Pyttsx3TTS(TTSEngine):
         the generation counter, and spawns a new worker.
         """
         with self._lock:
+            if self._permanently_unavailable:
+                return  # pyttsx3 not installed — don't retry
             if self._worker is not None and self._worker.is_alive():
                 return  # healthy worker — nothing to do
 
@@ -187,6 +190,15 @@ class Pyttsx3TTS(TTSEngine):
                 generation,
             )
             self._ready.set()  # signal: engine is usable
+        except ImportError:
+            logger.warning(
+                "pyttsx3 not installed (gen=%d) — TTS disabled. "
+                "Install with: pip install merlin-assistant[voice]",
+                generation,
+            )
+            self._permanently_unavailable = True
+            self._ready.set()  # unblock start() even on failure
+            return
         except Exception:
             logger.exception(
                 "pyttsx3 engine validation failed (gen=%d)", generation,

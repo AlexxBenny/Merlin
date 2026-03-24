@@ -1,0 +1,169 @@
+# config/routing.yaml
+
+# ─────────────────────────────────────────────────────────────
+# Routing Configuration — BrainCore + ReflexEngine
+# ─────────────────────────────────────────────────────────────
+#
+# This file is the SOLE authority for routing rules.
+# BrainCore reads this at startup. Code never changes.
+#
+# Routing invariant:
+#   False positives (MISSION for simple commands) = SAFE
+#   False negatives (REFLEX for complex commands) = CATASTROPHIC
+#   Therefore: default bias → MISSION
+
+# ─────────────────────────────────────────────────────────────
+# Mission Indicators
+# ─────────────────────────────────────────────────────────────
+# Structural keywords that signal multi-step, conditional, or
+# dependent tasks. If ANY of these appear → BrainCore routes MISSION.
+mission_indicators:
+  - "then"
+  - "after that"
+  - "meanwhile"
+  - "if"
+  - "depending on"
+  - "based on"
+  - "once"
+  - "when done"
+  - "followed by"
+  # WhatsApp routing — ensures multi-step send goes through orchestrator
+  - "whatsapp"
+  - "send whatsapp"
+
+
+# ─────────────────────────────────────────────────────────────
+# Refuse Indicators
+# ─────────────────────────────────────────────────────────────
+# Dangerous or prohibited commands. If ANY appear → REFUSE.
+refuse_indicators:
+  - "hack"
+  - "destroy"
+  - "delete everything"
+  - "format disk"
+  - "rm -rf"
+
+# ─────────────────────────────────────────────────────────────
+# Reflex Templates
+# ─────────────────────────────────────────────────────────────
+# Parameterized patterns for commands that are unambiguous but
+# need parameter extraction. Matched by regex, executed directly.
+#
+# Rules:
+# - Intent must be explicit
+# - All parameters must be in the text
+# - Maps to exactly ONE skill invocation
+# - No reasoning, no context, no ambiguity
+#
+# pattern: Python regex with named groups
+# skill: registered skill name
+# param_map: group name → parameter name mapping
+reflex_templates:
+  # ── Hardware: Brightness ──
+  - pattern: "^(please )?(set )?(the )?brightness (to |at )?(?P<level>\\d+)( ?%)?$"
+    skill: "system.set_brightness"
+    param_map:
+      level: "level"
+
+  # ── Hardware: Volume ──
+  - pattern: "^(please )?(set )?(the )?volume (to |at )?(?P<level>\\d+)( ?%)?$"
+    skill: "system.set_volume"
+    param_map:
+      level: "level"
+
+  # ── Hardware: Mute/Unmute ──
+  - pattern: "^(please )?mute( (the )?(sound|audio|system|volume))?$"
+    skill: "system.mute"
+    param_map: {}
+
+  - pattern: "^(please )?unmute( (the )?(sound|audio|system|volume))?$"
+    skill: "system.unmute"
+    param_map: {}
+
+  # ── Hardware: Night Light ──
+  - pattern: "^(please )?(toggle |turn (on|off) )?(the )?night ?light$"
+    skill: "system.toggle_nightlight"
+    param_map: {}
+
+  # ── Media: Play (state-aware, idempotent) ──
+  - pattern: "^(please )?(play|resume|start)( (the )?(music|song|audio|media|track))?$"
+    skill: "system.media_play"
+    param_map: {}
+
+  # ── Media: Pause (state-aware, idempotent) ──
+  - pattern: "^(please )?(pause|stop)( (the )?(music|song|audio|media|track))?$"
+    skill: "system.media_pause"
+    param_map: {}
+
+  # ── Media: Next Track ──
+  - pattern: "^(please )?(play )?(next|skip)( (the )?(song|track|music))?$"
+    skill: "system.media_next"
+    param_map: {}
+
+  # ── Media: Previous Track ──
+  - pattern: "^(please )?(play )?(previous|prev|last|go back)( (the )?(song|track|music))?$"
+    skill: "system.media_previous"
+    param_map: {}
+
+  # ── Filesystem ──
+  - pattern: "^create folder (?P<name>.+) on (?P<anchor>\\w+)$"
+    skill: "fs.create_folder"
+    param_map:
+      name: "name"
+      anchor: "anchor"
+
+# ─────────────────────────────────────────────────────────────
+# Referential Language Markers
+# ─────────────────────────────────────────────────────────────
+# Words that indicate the user is referring to something from
+# prior context. Used by EscalationPolicy to decide CLARIFY vs MISSION.
+referential_markers:
+  - "the first"
+  - "the second"
+  - "the third"
+  - "the last"
+  - "that one"
+  - "this one"
+  - "the previous"
+  - "it"
+  - "that"
+
+# ─────────────────────────────────────────────────────────────
+# Relational Indicators (Multi-Reflex Gate)
+# ─────────────────────────────────────────────────────────────
+# Tokens that signal inter-clause semantic dependency.
+# If ANY appear in a multi-clause command → skip multi-reflex → MISSION.
+#
+# Matched as normalized tokens, NOT substrings:
+#   - Unigrams: single token match (e.g., "inside" matches token "inside")
+#   - Bigrams: two-token sequence match (e.g., "after that" matches "after"+"that")
+#
+# This prevents "other" from matching "mother", "it" from matching "exit", etc.
+#
+# Categories:
+#   Hierarchy:    inter-clause spatial/structural dependency
+#   Pronouns:     coreference to prior clause output
+#   References:   entity reference across clauses
+#   Sequencing:   temporal dependency between clauses
+relational_indicators:
+  # Hierarchy / location
+  - "inside"
+  - "within"
+  - "between"
+  # Pronouns (coreference) — "it" and "this" removed (too many
+  # false positives on grammatical constructs like "what day is it").
+  # These are now handled by the structural classifier's
+  # requires_context flag when the classifier is available.
+  - "them"
+  - "those"
+  - "these"
+  # Reference indicators
+  - "another"
+  - "same"
+  - "previous"
+  - "other"
+  # Sequence dependency (bigrams — matched as token pairs)
+  - "after that"
+  - "once done"
+  - "based on"
+

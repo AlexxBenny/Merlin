@@ -2,7 +2,28 @@
 
 MERLIN uses a `.env` file for secrets and environment-specific settings.
 
+## Setup
+
+**For pip-installed users:**
+
+`merlin init` creates the `.env` file automatically during setup.
+
+Location:
+- **Windows:** `%APPDATA%\Local\merlin\.env`
+- **Linux/macOS:** `~/.config/merlin/.env`
+
+**For developers (cloned repo):**
+
+```bash
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+The `.env` at the repository root is used in development mode.
+
 ## Required Variables
+
+At least **one** LLM provider API key is required. `OPENROUTER_API_KEY` is recommended (access to multiple models).
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
@@ -26,19 +47,6 @@ MERLIN uses a `.env` file for secrets and environment-specific settings.
 | `MAX_WORKERS` | Parallel execution threads | `4` |
 | `NODE_TIMEOUT` | Per-node execution timeout (seconds) | `60` |
 
-## Setup
+## API Key Management
 
-1. Copy `.env.example` to `.env`
-2. Fill in API keys
-3. Adjust optional settings as needed
-
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-```
-
-## API Key Requirements
-
-- At least **one** LLM provider API key is required
-- `OPENROUTER_API_KEY` is recommended (access to multiple models)
 - `KeyPool` supports multiple keys per provider for rate limit management
