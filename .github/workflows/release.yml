@@ -80,7 +80,6 @@ jobs:
 
   publish-pypi:
     needs: test-and-build
-    if: ${{ secrets.PYPI_API_TOKEN != '' }}
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -92,6 +91,7 @@ jobs:
           path: dist
 
       - name: Publish to PyPI
+        if: ${{ secrets.PYPI_API_TOKEN }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}

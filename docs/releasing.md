@@ -4,8 +4,8 @@ This repository supports release automation through GitHub Actions.
 
 ## What is already configured
 
-- Python package metadata and version live in `/home/runner/work/Merlin/Merlin/pyproject.toml` (`[project].version`).
-- Release workflow lives in `/home/runner/work/Merlin/Merlin/.github/workflows/release.yml`.
+- Python package metadata and version live in `pyproject.toml` (`[project].version`).
+- Release workflow lives in `.github/workflows/release.yml`.
 - The workflow runs on Git tags like `v0.1.0`.
 - It will:
   1. validate the tag version matches `pyproject.toml`,
@@ -25,7 +25,7 @@ This repository supports release automation through GitHub Actions.
 
 ## Release steps
 
-1. Update package version in `/home/runner/work/Merlin/Merlin/pyproject.toml`.
+1. Update package version in `pyproject.toml`.
    - Example: `0.1.0` → `0.1.1`
 2. Commit and merge the version bump to your release branch (usually `main`).
 3. Create and push a tag that matches that version with `v` prefix:
