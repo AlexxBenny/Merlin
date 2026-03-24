@@ -30,14 +30,6 @@ MERLIN is equipped to operate as a JARVIS-level assistant, featuring robust OS i
 * 🤖 **Telegram Remote Control**: Control MERLIN from your phone via a Telegram bot — whitelist-secured, serialized, with queue pressure guards and bridge liveness checks.
 * 🖥️ **Professional Dashboard & Widget**: A React dashboard with 10 pages (system gauges, chat, mail, WhatsApp, scheduler, memory, logs, config, mission inspector, world state) and a PySide6 floating desktop widget — all communicating via a decoupled REST/WebSocket API.
 
-### ❓Quick Clarification: app, behavior, and attention
-
-- **Does this build an app?**  
-  MERLIN primarily ships as a **Python package/runtime**. The release process builds Python artifacts (`.whl` and `.tar.gz`) for GitHub Releases and optional PyPI publishing, not a native OS installer (`.exe`/`.dmg`) by default.
-- **What does this do?**  
-  MERLIN turns natural language into deterministic actions: system control, file operations, browser tasks, messaging (Telegram/WhatsApp), email workflows, scheduling, and memory-backed context.
-- **Does it get user attention?**  
-  Yes. MERLIN has proactive attention behavior through the runtime event loop + `AttentionManager`, which can **interrupt immediately**, **queue notifications**, or **suppress low-priority events** depending on urgency and policy.
 
 ---
 
