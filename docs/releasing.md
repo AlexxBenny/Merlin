@@ -12,13 +12,14 @@ This repository supports release automation through GitHub Actions.
   2. run tests,
   3. build wheel + sdist,
   4. create a GitHub Release with the artifacts,
-  5. publish to PyPI (only if `PYPI_API_TOKEN` secret is configured).
+  5. publish to PyPI.
 
 ## One-time repository setup
 
 1. In GitHub, open **Settings → Secrets and variables → Actions**.
 2. Add repository secret:
-   - `PYPI_API_TOKEN` = your PyPI API token (optional if you only want GitHub Releases).
+   - `PYPI_API_TOKEN` = your PyPI API token.
+     Ensure this is configured for publishing to PyPI.
 3. (Optional but recommended) create a protected `pypi` environment:
    - **Settings → Environments → New environment → `pypi`**
    - Add approval rules if desired.
@@ -38,7 +39,7 @@ This repository supports release automation through GitHub Actions.
 4. Open **Actions** in GitHub and monitor the **Release** workflow.
 5. After success:
    - GitHub Release is created with `.whl` and `.tar.gz` attached.
-   - Package is published to PyPI if `PYPI_API_TOKEN` exists.
+   - Package is published to PyPI.
 
 ## Versioning rules
 

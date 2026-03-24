@@ -16,6 +16,20 @@ def main():
     parser = argparse.ArgumentParser(
         prog="merlin",
         description="MERLIN — Deterministic Autonomous AI Assistant",
+        epilog=(
+            "Quick start:\n"
+            "  merlin init          Set up MERLIN (provider, API keys, config)\n"
+            "  merlin               Start MERLIN in text mode\n"
+            "\n"
+            "For voice, UI, and Telegram modes, install from source.\n"
+            "See: https://github.com/AlexxBenny/Merlin#-development-setup"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"%(prog)s {_get_version()}",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -47,6 +61,15 @@ def main():
 
         from main import main as run_merlin
         run_merlin(run_args)
+
+
+def _get_version() -> str:
+    """Read version from package metadata."""
+    try:
+        from importlib.metadata import version
+        return version("merlin-assistant")
+    except Exception:
+        return "unknown"
 
 
 if __name__ == "__main__":

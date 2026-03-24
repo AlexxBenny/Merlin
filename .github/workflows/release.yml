@@ -47,7 +47,7 @@ jobs:
           python -m pip install -e ".[dev]" build twine
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q -m "not windows_only"
 
       - name: Build package distributions
         run: python -m build
