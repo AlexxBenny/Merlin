@@ -534,14 +534,16 @@ class BrowserUseAdapter:
     # ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_429_error(exc: Exception) -> bool:
-        """Check if an exception is a 429/RESOURCE_EXHAUSTED error.
+    def _is_key_error(exc: Exception) -> bool:
+        """Check if an exception is a key/auth error that key rotation can fix.
 
+        Matches both rate-limit (429) and project-banned (403) errors.
         Uses exception message inspection — does NOT depend on
         browser-use agent internals (history objects, step results).
         """
         msg = str(exc).upper()
-        return "429" in msg or "RESOURCE_EXHAUSTED" in msg
+        return ("429" in msg or "RESOURCE_EXHAUSTED" in msg
+                or "403" in msg or "PERMISSION_DENIED" in msg)
 
     async def _run_task_async(
         self, task: str, max_steps: int, task_id: int,
@@ -549,9 +551,10 @@ class BrowserUseAdapter:
         """Core async implementation. Runs on the dedicated loop thread.
 
         Wraps agent execution in a key-rotation retry loop:
-        if the agent fails entirely due to 429/RESOURCE_EXHAUSTED,
-        rotate to the next API key and retry immediately (no backoff —
-        each key has independent quota buckets).
+        if the agent fails entirely due to 429/RESOURCE_EXHAUSTED or
+        403/PERMISSION_DENIED, rotate to the next API key and retry
+        immediately (no backoff — each key has independent quota buckets
+        and may belong to different Google Cloud projects).
 
         Steps per attempt:
             1. Ensure browser is alive (lazy-create or reconnect)
@@ -562,7 +565,7 @@ class BrowserUseAdapter:
             6. Return structured result
         """
         max_key_retries = max(_browser_key_pool.pool_size, 1)
-        last_429_error = ""
+        last_key_error = ""
 
         for key_attempt in range(max_key_retries):
             try:
@@ -570,12 +573,13 @@ class BrowserUseAdapter:
                     task, max_steps, task_id, key_attempt,
                 )
             except Exception as e:
-                if self._is_429_error(e) and key_attempt < max_key_retries - 1:
-                    last_429_error = str(e)[:300]
+                if self._is_key_error(e) and key_attempt < max_key_retries - 1:
+                    last_key_error = str(e)[:300]
                     logger.warning(
-                        "[BrowserAdapter] Task #%d: 429 RESOURCE_EXHAUSTED "
-                        "→ rotating API key (attempt %d/%d)",
+                        "[BrowserAdapter] Task #%d: key error (429/403) "
+                        "→ rotating API key (attempt %d/%d): %s",
                         task_id, key_attempt + 1, max_key_retries,
+                        str(e)[:120],
                     )
                     # Immediate retry with next key — no backoff needed
                     # because each key has independent quota.
@@ -584,12 +588,12 @@ class BrowserUseAdapter:
 
         # All keys exhausted — return structured error
         logger.error(
-            "[BrowserAdapter] Task #%d: all %d API keys rate-limited (429)",
+            "[BrowserAdapter] Task #%d: all %d API keys failed (429/403)",
             task_id, max_key_retries,
         )
         return self._error_result(
-            f"All {max_key_retries} API keys rate-limited (429). "
-            f"Last error: {last_429_error}"
+            f"All {max_key_retries} API keys failed (rate-limited or permission denied). "
+            f"Last error: {last_key_error}"
         )
 
     async def _run_single_attempt(
@@ -648,25 +652,27 @@ class BrowserUseAdapter:
                 self._format_action_log(action_summary),
             )
 
-            # ── 5b. Detect all-429 failure (key exhaustion) ──
-            # browser-use Agent.run() swallows 429 exceptions internally:
+            # ── 5b. Detect all-key-error failure (key exhaustion / ban) ──
+            # browser-use Agent.run() swallows exceptions internally:
             #   step() → _handle_step_error() stores ActionResult(error=msg)
             #   → never re-raises → run() returns normally.
-            # The 429 errors appear ONLY as strings in action results.
+            # The errors appear ONLY as strings in action results.
             # We check action_summary (MERLIN's own extracted strings,
-            # NOT browser-use internals) for 429/RESOURCE_EXHAUSTED.
+            # NOT browser-use internals) for 429/RESOURCE_EXHAUSTED and
+            # 403/PERMISSION_DENIED (project-banned keys).
+            _KEY_ERROR_SIGNALS = ("429", "RESOURCE_EXHAUSTED", "403", "PERMISSION_DENIED")
             if steps_taken > 0 and all(
-                "429" in s.upper() or "RESOURCE_EXHAUSTED" in s.upper()
+                any(sig in s.upper() for sig in _KEY_ERROR_SIGNALS)
                 for s in action_summary
             ):
                 logger.warning(
                     "[BrowserAdapter] Task #%d: all %d agent steps failed "
-                    "with 429 RESOURCE_EXHAUSTED → triggering key rotation",
+                    "with key errors (429/403) → triggering key rotation",
                     task_id, steps_taken,
                 )
                 raise RuntimeError(
                     f"All {steps_taken} agent steps failed with "
-                    "429 RESOURCE_EXHAUSTED (key exhausted)"
+                    "key errors — rate-limited (429) or permission denied (403)"
                 )
 
             # ── 6. Detect task failure from agent history ──
@@ -678,12 +684,14 @@ class BrowserUseAdapter:
                 history, steps_taken, task_id,
             )
 
-            # If failure is a 429, re-raise so the retry loop can rotate keys
-            if task_failed and (
-                "429" in failure_reason or "RESOURCE_EXHAUSTED" in failure_reason
+            # If failure is a key error (429 or 403), re-raise so the
+            # retry loop can rotate keys
+            if task_failed and any(
+                sig in failure_reason.upper()
+                for sig in ("429", "RESOURCE_EXHAUSTED", "403", "PERMISSION_DENIED")
             ):
                 raise RuntimeError(
-                    f"Agent failed with 429: {failure_reason}"
+                    f"Agent failed with key error: {failure_reason}"
                 )
 
             # ── 7. Extract agent's answer text ──
@@ -733,8 +741,8 @@ class BrowserUseAdapter:
             }
 
         except Exception as e:
-            # Let 429 errors propagate to key-rotation retry loop
-            if self._is_429_error(e):
+            # Let key errors (429/403) propagate to key-rotation retry loop
+            if self._is_key_error(e):
                 raise
 
             logger.error(
@@ -758,6 +766,23 @@ class BrowserUseAdapter:
                 "error": str(e),
                 "extracted_text": "",
             }
+        finally:
+            # Defensive state logging — always runs regardless of
+            # success, failure, or re-raised key errors.
+            # Mirrors the reference browser_agent's finally cleanup
+            # pattern to ensure visibility into post-attempt state.
+            try:
+                browser_alive = self._browser is not None
+                llm_alive = self._llm is not None
+                logger.debug(
+                    "[BrowserAdapter] Task #%d attempt %d/%d finished — "
+                    "browser=%s, llm=%s",
+                    task_id, key_attempt + 1, _browser_key_pool.pool_size,
+                    "alive" if browser_alive else "dead",
+                    "alive" if llm_alive else "dead",
+                )
+            except Exception:
+                pass  # finally block must NEVER crash
 
     # ─────────────────────────────────────────────────────────
     # Browser lifecycle (crash detection + lazy creation)
@@ -1258,6 +1283,8 @@ class BrowserUseAdapter:
                 crash_keywords = [
                     "exception", "crash", "profile copy failed",
                     "timed out", "timeout", "connection refused",
+                    "permission_denied", "permission denied",
+                    "project has been denied",
                 ]
                 for keyword in crash_keywords:
                     if keyword in final_lower:

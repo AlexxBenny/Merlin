@@ -91,6 +91,10 @@ VERB_SYNONYMS: Dict[str, str] = {
     "check": "status",
     "report": "status",
     "how": "status",
+    
+    "purchase": "buy",
+    "order": "buy",
+    
 }
 
 
