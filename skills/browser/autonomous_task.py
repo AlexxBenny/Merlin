@@ -52,7 +52,7 @@ class BrowserAutonomousTaskSkill(Skill):
         description="Perform an autonomous browser task",
         narration_template="browsing: {task}",
         intent_verbs=["search", "browse", "find", "look up", "go to",
-                       "navigate", "visit"],
+                       "navigate", "visit","buy","purchase"],
         intent_keywords=["website", "browser", "web", "online", "internet",
                          "site", "page", "google", "amazon", "youtube",
                          "on the web", "in browser"],
